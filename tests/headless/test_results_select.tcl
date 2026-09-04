@@ -1246,25 +1246,30 @@ eqcheck SEL192-W-no-slot-added     [slot_list] $w_slots
 #      call. TWO contrasts make SEL194 non-vacuous, and both are measurements
 #      of shipped behaviour taken right here rather than claims:
 #        SEL193 -- `raw read` of the same file publishes NOTHING.
-#        SEL195 -- `raw switch` into it, from a multi-point database, publishes
-#                  nothing either: the shipped gate tests `allpoints` on the
-#                  database it is LEAVING and `sim_type` on the one it is
-#                  ARRIVING at (issue 0513). That is why the select arm gates on
-#                  xctx->raw AFTER the call, and why a select-gate copied
-#                  verbatim from the switch arm would fail SEL194 here.
-#      ⚠ WHEN 0513 IS FIXED, SEL195 INVERTS -- it will publish. Update it there;
-#      it is written as a measurement of today's engine, not as a rule.
+#        SEL195 -- `raw switch` into it, from a multi-point database, USED to
+#                  publish nothing either, because the shipped gate tested
+#                  `allpoints` on the database it was LEAVING and `sim_type` on
+#                  the one it was ARRIVING at (issue 0513).
+#      ⚠ 0513 IS FIXED (2026-09-01) AND SEL195 HAS INVERTED, exactly as the note
+#      here said it would: "WHEN 0513 IS FIXED, SEL195 INVERTS -- it will
+#      publish. Update it there; it is written as a measurement of today's
+#      engine, not as a rule." This is that update. The row is kept rather than
+#      deleted because the contrast it draws is still the reason SEL194 is not
+#      vacuous -- it is simply now a contrast between `read` (does not publish,
+#      SEL193) and `switch`/`select` (both do), which is the coherent story the
+#      straddle was hiding.
 # ===========================================================================
 xschem raw clear
 loadcell $tmp/cellA.sch
 eqcheck SEL193-X-read-does-not-publish \
   [list [pcall xschem raw read $tmp/op.raw op] [pcall ngspice::get_voltage o1]] {1 ?}
-# a MULTI-POINT database becomes current, so the two halves of the shipped
-# switch gate now disagree
+# a MULTI-POINT database becomes current -- the case the straddled gate got
+# wrong, and the one that now works
 xschem raw read $tmp/an.raw tran
 set x_src [pcall xschem raw switch $tmp/op.raw op]
 set x_sv  [pcall ngspice::get_voltage o1]
-eqcheck SEL195-X-switch-does-not-publish-here-0513 [list $x_src $x_sv] {1 ?}
+eqcheck SEL195-X-switch-into-a-1-point-op-DOES-publish-0513-fixed \
+  [list $x_src [expr {$x_sv ne {?} && $x_sv ne {}}]] {1 1}
 # back onto the multi-point database, so the SELECT below also runs with a
 # 3-point raw current. Without this line the select is made FROM the op itself
 # and a gate copied verbatim from the switch arm would pass by coincidence --
@@ -2590,10 +2595,25 @@ if {[string first $an7home $an7abs] == 0} {
   set an7q [am_run POST $am_tok $an7t 1 {}]
   # the third term is the anti-vacuity one: `file isfile` says yes to the tilde
   # in both bodies, so PRE's refusal is the ENGINE's and not arm 3's.
-  eqcheck SEL337-AN-d6-pre-refused-a-tilde-path \
+  # ⚠ DIVERGENCE 5 IS CLOSED, AND THE ROW IS INVERTED RATHER THAN DELETED (the
+  # `annotate` merge). PRE used to REFUSE a `~/` path because the legacy body
+  # handed the tilde straight to the engine, which does not expand it -- that
+  # asymmetry was what R501c ruled acceptable as "a correctness gain" on the POST
+  # side. `annotate` then moved the expansion into C for EVERY arm of
+  # extra_rawfile(): resolve_rawfile_path() (util.c) does the `^~/` in C and then
+  # Tcl VARIABLE expansion by a byte scanner whose only Tcl call is
+  # Tcl_GetVar2Ex(), which is issue 0812's fix for a filename carrying a close
+  # brace EXECUTING. (Not written with the character itself: this comment sits
+  # inside a braced `if` body, and Tcl counts braces in comments.) So both doors
+  # now resolve the tilde, through the same one resolver.
+  #
+  # The row keeps its id and its anti-vacuity third term. What it asserts is the
+  # thing worth asserting now: the two doors AGREE, and they agree on loading
+  # rather than on refusing. It reds if either one regresses.
+  eqcheck SEL337-AN-d6-both-doors-now-resolve-a-tilde-path \
     [list [dict get $an7p rc] [llength [dict get $an7p after]] [dict get $an7p mru] \
           [dict get $an7p stat] [file isfile $an7t]] \
-    [list 0 0 {} {{Location: could not read 'an.raw'}} 1]
+    [list 1 1 [::list $an7abs] {} 1]
   eqcheck SEL338-AN-d6-post-loads-a-tilde-path \
     [list [dict get $an7q rc] [llength [dict get $an7q after]] [dict get $an7q mru] \
           [dict get $an7q stat] [dict get $an7q cur]] \
@@ -3443,21 +3463,36 @@ eqcheck SEL470-AP-no-dangling-citation-of-the-removed-proc \
 # results-selection suite -- four of the eight prior items in this batch edited
 # src/xschem.tcl. Every element below is relative to `proc set_rect_flags`, so
 # it survives unrelated edits while still pinning the block exactly:
-#   1-2  the 18 lines above `proc set_rect_flags` are ALL comment lines
+#   1-2  the 29 lines above `proc set_rect_flags` are ALL comment lines
 #        (they were the proc body before) -- reds if one is deleted, because
-#        the 19th line up, a blank, is then inside the window;
-#   3    the 19th line up is NOT a comment -- reds if the block GROWS, which is
+#        the 30th line up, a blank, is then inside the window;
+#   3    the 30th line up is NOT a comment -- reds if the block GROWS, which is
 #        the half the two absolute anchors used to carry;
 #   4    the block is the tombstone and not some other comment -- it names the
 #        proc that is gone.
+#
+# ⚠ 18 BECAME 29 AT THE `annotate` MERGE, AND THE LINE-NEUTRALITY CLAIM ABOVE IS
+# NOW HISTORY, NOT A LIVE PROPERTY. `annotate` had deleted the SAME proc for a
+# DIFFERENT measured reason (issue 0821 section 4: it carried the evaluator sink
+# `catch "uplevel #0 {subst $rawfile}"`, measured executing a payload on a direct
+# call), so the tombstone had to record both, and it also had to say that
+# `annotate` adds ~1100 lines to this file -- which stales all 478
+# `xschem.tcl:<line>` citations regardless of what happens in this block.
+# Restoring 18 lines would preserve a property that no longer exists.
+#
+# WHAT THE CHECK STILL BUYS, and it is why the size claim is restated rather
+# than dropped: nobody may quietly edit this tombstone. Both reasons for the
+# deletion are recorded there and both are things a later reader would otherwise
+# re-derive; a row that only asserted "some comment names raw_is_loaded" would be
+# satisfied by one line of it surviving.
 set t9_setrect [t9_lineof $t9_xtcl {proc set_rect_flags *}]
 set t9_xlines [split $t9_xtcl "\n"]
 set t9_tomb {}
-for {set i [expr {$t9_setrect - 18}]} {$i < $t9_setrect} {incr i} {
+for {set i [expr {$t9_setrect - 29}]} {$i < $t9_setrect} {incr i} {
   lappend t9_tomb [string index [string trim [lindex $t9_xlines [expr {$i - 1}]]] 0]
 }
-set t9_above [string index [string trim [lindex $t9_xlines [expr {$t9_setrect - 20}]]] 0]
-set t9_tombtxt [join [lrange $t9_xlines [expr {$t9_setrect - 19}] [expr {$t9_setrect - 2}]] "\n"]
+set t9_above [string index [string trim [lindex $t9_xlines [expr {$t9_setrect - 31}]]] 0]
+set t9_tombtxt [join [lrange $t9_xlines [expr {$t9_setrect - 30}] [expr {$t9_setrect - 2}]] "\n"]
 eqcheck SEL471-AP-removal-is-line-neutral \
   [list [llength [lsort -unique $t9_tomb]] [lindex [lsort -unique $t9_tomb] 0] \
         [expr {$t9_above ne "#"}] \
