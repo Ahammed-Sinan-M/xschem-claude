@@ -3647,8 +3647,8 @@ proc ase::op_save_max_names {} { return 999 }
 # failure that produced issues 0928 and 0929.
 proc ase::op_tier_force_set {t} {
   variable op_tier_force
-  if {$t ne {} && [lsearch -exact {a b c} $t] < 0} {
-    return -code error "ase: op_tier_force_set: expected a, b, c or {}, got '$t'"
+  if {$t ne {} && [lsearch -exact {a b c d} $t] < 0} {
+    return -code error "ase: op_tier_force_set: expected a, b, c, d or {}, got '$t'"
   }
   set op_tier_force $t
   return $t
@@ -7855,6 +7855,12 @@ namespace eval ase::backend::ngspice {
     ## keeps such a deck byte-identical to what it has always been (row E12).
     set optier_write {}
     set optier_ctl {}
+    ## THE POST-OP CARRIER. optier_ctl's lines are `save` REQUESTS and must
+    ## precede the analysis; shape d's are a DUMP and must follow it, because
+    ## `show` reads live CKT state rather than a stored plot. Emitting them
+    ## through one carrier would dump an unsolved circuit at exit 0 -- silently,
+    ## with a full-looking file. Two carriers, two positions.
+    set optier_post {}
     if {[ase::op_gate_on [ase::state_get $state save_op_params {}]] &&
         [ase::op_analysis_enabled $state]} {
       set opblk [ase::op_cards_for $netlist_text]
@@ -7892,6 +7898,36 @@ namespace eval ase::backend::ngspice {
             # entries against 468 cards.
             lappend lines ".save all"
             set optier_ctl [ase::op_ctl_saves [ase::op_cards_wildcards $opblk]]
+          }
+          d {
+            # THE DUMP SHAPE (ngspice `set altshow` + `show all`). Two lines
+            # inside `.control`, NO DEVICE NAMED ANYWHERE, and unlike shape a
+            # this one is not cold code: the capability has shipped in every
+            # ngspice release since ng-37 / ngspice-22 (upstream 0a8a56c65,
+            # 2007-10-09). See the long block at the end of src/op_annot.tcl
+            # for the measurements and for the three silent hazards the reader
+            # guards.
+            #
+            # MEASURED on the user's tb_bandgap, same run, against the 468
+            # cards shape c emits: 468 of 468 pairs recovered, worst relative
+            # error 4.70e-06 (`show`'s %.6g rounding, nothing else), and 212
+            # devices dumped against 78 named -- the extra 134 include the two
+            # PNPs that ARE the bandgap reference and that no `.save @q` card
+            # in that deck ever asked for.
+            #
+            # ⚠ THE REQUEST IS BUILT IN op_annot, NOT SPELLED HERE. The reader
+            # has to find the file this line creates, and ngspice case-folds
+            # the redirect target, so the asking side and the reading side must
+            # derive the path from ONE proc or they desynchronise silently.
+            #
+            # ⚠ IT STILL RUNS THE HIERARCHY WALK IT DOES NOT NEED. Reaching
+            # this arm requires a non-empty $opblk, so shape d currently pays
+            # for the per-device walk whose whole point is to be unnecessary --
+            # and inherits its dirty-sheet refusal (issue 0632). Correct, just
+            # wasteful; lifting the gate is a separate change with its own
+            # blast radius, and is NOT done here.
+            lappend lines ".save all"
+            set optier_post [::op_annot::opdump_request [raw_file $state]]
           }
           b {
             # THE ONE-LINE SHAPE (issue 0963 tier b): no cards at all here, and
@@ -8101,7 +8137,7 @@ namespace eval ase::backend::ngspice {
       }
     }
     set printsdone 0
-    if {[llength $optier_ctl]} { set anorder {dc ac tran op} }
+    if {[llength $optier_ctl] || [llength $optier_post]} { set anorder {dc ac tran op} }
     foreach type $anorder {
       set ai -1
       foreach a [ase::state_get $state analyses] {
@@ -8115,7 +8151,15 @@ namespace eval ase::backend::ngspice {
           foreach opsl $optier_ctl { lappend lines $opsl }
         }
         switch -- $type {
-          op   { lappend lines "op" }
+          op   {
+            lappend lines "op"
+            # Immediately after the solve and before any other analysis:
+            # `show` reports whatever CKT state is current, and a later
+            # dc/tran would overwrite it (measured: after `op; dc`, show
+            # reports the sweep end point, and `setplot op1` does NOT
+            # rewind it).
+            foreach opsl $optier_post { lappend lines $opsl }
+          }
           dc   { lappend lines "dc [dict get $a source] [dict get $a start]\
  [dict get $a stop] [dict get $a step]" }
           ac   { lappend lines "ac dec [dict get $a points] [dict get $a start]\

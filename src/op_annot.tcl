@@ -3545,3 +3545,193 @@ proc op_annot::write_save_file {} {
   if {[info exists ::has_x] && $::has_x} { catch {textwindow $path} }
   return $path
 }
+
+## ===========================================================================
+## THE BLANKET OPERATING-POINT DUMP — ngspice `set altshow` + `show`
+## ===========================================================================
+##
+## WHAT THIS IS. ngspice can already dump every device's operating point in one
+## statement. It is not a new feature and it is not this tree's invention: the
+## `altshow` set-variable landed upstream in commit 0a8a56c65 (pnenzi,
+## 2007-10-09) and `git tag --contains` puts it in EVERY release from ng-37 /
+## ngspice-22 through ngspice-46. It is undocumented, which is the only reason
+## it reads as exotic.
+##
+##   .control
+##   op
+##   set altshow
+##   show all > <path>
+##   .endc
+##
+## MEASURED on the user's own sky130 tb_bandgap (ngspice-46+, same-run against
+## the 468 `.save @dev[param]` cards the per-device tier emits):
+##   * 468 of 468 (device,parameter) pairs recovered, 0 missing;
+##   * worst relative error 4.70e-06 -- which is exactly `show`'s %.6g print
+##     rounding and nothing else;
+##   * 212 devices dumped against the 78 the cards name. The extra 134 are 24
+##     resistors, 38 capacitors, 12 B-sources and THE TWO PNPs -- and in a
+##     bandgap the PNP pair IS the reference. `.save @q` cards in that deck: 0.
+##
+## ⚠ WHY THIS IS NOT SIMPLY BETTER, AND THE THREE THINGS THAT BITE. Every one
+## of these was measured on both the local ngspice-46+ and the distro 45.2, and
+## each fails SILENTLY, which is the failure class this whole feature exists to
+## delete:
+##
+##   1. `show > <path>` CASE-FOLDS THE REDIRECT TARGET, directory component
+##      included. `show > .../MixedCaseDir/OpDump.txt` writes
+##      `.../mixedcasedir/opdump.txt`; when that directory does not exist
+##      ngspice writes NOTHING, puts the bare string `No such file or
+##      directory` on stderr, and STILL EXITS 0. `write <raw>` on the adjacent
+##      line is unaffected, so the run looks green and the raw is fine.
+##      -> opdump_request lowercases the path itself, so what we ask for and
+##         what ngspice creates are the same string. G1 below catches the rest.
+##
+##   2. `set altshow=1` LEAVES THE OLD FORMAT ACTIVE. The read is
+##      `cp_getvar("altshow", CP_BOOL, ...)` (device.c:366) and CP_BOOL rejects
+##      ANY assigned value -- `=0`, `=false` and `=1` alike. Only the bare
+##      `set altshow` works. The legacy format truncates every device name to
+##      DEV_WIDTH=21 (device.h:11, printstr_n at device.c:732), so a deck that
+##      loses the variable produces a full-looking file of unusable stubs.
+##      -> G3 detects the legacy layout and names the remedy.
+##
+##   3. `show` HAS TWO LINE GRAMMARS. Measured, same binary, same device:
+##        show all        ->  `    id                 = 2.17412e-12`
+##        show m : id gm  ->  `         id           2.17412e-12`
+##      The selective form drops the `=` entirely and right-aligns instead.
+##      -> _opdump_kv reads both, so the reader survives a deck that asks the
+##         other way.
+##
+## ⚠ IT IS THE OPERATING POINT AND NOTHING ELSE. `show` reads live CKT state,
+## not a stored plot: after `op` then `dc`, `show` reports the DC sweep's last
+## point, and `setplot op1` does NOT rewind it. After `tran` it emits ONE
+## scalar where the raw holds every timepoint. So this replaces the per-device
+## OP cards and NEVER the `.save` mechanism itself, which the cursor-driven
+## transient annotation (spec S11) still needs.
+
+## The two lines that ask for the dump. ONE source of the spelling: the deck
+## renderer and every test row take it from here, so a change to the request
+## cannot desynchronise from the reader below.
+##
+## ⚠ THE PATH IS LOWERCASED HERE, DELIBERATELY, AND IS NOT A TIDY-UP. See
+## hazard 1 above: ngspice folds it regardless, so folding it ourselves is what
+## makes opdump_read able to find the file it asked for.
+proc op_annot::opdump_path {rawpath} {
+  return [string tolower [file rootname $rawpath].opinfo]
+}
+
+proc op_annot::opdump_request {path} {
+  ## `show all`, not a bare `show`: bare show only yields device types that set
+  ## DEV_DEFAULT, which on the real bench silently drops all 24 resistors and
+  ## all 38 capacitors (150 blocks against 212). `all` is one word and costs
+  ## nothing, so there is no reason to ask the narrow question.
+  return [list "set altshow" "show all > [op_annot::opdump_path $path]"]
+}
+
+## Split one dump body line into {key value}, or {} when it is not one.
+## Handles BOTH grammars described in hazard 3 above.
+proc op_annot::_opdump_kv {line} {
+  if {[regexp {^    ([a-zA-Z_0-9]+) +=  *(.*)$} $line -> k v]} {
+    return [list $k [string trim $v]]
+  }
+  ## The selective form: leading spaces, key, spaces, single value token.
+  if {[regexp {^ +([a-zA-Z_0-9]+) +([^ ]+) *$} $line -> k v]} {
+    return [list $k $v]
+  }
+  return {}
+}
+
+## READ A DUMP AND PUBLISH IT INTO THE CURRENTLY LOADED DATABASE.
+##
+## Returns a dict: {devices N params N skipped N dups N path <p>}.
+##
+## ⚠ IT MERGES, IT DOES NOT REPLACE, and that is the whole reason it injects
+## through `xschem raw add` rather than arriving as a row in save.c's
+## raw_reader_table. Those readers BUILD xctx->raw; this data is only half a
+## database. The node voltages come from the deck's own `.save all` + `write`
+## -- 423 vectors on tb_bandgap, carrying ZERO hierarchy knowledge -- and a
+## reader that replaced the raw would throw them away. Two loaded databases
+## cannot serve one redraw either: get_raw_index resolves against the CURRENT
+## one only (save.c, the `sch_waves_loaded() >= 0` arm), so "load the dump
+## alongside" is not available. Merge is the only shape that works.
+##
+## ⚠ `xschem update_op` AT THE END IS LOAD-BEARING. `xschem raw value <v> -1`
+## serves the update_op snapshot, not live vector storage, so skipping the
+## republish returns a full set of silent ZEROS -- which look like real
+## annotations, and are worse than the blank row they replace.
+proc op_annot::opdump_read {path} {
+  set path [string tolower $path]
+
+  ## G1 -- THE FILE THAT IS NOT THERE. This is hazard 1 arriving: ngspice
+  ## exited 0 and the raw is perfectly good, so nothing upstream of here knows
+  ## anything went wrong.
+  if {![file exists $path]} {
+    return -code error "op_annot: no operating-point dump at '$path'. ngspice\
+ exits 0 when `show >` cannot write its file, so a green run proves nothing\
+ here -- check that the simulation directory exists and is writable, and note\
+ that ngspice lowercases the whole redirect path including directories."
+  }
+  if {[file size $path] == 0} {
+    return -code error "op_annot: the operating-point dump at '$path' is empty.\
+ The run reached `show` but wrote nothing."
+  }
+
+  set fh [open $path r]
+  set body [read $fh]
+  close $fh
+
+  ## G3 -- THE LEGACY FORMAT. Hazard 2 arriving. The old layout has no
+  ## `<name>:` block headers at all; it emits column rows led by the word
+  ## `device`. Detect it on the shape, not on a version guess.
+  if {![regexp -line {^[^ ][^:]*:$} $body] && [regexp -line {^ +device } $body]} {
+    return -code error "op_annot: '$path' is in ngspice's LEGACY `show` format,\
+ whose device names are truncated to 21 characters and are unusable. The deck\
+ must contain a bare `set altshow` before `show` -- note that `set altshow=1`\
+ does NOT work, because the variable is read as CP_BOOL and any assigned value\
+ is rejected."
+  }
+
+  set dev {}
+  set ndev 0
+  set nparam 0
+  set nskip 0
+  set ndup 0
+  array set seen {}
+
+  foreach line [split $body "\n"] {
+    ## A block header: `<hierarchical.device.name>:` in column 0.
+    if {[regexp {^([^ ][^:]*):$} $line -> d]} {
+      set dev $d
+      incr ndev
+      continue
+    }
+    if {$dev eq {}} { continue }
+    set kv [op_annot::_opdump_kv $line]
+    if {$kv eq {}} { continue }
+    lassign $kv k v
+
+    ## Non-numeric bodies are real and frequent, and they are NOT errors:
+    ## measured on tb_bandgap, 445 `-` placeholders (an exhausted vector
+    ## element), 109 model-name strings, plus `?????????` (the parameter is not
+    ## valid for this device class) and `---------` (valid but unset). They are
+    ## counted so a caller can say how much of the file it declined, rather
+    ## than dropping them the way a throwaway parser would.
+    if {![string is double -strict $v]} { incr nskip; continue }
+
+    set name "@${dev}\[${k}\]"
+    ## Duplicate keys are real too: a vector-valued parameter emits one line
+    ## per coefficient under ONE name, so a PWL source prints `pwl` six times.
+    ## FIRST WINS -- last-wins would silently store a coefficient as if it were
+    ## the parameter.
+    if {[info exists seen($name)]} { incr ndup; continue }
+    set seen($name) 1
+
+    xschem raw add $name $v
+    incr nparam
+  }
+
+  ## Publish. See the note above: without this the accessors read zeros.
+  xschem update_op
+
+  return [dict create devices $ndev params $nparam skipped $nskip \
+                      dups $ndup path $path]
+}
