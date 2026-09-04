@@ -42,8 +42,9 @@
 #             NOT get selected either; an empty-canvas click still queues nothing;
 #             a locked wire's net still takes the 0153 colour cue (hilight_netname
 #             does not honour lock).
-#   LK8c-LK8d a non-source instance body still queues nothing but DOES get the
-#             v1-scope notice -- the late return must not swallow it.
+#   LK8c-LK8d a non-source instance body (a RESISTOR -- the device-parameter probe
+#             covers nmos/pmos only, so this still falls through) queues nothing
+#             but DOES get the scope notice -- the late return must not swallow it.
 #   LK11-LK12 a LOCKED voltage source still queues nothing (find_closest_element
 #             excludes it, so nothing resolves at its body); an unlocked one
 #             still queues its current.
@@ -170,9 +171,16 @@ xschem unselect_all
 set ::queued {} ; set ::notices {}
 ase::ui::sod_click k 400 -200
 check "LK8c (control) a non-source instance body still queues nothing" $::queued {}
-check_true "LK8d (control) ... but DOES get the v1-scope notice (the late return\
+## R9 is a RESISTOR, and the device-parameter probe covers nmos/pmos only, so it
+## still falls through to the scope notice — the CLASSIFICATION here is unchanged.
+## Only the notice's WORDING moved, when the transistor probe widened the scope
+## (spec ase_l_device_params.md): it no longer says "v1 queues source currents
+## only", because that stopped being true. The leg still means what it always
+## meant — the late return must not swallow the notice — so what is updated is the
+## pattern, not the assertion.
+check_true "LK8d (control) ... but DOES get the scope notice (the late return\
  must not swallow it)" \
-  [expr {[llength $::notices] == 1 && [string match {ase: v1 queues source*} \
+  [expr {[llength $::notices] == 1 && [string match {ase: nothing probeable here*} \
      [lindex $::notices 0]]}]
 
 xschem unhilight_all

@@ -132,8 +132,13 @@ proc arm_mode {} {
 }
 proc queue {}  { return $::ase::ui::sod($::K,queue) }
 proc qcount {} { return $::ase::ui::sod($::K,count) }
+## The scope notice a body click that classified as nothing falls through to.
+## R1/R2 are RESISTORS, and the transistor operating-point probe (spec
+## ase_l_device_params.md) covers nmos/pmos only, so both AN7 legs still take
+## this path and still mean what they meant. Only the notice's WORDING changed,
+## when that probe made "v1 queues source currents only" untrue.
 proc noticed {} {
-  foreach l $::echoed { if {[string match {*source currents only*} $l]} { return 1 } }
+  foreach l $::echoed { if {[string match {*nothing probeable here*} $l]} { return 1 } }
   return 0
 }
 rename ::ciw_echo ::__real_ciw_echo
@@ -147,7 +152,7 @@ arm_mode
 eval ase::ui::sod_click $K $P_UNNAMED
 check "AN1 unnamed-net click queues the mapped voltage expression" \
   [queue] {v(net1)}
-check "AN2 unnamed-net click prints no 'source currents only' notice" [noticed] 0
+check "AN2 unnamed-net click prints no scope notice" [noticed] 0
 check "AN3 unnamed-net click counts one queued signal" [qcount] 1
 check "AN4 unnamed-net click paints the wire in its future trace color" \
   [hl_val #net1] [expr {-$col1}]
@@ -166,7 +171,7 @@ check "AN6 vsource body prints no scope notice" [noticed] 0
 arm_mode
 eval ase::ui::sod_click $K $P_DEVICE
 check "AN7 non-source device body still queues NOTHING (I6 contract)" [queue] {}
-check "AN7 non-source device body still prints the v1-scope notice" [noticed] 1
+check "AN7 non-source device body still prints the scope notice" [noticed] 1
 
 # the wire-only gate: R2's body sits on exactly ONE net, so `nets -selected`
 # returns a single row. Only the hit-TYPE test stops it being read as a
@@ -177,7 +182,7 @@ check "AN7b the shorted device really does report a single net" \
 arm_mode
 eval ase::ui::sod_click $K $P_SHORTED
 check "AN7b shorted-pin device body still queues NOTHING" [queue] {}
-check "AN7b shorted-pin device body still prints the v1-scope notice" [noticed] 1
+check "AN7b shorted-pin device body still prints the scope notice" [noticed] 1
 
 arm_mode
 eval ase::ui::sod_click $K $P_EMPTY

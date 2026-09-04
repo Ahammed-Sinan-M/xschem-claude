@@ -981,8 +981,168 @@ proc ase::ui::sod_expr {kind token mode} {
   if {$mode ne {preserve} && $mode ne {distinguish}} {
     set token [string tolower $token]
   }
+  # `devparam` (the transistor operating-point probe, spec
+  # doc/claude/specs/ase_l_device_params.md) arrives ALREADY COMPLETE — the
+  # `@<dev>[<param>]` string devparam_expr built, hierarchy prefix and all — so
+  # it takes NO v()/i() wrap. That is not a shortcut: ngspice REFUSES the
+  # wrapped spelling in a `.save` card. Measured, ngspice-47:
+  # `.save i(@m.xm1.m…[id])` is accepted and then SILENTLY DROPS the vector (the
+  # raw comes back without it), while `.save @m.xm1.m…[id]` saves it. The raw
+  # then REPORTS that same vector wrapped, as `i(@m.xm1.m…[id])` — deck spelling
+  # and raw spelling genuinely differ, and devparam_raw below is the one place
+  # that bridges them.
+  #
+  # It still passes through the fold above, which is why it routes through this
+  # proc at all rather than skipping it.
+  if {$kind eq {devparam}} { return $token }
   if {$kind eq {voltage}} { return "v($token)" }
   return "i($token)"
+}
+
+# --- Device operating-point parameters (the transistor probe) -----------------
+#
+# Clicking a transistor BODY in Select On Design queues ngspice internal device
+# parameters — gm, id, cgs, vth … — the gm/ID design quantities. Spec:
+# doc/claude/specs/ase_l_device_params.md. This lifts the "v1 queues source
+# currents only" restriction ase_l.md recorded, and the restriction turned out
+# to be over-cautious: the name IS derivable from the click.
+#
+# THE NAME. ngspice addresses an internal device parameter as
+# `@<dev>[<param>]`, where <dev> is the device name qualified by the instance
+# chain it sits in, with the DEVICE LETTER HOISTED to the front:
+#
+#   top-level primitive    M1       ->  @m1[gm]
+#   top-level PDK subckt   XM1      ->  @m.xm1.msky130_fd_pr__nfet_01v8[gm]
+#   nested primitive       X1/M2    ->  @m.x1.m2[gm]
+#   nested PDK subckt      X1/XM1   ->  @m.x1.xm1.msky130_fd_pr__nfet_01v8[gm]
+#
+# All four MEASURED against ngspice-47 with the sky130A models, not inferred.
+# The unified rule (devparam_join): with no instance path the bare device name
+# stands alone; with one, the name becomes `<first letter>.<path><dev>`.
+#
+# A PDK device is a SUBCIRCUIT, so the transistor the user clicked sits one
+# level below the symbol: sky130's `sky130_fd_pr__nfet_01v8` subckt contains
+# `Msky130_fd_pr__nfet_01v8`, i.e. `M` + the subckt's own name. That `m`+subckt
+# spelling is a PDK CONVENTION, not something ngspice guarantees, which is why
+# devparam_dialog shows the derived string in an EDITABLE field — a PDK that
+# names its inner device differently is one edit away from working rather than
+# a dead end.
+
+# The parameter menu for a symbol `type`, as {group {param …}} pairs. Empty for
+# a type this probe does not cover, which is what sod_click tests to decide
+# whether a click is a device pick at all.
+#
+# MEASURED, not copied from a datasheet: every parameter here was probed with
+# `print @m.xm1.m…[<p>]` against ngspice-47 + sky130A BSIM4 and RETURNED A
+# VALUE. The ones that did NOT are recorded in the spec's receipt rather than
+# shipped hopefully — `is`, `ig`, `ib`, `idb`, `isb`, `gmb`, `ron` and `beta`
+# all answer "no such parameter" on BSIM4, even though several of them DO exist
+# on a level-1 MOSFET. So this table is model-class-specific, and a level-1
+# device would show entries it cannot deliver; the honest fix if that ever
+# matters is to read the list from a loaded raw, not to widen this table.
+proc ase::ui::devparam_table {ctype} {
+  switch -- $ctype {
+    nmos - pmos {
+      return {
+        {Currents      {id}}
+        {Voltages      {vgs vds vbs vth vdsat}}
+        {Conductances  {gm gds gmbs}}
+        {Capacitances  {cgg cgs cgd cgb cdd cds cbs cbd}}
+        {Charges       {qg qd qs qb}}
+      }
+    }
+  }
+  return {}
+}
+
+# Every parameter of a type, flattened — the dialog's All button, and the tests.
+proc ase::ui::devparam_all {ctype} {
+  set out {}
+  foreach grp [ase::ui::devparam_table $ctype] {
+    foreach p [lindex $grp 1] { lappend out $p }
+  }
+  return $out
+}
+
+# PURE: glue an instance path and a device name into ngspice's hoisted-letter
+# spelling. `path` is `x1.xm1.` style (trailing dot) or empty.
+proc ase::ui::devparam_join {path dev} {
+  if {$dev eq {}} { return {} }
+  if {$path eq {}} { return "@$dev" }
+  return "@[string index $dev 0].$path$dev"
+}
+
+# PURE: the full `@<dev>[<param>]` expression.
+proc ase::ui::devparam_expr {base param} {
+  if {$base eq {} || $param eq {}} { return {} }
+  return "${base}\[$param\]"
+}
+
+# PURE: the name a saved device parameter carries IN THE RAW, which is NOT the
+# spelling that saved it (see sod_expr). Measured, ngspice-47: a current-typed
+# parameter comes back `i(@dev[id])`, a voltage-typed one `v(@dev[vth])`, and
+# everything else — conductances, capacitances, charges — comes back BARE.
+# The discriminator is the parameter's first letter, which is why `vth` and
+# `vdsat` (voltages, despite naming no terminal pair) land correctly.
+# Anything that is not a `@…[…]` expression passes through untouched.
+proc ase::ui::devparam_raw {ex} {
+  if {![regexp {^@[^\[\]]+\[([^\[\]]+)\]$} $ex -> p]} { return $ex }
+  switch -- [string index $p 0] {
+    i { return "i($ex)" }
+    v { return "v($ex)" }
+  }
+  return $ex
+}
+
+# The SUBCIRCUIT NAME a PDK device symbol instantiates, read off the symbol's
+# own `format` string rather than hardcoded per PDK. A device format is
+# `@spiceprefix@name @pinlist <subckt-or-model> …`, so the token right after
+# `@pinlist` is the callee, and `xschem translate` expands its `@` references in
+# THIS instance's context — `sky130_fd_pr__@model` -> `sky130_fd_pr__nfet_01v8`.
+# That keeps gf180/sg13g2//any-PDK working without a per-PDK table.
+# Empty when the symbol has no format or no `@pinlist` in it.
+proc ase::ui::devparam_subckt {n} {
+  set fmt {}
+  if {[catch {xschem getprop instance $n cell::format} fmt] || $fmt eq {}} { return {} }
+  if {![regexp {@pinlist\s+(\S+)} $fmt -> tok]} { return {} }
+  set sub {}
+  if {[catch {xschem translate $n $tok} sub]} { return {} }
+  return [string tolower [string trim $sub]]
+}
+
+# The instance path from the SESSION's own design level down to the level the
+# click was made at, or empty at/above that level. Same measurement rule the
+# voltage/current picks use (issue 0168) — reusing sod_rel_path rather than
+# re-deriving it, with sod_qualify's guard so a top-level pick adds nothing.
+proc ase::ui::devparam_relpath {baselvl} {
+  if {[catch {xschem get currsch} lvl]} { return {} }
+  if {![string is integer -strict $baselvl] || $baselvl < 0} { set baselvl 0 }
+  if {![string is integer -strict $lvl] || $lvl <= $baselvl} { return {} }
+  return [ase::ui::sod_rel_path $baselvl]
+}
+
+# The `@<dev>` base for instance number `n`, hierarchy included — everything
+# before the `[param]`. Empty when the name cannot be derived, which the caller
+# reports rather than queueing a card that would abort the analysis.
+#
+# `@spiceprefix@name` is asked of the ENGINE (`xschem translate`) instead of
+# being assembled here, so a symbol that overrides spiceprefix per instance —
+# which is exactly how a PDK switches a device between primitive and subckt
+# spelling — is followed rather than guessed at.
+proc ase::ui::devparam_base {n {baselvl 0}} {
+  set sname {}
+  if {[catch {xschem translate $n {@spiceprefix@name}} sname]} { return {} }
+  set sname [string tolower [string trim $sname]]
+  if {$sname eq {}} { return {} }
+  set path [ase::ui::devparam_relpath $baselvl]
+  if {[string index $sname 0] eq {x}} {
+    ## a PDK device: the transistor is INSIDE the subckt this X instantiates
+    set sub [ase::ui::devparam_subckt $n]
+    if {$sub eq {}} { return {} }
+    return [ase::ui::devparam_join "$path$sname." "m$sub"]
+  }
+  ## a bare SPICE primitive: the instance name already carries its device letter
+  return [ase::ui::devparam_join $path $sname]
 }
 
 # The case mode this click's expressions must be written in: the session's
@@ -1117,6 +1277,11 @@ proc ase::ui::sod_case_mode {key} {
 # node ngspice knows is `x2.mid`, not `x1.x2.mid`.
 proc ase::ui::sod_qualify {kind token {baselvl 0}} {
   if {$token eq {}} { return $token }
+  # a `devparam` token was built by devparam_base, which folded the hierarchy in
+  # STRUCTURALLY (it holds the instance path and the device name separately, and
+  # ngspice's hoisted-letter spelling cannot be reconstructed from the finished
+  # string). Re-qualifying it here would prepend a second path. Identity.
+  if {$kind eq {devparam}} { return $token }
   if {[catch {xschem get currsch} lvl]} { return $token }
   if {![string is integer -strict $baselvl] || $baselvl < 0} { set baselvl 0 }
   ## at (or above) the session's own level there is no path to add
@@ -1305,6 +1470,133 @@ proc ase::ui::bus_dialog_done {w ok} {
   catch {destroy $w}
 }
 
+# --- Device parameter dialog --------------------------------------------------
+#
+# Opened by a transistor-body click in Select On Design: shows the parameters
+# that device class offers, grouped, and returns the ticked ones. Built to the
+# bus_dialog pattern deliberately — split build/act/done procs at deterministic
+# widget paths so a test can drive it WITHOUT the modal `tkwait`.
+#
+# CHECKBUTTONS, not the bus dialog's listbox. The parameter set is ~22 entries
+# across five semantic groups and the user picks a scattered handful of them
+# (gm and id and cgs, from three different groups); a listbox would render that
+# as one flat scrolling column needing Ctrl-click, and would lose the grouping
+# that makes the list readable in the first place.
+#
+# The DEVICE FIELD IS EDITABLE, and that is the deliberate escape hatch for the
+# one guess in this feature (see the devparam_table header): the `m`+subckt
+# spelling of a PDK's inner device is a convention. When it is wrong the user
+# retypes the base once and everything downstream — save, plot, raw lookup —
+# follows the corrected string, instead of the feature simply not working.
+proc ase::ui::devparam_dialog_build {parent inst base ctype} {
+  set w [expr {$parent eq {} ? {.asedevparam} : "$parent.devparam"}]
+  catch {destroy $w}
+  toplevel $w
+  wm title $w {Select Device Outputs}
+  catch {wm transient $w [expr {$parent eq {} ? {.} : $parent}]}
+  label $w.msg -font AseLabelFont -justify left -anchor w \
+    -text "Device “$inst” ($ctype).\nSelect the operating-point parameters to\
+ add as outputs."
+  pack $w.msg -side top -fill x -padx 12 -pady {10 6}
+  ## the derived ngspice name, editable — the escape hatch described above
+  frame $w.bf
+  label $w.bf.l -font AseLabelFont -text {ngspice device:}
+  entry $w.bf.e -width 46
+  $w.bf.e insert 0 $base
+  pack $w.bf.l -side left -padx {0 6}
+  pack $w.bf.e -side left -fill x -expand yes
+  pack $w.bf -side top -fill x -padx 12 -pady {0 8}
+  ## one labelframe per group, checkbuttons laid out in a 4-wide grid
+  frame $w.groups
+  set gi 0
+  foreach grp [ase::ui::devparam_table $ctype] {
+    set gname [lindex $grp 0]
+    set f $w.groups.g$gi
+    labelframe $f -text $gname -font AseLabelFont
+    set ci 0
+    foreach p [lindex $grp 1] {
+      set ::ase::ui::devparam_chk($p) 0
+      checkbutton $f.p$p -text $p -font AseLabelFont \
+        -variable ::ase::ui::devparam_chk($p)
+      grid $f.p$p -row [expr {$ci / 4}] -column [expr {$ci % 4}] \
+        -sticky w -padx 6 -pady 1
+      incr ci
+    }
+    pack $f -side top -fill x -pady 3
+    incr gi
+  }
+  pack $w.groups -side top -fill both -expand yes -padx 12 -pady 2
+  frame $w.btns
+  button $w.btns.all    -text All    -width 8 \
+    -command [list ase::ui::devparam_dialog_set $w $ctype 1]
+  button $w.btns.none   -text None   -width 8 \
+    -command [list ase::ui::devparam_dialog_set $w $ctype 0]
+  button $w.btns.ok     -text OK     -width 8 \
+    -command [list ase::ui::devparam_dialog_done $w $ctype 1]
+  button $w.btns.cancel -text Cancel -width 8 \
+    -command [list ase::ui::devparam_dialog_done $w $ctype 0]
+  pack $w.btns.all $w.btns.none -side left -padx 5
+  pack $w.btns.cancel $w.btns.ok -side right -padx 5
+  pack $w.btns -side bottom -fill x -padx 8 -pady {4 10}
+  bind $w <Return> [list $w.btns.ok invoke]
+  ase::ui::bind_dialog_esc $w [list $w.btns.cancel invoke]  ;# ESC = Cancel
+  catch {ase::ui::apply_theme $w}
+  set ::ase::ui::devparam_dialog_result {}
+  return $w
+}
+
+# All / None. Writes the checkbutton variables directly, so it works whether or
+# not the widgets are realised (a headless test drives the same array).
+proc ase::ui::devparam_dialog_set {w ctype v} {
+  foreach p [ase::ui::devparam_all $ctype] { set ::ase::ui::devparam_chk($p) $v }
+}
+
+# The ticked parameters, in TABLE order — never `array names`, whose order is
+# a hash artefact. Table order is what the dialog displayed, and it is the order
+# the outputs get queued in.
+proc ase::ui::devparam_dialog_selected {ctype} {
+  set out {}
+  foreach p [ase::ui::devparam_all $ctype] {
+    if {[info exists ::ase::ui::devparam_chk($p)] && $::ase::ui::devparam_chk($p)} {
+      lappend out $p
+    }
+  }
+  return $out
+}
+
+# OK -> the full expressions, built from the (possibly edited) device field.
+# Cancel, or OK with nothing ticked -> empty, and empty means "queue nothing",
+# the same no-op contract bus_dialog has.
+proc ase::ui::devparam_dialog_done {w ctype ok} {
+  set res {}
+  if {$ok} {
+    set base {}
+    catch {set base [string trim [$w.bf.e get]]}
+    foreach p [ase::ui::devparam_dialog_selected $ctype] {
+      set ex [ase::ui::devparam_expr $base $p]
+      if {$ex ne {}} { lappend res $ex }
+    }
+  }
+  set ::ase::ui::devparam_dialog_result $res
+  catch {destroy $w}
+}
+
+# Modal wrapper — same teardown-tolerance as bus_dialog: the build-time `update`
+# pumps the event loop, so $w can be destroyed before tkwait is reached, and
+# tkwait on a dead window throws.
+proc ase::ui::devparam_dialog {key inst base ctype} {
+  variable wins
+  set parent {}
+  if {[dict exists $wins $key]} { set parent [dict get $wins $key] }
+  set w [ase::ui::devparam_dialog_build $parent $inst $base $ctype]
+  update
+  catch {raise $w}
+  catch {grab set $w}
+  catch {focus $w}
+  if {[winfo exists $w]} { tkwait window $w }
+  return $::ase::ui::devparam_dialog_result
+}
+
 # Modal wrapper: show the dialog, block until dismissed, return the chosen bits
 # (empty on Cancel). Same teardown-tolerance as ask_save_close -- the build-time
 # `update` pumps the event loop, so a test or a compositor can destroy $w before
@@ -1357,6 +1649,13 @@ proc ase::ui::sod_merge {outputs ex flavor} {
 # verbatim after a trim; add_trace's validate_rpn is the backstop.
 proc ase::ui::plot_map_expr {ex} {
   set ex [string trim $ex]
+  # A device parameter is stored in the DECK's spelling (bare `@dev[p]`, the
+  # only spelling `.save` accepts) but the raw file NAMES it differently for
+  # current- and voltage-typed parameters — `i(@dev[id])`, `v(@dev[vth])`. The
+  # viewer resolves traces against the RAW, so the bridge belongs here, at the
+  # output-expression -> trace-name seam, and nowhere else. Measured; see
+  # devparam_raw.
+  if {[string index $ex 0] eq {@}} { return [ase::ui::devparam_raw $ex] }
   if {[llength [regexp -all -inline {\S+} $ex]] != 1} { return $ex }
   if {[string index $ex 0] eq {-} && [string length $ex] > 1} {
     return "[string range $ex 1 end] -1 *"
@@ -1831,10 +2130,11 @@ proc ase::ui::select_on_design {key flavor {mode outputs} {do_raise 1}} {
   ase::ui::sod_prompt_pump $key
   if {$mode eq {plot}} {
     catch {::ase::echo "ase: Direct Plot — click wires/net labels for voltage\
- traces, sources for current traces; ESC plots"}
+ traces, sources for current traces, a transistor body for gm/id/cgs…;\
+ ESC plots"}
   } else {
     catch {::ase::echo "ase: Select On Design — click wires/net labels for\
- voltages, sources for currents; ESC ends"}
+ voltages, sources for currents, a transistor body for gm/id/cgs…; ESC ends"}
   }
   return 1
 }
@@ -2082,8 +2382,26 @@ proc ase::ui::sod_click {key {x {}} {y {}}} {
     # this became the late return — a pick mode that scolded every miss-click
     # would be noise (issue 0160).
     if {$hit eq {}} { return }
-    catch {::ase::echo "ase: v1 queues source currents only — click a wire, a\
- net label or a voltage source/ammeter"}
+    # A TRANSISTOR BODY: the device operating-point probe (gm, id, cgs …).
+    # Deliberately placed AFTER the net attempt above, not beside the
+    # vsource/ammeter arm at the top. A click on or near a device TERMINAL
+    # resolves through `xschem flylines at` to that terminal's net, and keeping
+    # that first means a click on a mosfet's drain pin still queues the drain
+    # NODE VOLTAGE exactly as it did before this feature existed. Only a click
+    # that resolved to nothing — the device BODY — becomes a parameter pick.
+    # So this arm strictly replaces the scope-notice path and changes no
+    # gesture that previously worked.
+    if {[lindex $hit 0] eq {instance}} {
+      set n [lindex $hit 1]
+      set ctype {}
+      catch {set ctype [xschem getprop instance $n cell::type]}
+      if {[llength [ase::ui::devparam_table $ctype]]} {
+        ase::ui::sod_device_pick $key $n $ctype
+        return
+      }
+    }
+    catch {::ase::echo "ase: nothing probeable here — click a wire, a net label,\
+ a voltage source/ammeter, or a transistor body"}
     return
   }
   # item 13 (D1): route on the mode — `outputs` writes session outputs
@@ -2128,6 +2446,45 @@ proc ase::ui::sod_click {key {x {}} {y {}}} {
   }
 }
 
+# One transistor-body pick: derive the ngspice device name, ask which
+# parameters, queue one output per ticked parameter. Routed to by sod_click.
+#
+# Mirrors the tail of sod_click rather than sharing it, because the two differ
+# in exactly the places that matter: the expression is complete before it gets
+# here (no sod_qualify, no v()/i() wrap), and the schematic cue is always the
+# INSTANCE — a device parameter has no net to colour.
+#
+# The case mode is resolved ONCE for the whole gesture, before the fan-out over
+# parameters, for the same reason the bus fan-out does it: two parameters of one
+# click must not be able to disagree about spelling.
+proc ase::ui::sod_device_pick {key n ctype} {
+  variable sod
+  if {![info exists sod($key,flavor)]} { return }
+  set base [ase::ui::devparam_base $n [ase::ui::sod_base_level $key]]
+  set inst {}
+  catch {set inst [xschem getprop instance $n name]}
+  if {$base eq {}} {
+    catch {::ase::echo "ase: cannot derive an ngspice device name for\
+ '$inst' — its symbol has no usable format" error}
+    return
+  }
+  set exprs [ase::ui::devparam_dialog $key $inst $base $ctype]
+  if {![llength $exprs]} { return }
+  set cmode [ase::ui::sod_case_mode $key]
+  set plot [expr {[info exists sod($key,mode)] && $sod($key,mode) eq {plot}}]
+  set first 1
+  foreach ex $exprs {
+    set ex [ase::ui::sod_expr devparam $ex $cmode]
+    if {$plot} {
+      ## issue 0153's cue, once, on the instance — in the FIRST trace's colour
+      ase::ui::dp_queue $key $ex devparam [expr {$first ? $inst : {}}]
+    } else {
+      ase::ui::sod_queue $key $ex
+    }
+    set first 0
+  }
+}
+
 # Paint the schematic object a queued Direct Plot signal came from, in the layer
 # color its waveform trace will carry (issue 0153) — the whole point of the
 # feature: the viewer's traces map back onto the schematic by color.
@@ -2147,9 +2504,10 @@ proc ase::ui::sod_click {key {x {}} {y {}}} {
 proc ase::ui::dp_hilight {kind token color} {
   if {$color eq {} || $token eq {}} { return 0 }
   if {![string is integer -strict $color] || $color <= 0} { return 0 }
-  if {$kind eq {current}} {
-    # a current probe was picked on a source/ammeter BODY: there is no wire to
-    # color, so the instance itself carries the cue
+  if {$kind eq {current} || $kind eq {devparam}} {
+    # a current probe was picked on a source/ammeter BODY, or a parameter on a
+    # transistor body: there is no wire to color, so the instance itself carries
+    # the cue
     return [expr {[catch {xschem hilight_instname -layer $color $token}] ? 0 : 1}]
   }
   return [expr {[catch {xschem hilight_netname -layer $color $token}] ? 0 : 1}]

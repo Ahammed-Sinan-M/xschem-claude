@@ -258,13 +258,28 @@ queues the voltage output `v(<net>)`; a click on a SOURCE-class instance
 `i(<instname>)` — a source has exactly one branch current, so instance-
 level click granularity is exact for the supported class. Generated tokens
 are lowercased (ngspice echoes `print` expressions lowercased and
-result_probe matches the expr literally). Per-terminal currents of OTHER
-devices are deferred: ngspice needs `.options savecurrents` plus
-`@m.x<inst>.<subdev>[id]`-style names that depend on subcircuit internals
-invisible to the schematic click. Clicks that resolve to neither report a
-one-line notice and queue nothing. Queueing dedupes on the exact expression
-string: an existing row gets the flavor's plot/save flags ORed in, an
-identical re-queue writes nothing.
+result_probe matches the expr literally). Clicks that resolve to none of
+these report a one-line notice and queue nothing. Queueing dedupes on the
+exact expression string: an existing row gets the flavor's plot/save flags
+ORed in, an identical re-queue writes nothing.
+
+> **Transistor bodies are no longer in that "queue nothing" set.** A click on
+> an `nmos`/`pmos` body opens a parameter dialog and queues ngspice
+> operating-point parameters — `gm`, `id`, `cgs`, `vth`, … — the gm/ID design
+> quantities. Spec: **`ase_l_device_params.md`**.
+>
+> That spec also RETRACTS the paragraph this one used to carry, which said
+> per-terminal currents of other devices were deferred because the names
+> "depend on subcircuit internals invisible to the schematic click". The name
+> is in fact derivable from the click, from the instance's `spiceprefix`+`name`
+> and the callee in the symbol's own `format` string — measured against
+> ngspice-47 + sky130A for all four hierarchy/prefix combinations. What the old
+> paragraph got right is narrower: the *inner device* name of a PDK subcircuit
+> is a convention, which is why the dialog's device field is editable.
+>
+> The net attempt still runs FIRST, so a click on or near a transistor's
+> terminal keeps queueing that terminal's node voltage exactly as before; only
+> body clicks changed.
 
 **Picking works from a DESCENDED schematic** (issue 0168). Run, descend into an
 instance, and Direct Plot (Ctrl-4 or Results > Direct Plot) probes its internals:
@@ -371,9 +386,11 @@ the schematic's name, not the simulator's.
 - **Analyses** — Choose… (Choose Analyses dialog).
 - **Variables** — Edit… (variables editor).
 - **Outputs** — To Be Saved > Select On Design; To Be Plotted > Select On
-  Design; Save All… (dialog: save all voltages?, all terminal currents?,
-  levels, etc. — ngspice mapping v1: allv → `.save all`, alli →
-  `.options savecurrents`).
+  Design (either one also picks TRANSISTOR operating-point parameters —
+  `gm`/`id`/`cgs`/… via a dialog on a device-body click, spec
+  `ase_l_device_params.md`); Save All… (dialog: save all voltages?, all
+  terminal currents?, levels, etc. — ngspice mapping v1: allv → `.save all`,
+  alli → `.options savecurrents`).
 - **Simulation** — Netlist > Recreate; Netlist > Display; Netlist and Run;
   Run (uses EXISTING netlist — supports hand-edited decks); Stop; Log
   (reopen log window); Options… (simulator-specific options dialog,

@@ -286,13 +286,18 @@ check "SO8b ... and did NOT descend into the source"           $res {}
 disarm ; xschem unselect_all
 
 # --- SO9  a non-source device body: unchanged classification --------------------
+# R1 is a RESISTOR. The transistor operating-point probe (spec
+# ase_l_device_params.md) covers nmos/pmos only, so this body click still falls
+# through to the scope notice and this leg still means what it meant. Only the
+# notice's WORDING changed, when that probe made "v1 queues source currents
+# only" untrue.
 xschem unselect_all
 arm_sod
 ase::ui::sod_click K $RX $RY
 update idletasks
 check "SO9a a non-source device body still queues nothing"     $::queued {}
-check "SO9b ... but still gets the v1-scope notice"            \
-  [expr {[llength $::notices] == 1 && [string match {ase: v1 queues source*} [lindex $::notices 0]] ? 1 : 0}] 1
+check "SO9b ... but still gets the scope notice"               \
+  [expr {[llength $::notices] == 1 && [string match {ase: nothing probeable here*} [lindex $::notices 0]] ? 1 : 0}] 1
 check "SO9c and it selected nothing either"                    [selstate] {{} 0}
 # a click that queues NOTHING used to poison the selection just as badly as one that
 # queued: pre-fix this left R1 selected and E descended into the resistor. Same E leg as

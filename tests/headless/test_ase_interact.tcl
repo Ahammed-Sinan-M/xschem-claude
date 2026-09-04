@@ -9,7 +9,9 @@
 #          the canvas <ButtonPress-1>/<ButtonRelease-1>/<Key-Escape>
 #          bindings; a REAL generated Motion+Press+Release gesture queues
 #          v(g); direct sod_click legs queue v(d)/i(v1), dedupe on a
-#          net-label click, refuse a non-source instance (v1 scope); the row
+#          net-label click; a TRANSISTOR body opens the device-parameter probe
+#          (I6a-I6c, spec ase_l_device_params.md) through both the menu and the
+#          Add/Edit Output dialog's From Design… button; the row
 #          shows in the Outputs pane immediately; a REAL <Key-Escape> ends
 #          the mode, restores all three bindings VERBATIM, leaves the
 #          generic <ButtonPress> untouched and re-raises the ASE window
@@ -241,12 +243,77 @@ if {[info exists ::has_x] && [info commands winfo] ne {}} {
     check_true "I5 committed -i(v1) row still present" \
       [string match "*{name id expr -i(v1) save 1 plot 0}*" $outs]
 
-    # I6: non-source instance (M1 subcircuit) queues NOTHING (v1 scope)
+    # I6: M1 is a sky130 nfet_01v8 (symbol type=nmos), so since the transistor
+    # operating-point probe (spec ase_l_device_params.md) this click is a DEVICE
+    # PICK, not the old "queues nothing under v1 scope" control -- it opens the
+    # parameter dialog.
+    #
+    # The dialog is STUBBED, the test_ase_locked_wire_pick_0160 convention for
+    # bus_dialog (LK10): the modal wrapper blocks on `tkwait`, so a scripted
+    # sod_click on a transistor would hang this file forever otherwise. Stubbing
+    # the WRAPPER, not the build/done procs, is what keeps that idiom cheap.
+    set ::devparam_answer {}
+    set ::devparam_seen   {}
+    proc ase::ui::devparam_dialog {key inst base ctype} {
+      set ::devparam_seen [list $inst $base $ctype]
+      return $::devparam_answer
+    }
+
+    ## I6a: Cancel (an empty answer) queues nothing -- the old control's INTENT,
+    ## preserved on the path that now reaches a dialog.
     set before [ase::state_get [ase::session_state $key] outputs]
     ase::ui::sod_click $key 400 -300
     update
-    check "I6 non-source click queues nothing" \
+    check "I6a a cancelled device pick queues nothing" \
       [ase::state_get [ase::session_state $key] outputs] $before
+    check_true "I6a ... and the dialog was offered M1 as an nmos" \
+      [expr {[lindex $::devparam_seen 0] eq {M1} && [lindex $::devparam_seen 2] eq {nmos}}]
+    ## the derived base is the PDK form: M1 carries spiceprefix=X, so the probe
+    ## reaches INSIDE the subckt it instantiates
+    check "I6a ... with the derived ngspice device name" \
+      [lindex $::devparam_seen 1] {@m.xm1.msky130_fd_pr__nfet_01v8}
+
+    ## I6b: a real pick queues the parameter as an ordinary output row
+    set ::devparam_answer [list {@m.xm1.msky130_fd_pr__nfet_01v8[gm]}]
+    ase::ui::sod_click $key 400 -300
+    update
+    set outs [ase::state_get [ase::session_state $key] outputs]
+    check_true "I6b a device pick queues the parameter as an output row" \
+      [string match {*@m.xm1.msky130_fd_pr__nfet_01v8\[gm\]*} $outs]
+    set ::devparam_answer {}
+
+    # I6c: the OTHER door onto the same pick mode -- the Add/Edit Output
+    # dialog's "From Design…" button (ase::ui::output_editor_from_design).
+    # It takes its flavor from that dialog's Save/Plot checkboxes and arms
+    # select_on_design in the default `outputs` mode, so a transistor body
+    # click must reach the device probe through it too. The flavor arithmetic
+    # itself (including the both-zero coercion) is test_ase_devparam DP50-DP53;
+    # THIS leg is the integration -- real session, real sky130 nfet, real
+    # select_on_design, no stub but the dialog.
+    #
+    # Re-arming over the mode I1 armed is safe and deliberate: select_on_design
+    # ends a live mode before starting the next, so the canvas bindings I7
+    # compares against are the pristine ones either way.
+    set ::ase::ui::edchk($key,save) 1
+    set ::ase::ui::edchk($key,plot) 1
+    ase::ui::output_editor_from_design $key
+    update
+    check "I6c From Design armed the mode for this session" \
+      [expr {[info exists ::ase::ui::sod(active)] ? $::ase::ui::sod(active) : {}}] $key
+    check "I6c ... carrying the Add/Edit dialog's Save+Plot flavor" \
+      $::ase::ui::sod($key,flavor) {save 1 plot 1}
+    check "I6c ... in outputs mode, so the pick writes session outputs" \
+      $::ase::ui::sod($key,mode) {outputs}
+
+    set ::devparam_answer [list {@m.xm1.msky130_fd_pr__nfet_01v8[vth]}]
+    ase::ui::sod_click $key 400 -300
+    update
+    set outs [ase::state_get [ase::session_state $key] outputs]
+    check_true "I6c a transistor pick via From Design lands an output row" \
+      [string match {*@m.xm1.msky130_fd_pr__nfet_01v8\[vth\]*} $outs]
+    check_true "I6c ... flagged for BOTH save and plot, per the dialog" \
+      [string match {*expr {@m.xm1.msky130_fd_pr__nfet_01v8\[vth\]} plot 1 save 1*} $outs]
+    set ::devparam_answer {}
 
     # I7: a REAL <Key-Escape> on the canvas ends the mode. Generated
     # KeyPress events go to the display's FOCUS window and WSLg confirms
