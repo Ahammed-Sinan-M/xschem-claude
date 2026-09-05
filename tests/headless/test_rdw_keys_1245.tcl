@@ -4263,6 +4263,189 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
   kx_ans ::rdw::set_list summary
 }
 
+
+# ============================================================================
+# SECTION KD — ISSUE 1358: THE USER'S OWN THIRD SYMPTOM, DRIVEN WITH THE
+# KEYBOARD WHERE THEIR CLICK LEAVES IT
+# ============================================================================
+# THEIR WORDS: "The delete did not have an effect (I left settings on the
+# pop-up at default). Then, I tried deleting one at a time. That also did not
+# have an effect next time I printed summary."
+#
+# ⚠ AND EVERY EARLIER ROW IN THIS BATCH THAT CLAIMED THE SYMPTOM WAS DEAD
+# BOUGHT IT WITH A `focus -force .drw` IMMEDIATELY BEFORE THE KEY PRESS -- the
+# one step the user's hand does not make.  `kn_press` and `lk_press` twenty
+# lines above both do it, correctly, because their subject is the CANVAS
+# binding.  This row's subject is the OTHER end: the keyboard is wherever the
+# user's last click left it, and the user MUST click a parameter row, because
+# the window's own status line tells them to ("click a parameter row, which
+# shades to show it is the target, then press Delete again").
+#
+# So KD1 presses the digit at `[focus]` and asserts, as a LEG, that `[focus]`
+# really is `.rdw.p.t` -- without that leg the row would be the same
+# self-granted focus wearing a different name.
+#
+# RED BEFORE THE FIX, MEASURED: the store moves (`effective b4dev summary`
+# {zid zgm} -> {zgm}) and the status line says so, and then the digit reaches
+# nothing at all -- nblocks stays 1, the pane is byte-identical, the newest
+# block still carries the row the store no longer has.
+#
+# KD2 IS THE FENCE ON THE FIX'S OWN RISK.  This window exists so a block can be
+# selected and pasted into a design review (ruling DD-5), so a keyboard fix
+# that ate the copy chord, dropped the pane's selection or answered a chord
+# would be worse than the bug.
+#
+# ⚠ AND KD2 IS GREEN ON THE UNFIXED SOURCE, SAID OUT LOUD RATHER THAN LEFT TO
+# BE FOUND.  It is a FENCE, not a red: before the fix there are no digit
+# bindings to break the copy with, so it can only be non-vacuous against the
+# FIXED code.  It is, measured: with `rdw::_digit` made to clear the pane's
+# `sel` tag before it decides -- a digit that drops the user's selection, which
+# is exactly the harm this row exists to forbid -- the keys suite reds 1
+# FAILED, KD2 EXACTLY, and test_rdw_window_1245 stays ALL PASS (182).
+#
+# ⚠ KD1 REDS ON `:0` AND IT IS THE ENVIRONMENT, NOT THE ROW -- MEASURED BOTH
+# WAYS SO NOBODY HAS TO RE-DERIVE IT.  On WSLg's Xwayland (`:0`) this suite's
+# whole keyboard half is dead: `[focus]` answers the EMPTY STRING, so real key
+# events reach no binding at all.  PRE-FIX, HEAD sources, `DISPLAY=:0`:
+# 16 FAILED (69 passed), red = F1 F3 C2 B2 B3 B4 B5 V2 D1 CU7 RA1..RA6 -- note
+# B2, whose whole subject is a real bare digit on the canvas, answering
+# `{annotation {} {} {}}`.  POST-FIX, same display: 16 FAILED (71 passed),
+# the SAME fifteen rows plus KD1, whose `$KD1_FOCUS` and `$KD1_WHERE` legs both
+# read `{}`.  The window suite is ALL PASS (182) on `:0` in both states.  KD1
+# refusing to pass where there is no keyboard is the leg doing its job; a row
+# that passed there would be measuring nothing.  Everything else in this
+# section was taken on `:99` (Xvfb 1920x1080x24, openbox 3.6.1 live) with
+# `pgrep -f 'xschem|run_regression'` checked clean first.
+#
+# KD1's OWN SABOTAGE IS THE REJECTED ALTERNATIVE ITSELF.  Adding
+# `rdw::_focus_canvas` to the end of `rdw::button`'s successful-edit arm -- the
+# other candidate fix, handing the keyboard back to the canvas after a press --
+# reds 1 FAILED, KD1 EXACTLY (its `$KD1_WHERE` leg), with the window suite ALL
+# PASS (182).  That leg is deliberate: this window is entitled to keep the
+# keyboard the user's click gave it (issue 1306, ruling DD-5), and a future
+# pass that decides otherwise has to re-take that decision in the open.
+
+if {[kx_ans ::rdw::have_tk] eq {1}} {
+  proc kd_focus {w} {
+    for {set i 0} {$i < 60} {incr i} {
+      catch {focus -force $w} ; catch {update}
+      if {[focus] eq $w} { return $w }
+      after 10
+    }
+    return [focus]
+  }
+  proc kd_newest {} {
+    if {![llength $::rdw::blocks]} { return NO-BLOCK }
+    return [kx_ans ::rdw::block_text [lindex $::rdw::blocks 0]]
+  }
+  proc kd_nth {n} {
+    if {[llength $::rdw::blocks] <= $n} { return NO-BLOCK }
+    return [kx_ans ::rdw::block_text [lindex $::rdw::blocks $n]]
+  }
+  ## The first parameter row in the pane, and a real click on it.
+  proc kd_click_first_param {} {
+    set n 0
+    foreach L [split [.rdw.p.t get 1.0 end-1c] \n] {
+      incr n
+      if {[regexp {^\s+\S+\s+:\s} $L]} {
+        lassign [.rdw.p.t bbox $n.0] bx by bw bh
+        if {$bx eq {}} { return 0 }
+        event generate .rdw.p.t <Button-1> -x [expr {$bx + 2}] -y [expr {$by + 2}] -when now
+        event generate .rdw.p.t <ButtonRelease-1> -x [expr {$bx + 2}] -y [expr {$by + 2}] -when now
+        update
+        return $n
+      }
+    }
+    return 0
+  }
+
+  kx_ans ::op_param_lists::set_list class b4dev summary {{zid zid 0} {zgm zgm 1}}
+  kx_ans ::rdw::set_list summary
+  kx_reset
+  xschem unselect_all
+  xschem select instance M1
+  update idletasks
+
+  ## 1. THE USER PRESSES 2 ON THE CANVAS.  This `focus -force` is the START
+  ## state, not the cheat: the user really is on the canvas when they press it.
+  kd_focus .drw
+  event generate .drw <Key-2> -when now
+  update
+  set KD1_NB_A [kx_nblocks]
+
+  ## 2. THEY CLICK THE ROW THE STATUS LINE TOLD THEM TO CLICK.
+  set KD1_ROW [kd_click_first_param]
+  set KD1_FOCUS [focus]
+
+  ## 3. THEY PRESS DELETE AND ACCEPT THE DEFAULTS.
+  set KD1_EFF0 [kx_ans ::op_param_lists::effective b4dev summary]
+  sd_arm { rdw::scope_dialog_done .rdw.scope ok }
+  .rdw.b.delete invoke
+  sd_disarm
+  catch {destroy .rdw.scope}
+  update idletasks
+  set KD1_EFF1 [kx_ans ::op_param_lists::effective b4dev summary]
+  set KD1_WHERE [focus]
+  set KD1_NB_B [kx_nblocks]
+  set KD1_SHOWN [kd_newest]
+
+  ## 4. THEY PRESS 2 AGAIN TO LOOK -- WHEREVER THE KEYBOARD IS.
+  event generate [focus] <Key-2> -when now
+  update
+  set KD1_NB_C [kx_nblocks]
+  set KD1_NEW [kd_newest]
+
+  check {KD1 THE USER'S THIRD SYMPTOM, DRIVEN WITHOUT GRANTING THE FOCUS THE SHIPPED CODE NEVER GRANTS: press 2 on the canvas, click the parameter row the status line tells you to click - which parks the keyboard on the pane, asserted as a leg - press Delete and accept the defaults, then press 2 again where your hands are, and the window shows the store you just changed instead of the row you just deleted} \
+    [list $KD1_NB_A [expr {$KD1_ROW > 0 ? 1 : 0}] $KD1_FOCUS \
+          $KD1_EFF0 $KD1_EFF1 $KD1_WHERE \
+          [kx_has $KD1_SHOWN { zid }] $KD1_NB_B \
+          $KD1_NB_C [kx_has $KD1_NEW { zgm }] [kx_has $KD1_NEW { zid }] \
+          [kx_has [kd_nth 1] { zid }]] \
+    [list 1 1 .rdw.p.t {{zid zid 0} {zgm zgm 1}} {{zgm zgm 1}} .rdw.p.t \
+          1 1 2 1 0 1]
+
+  ## KD2 -- THE COPY MUST SURVIVE THE NEW KEYBOARD.
+  set KD2_L0 [.rdw.p.t bbox 4.0]
+  set KD2_L1 [.rdw.p.t bbox 6.0]
+  if {[llength $KD2_L0] == 4 && [llength $KD2_L1] == 4} {
+    event generate .rdw.p.t <Button-1> -x [expr {[lindex $KD2_L0 0] + 1}] \
+      -y [expr {[lindex $KD2_L0 1] + 1}] -when now
+    update
+    for {set i 1} {$i <= 6} {incr i} {
+      event generate .rdw.p.t <B1-Motion> -state 256 \
+        -x [expr {[lindex $KD2_L0 0] + 1}] \
+        -y [expr {int([lindex $KD2_L0 1] + ([lindex $KD2_L1 1] - [lindex $KD2_L0 1]) * $i / 6.0) + 1}] \
+        -when now
+      update
+    }
+    event generate .rdw.p.t <ButtonRelease-1> -x [expr {[lindex $KD2_L1 0] + 1}] \
+      -y [expr {[lindex $KD2_L1 1] + 1}] -when now
+    update
+  }
+  set KD2_SEL {} ; catch {set KD2_SEL [.rdw.p.t get sel.first sel.last]}
+  set KD2_NB0 [kx_nblocks]
+  set KD2_KIND0 [kx_listkind]
+  kd_focus .rdw.p.t
+  event generate .rdw.p.t <Control-Key-2> -when now
+  update
+  set KD2_NB1 [kx_nblocks]
+  set KD2_SEL1 {} ; catch {set KD2_SEL1 [.rdw.p.t get sel.first sel.last]}
+  catch {clipboard clear}
+  event generate .rdw.p.t <Control-Key-c> -when now
+  update
+  set KD2_CLIP NOCLIP ; catch {set KD2_CLIP [clipboard get]}
+  check {KD2 THE NEW KEYBOARD MUST NOT COST THE WINDOW ITS REASON FOR EXISTING: with a real multi-line drag standing in the pane, a real Control-2 answers NOTHING - no dump, no list change, and the selection is still there - and a real Control-C still puts exactly the selected text on the clipboard, so ruling DD-5's select-and-paste-into-a-design-review path is untouched by the digits} \
+    [list [expr {[string length $KD2_SEL] > 0 ? 1 : 0}] \
+          [expr {$KD2_NB1 == $KD2_NB0 ? 1 : 0}] \
+          [expr {[kx_listkind] eq $KD2_KIND0 ? 1 : 0}] \
+          [expr {$KD2_SEL1 eq $KD2_SEL ? 1 : 0}] \
+          [expr {$KD2_CLIP eq $KD2_SEL ? 1 : 0}]] \
+    {1 1 1 1 1}
+
+  catch {clipboard clear}
+  kx_ans ::rdw::set_list summary
+}
+
 if {[llength [info commands kx_ciw_echo_real]]} { rename kx_ciw_echo_real ciw_echo }
 catch {xschem raw clear}
 
@@ -4372,7 +4555,17 @@ catch {xschem raw clear}
 ## drops both silently, which is exactly what a floor is for.  Issue 1355's
 ## pure decisions are section LX of test_rdw_window_1245.tcl.  A floor is
 ## raised when rows are added and NEVER lowered to make a run pass.
-set KX_FLOOR 85
+## ⚠ AND RAISED 85 -> 87 IN THE SAME COMMIT AS KD1 AND KD2, the two rows that
+## answer the user's THIRD complaint - "I tried deleting one at a time. That
+## also did not have an effect next time I printed summary." - by driving the
+## digit AT THE FOCUS THEIR OWN CLICK LEAVES, with no `focus -force` in front
+## of it, and by fencing that the new keyboard costs this window neither its
+## selection nor its copy chord.  Both are inside this file's
+## `[kx_ans ::rdw::have_tk] eq {1}` guard - a display that fails to come up
+## drops both silently, which is exactly what a floor is for.  Issue 1358's
+## pure decisions are section KB of test_rdw_window_1245.tcl.  A floor is
+## raised when rows are added and NEVER lowered to make a run pass.
+set KX_FLOOR 87
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\

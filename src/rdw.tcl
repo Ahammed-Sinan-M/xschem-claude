@@ -1841,6 +1841,58 @@ proc rdw::build {} {
     bind .rdw <Key-Escape> {
         if {[::rdw::pick_running]} { ::rdw::pick_end ; break }
     }
+    ## ⚠ AND THE DIGITS HAVE TO LIVE HERE FOR THE SAME REASON -- ISSUE 1358.
+    ## The Escape comment three lines up names "the command mode's `1`/`2`/`3`/
+    ## `4` and `<Key-Escape>`" in one breath and then takes only the Escape.
+    ## The digits are the half that was left behind, and the user found it:
+    ## "The delete did not have an effect ... I tried deleting one at a time.
+    ## That also did not have an effect next time I printed summary."
+    ##
+    ## ⚠ MEASURED, and the edit was never the problem.  Press 2 on the canvas,
+    ## click a parameter row -- which the status line INSTRUCTS the user to do,
+    ## because the buttons act on the shaded row -- press Delete, accept the
+    ## defaults: `op_param_lists::effective` really moves and the status line
+    ## really says so.  Then press 2 to look, and NOTHING happens.  The click
+    ## parked the keyboard on `.rdw.p.t`; the digits are bound on the CANVAS
+    ## only (src/cadence_style_rc:181-184); `.rdw`, `.rdw.p`, `.rdw.p.t` and the
+    ## Text class carried no `<Key-2>` at all, so Tk delivered the key to the
+    ## focus widget, found nothing, and the user got no block, no error and no
+    ## status line.  The store had changed and the window could not be made to
+    ## show it.
+    ##
+    ## ⚠ AND THE OBVIOUS RECOVERY IS A TRAP, WHICH IS WHY THE OTHER FIX WAS
+    ## NOT TAKEN.  Clicking blank canvas to get the keyboard back DESELECTS the
+    ## device, so the next 2 arms the pick mode instead of dumping and the
+    ## status line still carries the OLD verdict -- no new feedback either.  The
+    ## rejected alternative was to hand the keyboard back to the canvas from
+    ## `rdw::button`'s arms: it fixes only the gesture that goes through a
+    ## BUTTON (a click on a row followed by a bare 2 is still swallowed), and it
+    ## re-creates ruling DD-5's own defect -- on the seven refusal arms nothing
+    ## repaints, the pane's selection survives, and a Ctrl-C after a refused
+    ## press would then reach `.drw` and copy SCHEMATIC OBJECTS instead of the
+    ## block the user selected.  This window exists to have its text pasted into
+    ## a design review; a fix that moves the keyboard cannot be the one.
+    ##
+    ## ⚠ THE MASK IS THE PROFILE'S, NOT A NEW ONE.  0x4c is
+    ## Control|Mod1(Alt)|Mod4(Super) with Lock and NumLock deliberately outside
+    ## it, exactly as cadence_style_rc:181-184 discriminates, so a Ctrl-2 typed
+    ## in this window is as much not-a-dump as a Ctrl-2 typed on the canvas, and
+    ## a plain digit with a lock light on is still a plain digit.  This window
+    ## has nothing to forward a chord TO, so it simply declines and lets the
+    ## event fall through.
+    ##
+    ## THE MAP IS DUPLICATED ON PURPOSE AND THE DUPLICATE IS FENCED.  The
+    ## profile's binding is about the CANVAS -- it must discriminate modifiers
+    ## the canvas already spends and `break` to beat the C dispatcher -- and
+    ## this one is about this window, which owes neither.  What COULD drift is
+    ## which digit means which list, so `rdw::_digit_map` is the one place this
+    ## file says it and row KB1 of test_rdw_window_1245.tcl parses both files
+    ## and compares them.  A digit that stops meaning the same list in the two
+    ## places is a red, not a window that answers a key with the wrong list.
+    foreach {_rdw_d _rdw_k} [rdw::_digit_map] {
+        bind .rdw <Key-$_rdw_d> "if {\[rdw::_digit $_rdw_k %s]} break"
+    }
+    unset -nocomplain _rdw_d _rdw_k
     ## ⚠ THE COPY CHORD LIVES ON THE TOPLEVEL TAG TOO, AND FOR THE SAME REASON
     ## AS ESCAPE -- ITEM R3, ISSUE 1339, RULING DD-5.
     ## Tk sends a key event to the FOCUS window, and the only copy this window
@@ -3049,6 +3101,23 @@ proc rdw::keep_latest {} {
         rdw::status {Refresh: the window is already empty - there was nothing to clear.}
     }
     return {}
+}
+
+# ---------------------------------------------------------------------------
+# THE DIGIT MAP, IN ONE PLACE (issue 1358).  Two consumers -- `rdw::build`'s
+# four toplevel bindings and row KB1's cross-file comparison -- so a reader who
+# changes what a digit means changes it here and the suite tells the profile.
+proc rdw::_digit_map {} { return {1 annotation 2 summary 3 all 4 refresh} }
+
+# ---------------------------------------------------------------------------
+# A DIGIT TYPED INSIDE THE RESULTS WINDOW.  Answers 1 when it acted, 0 when it
+# declined, and the binding turns that answer into the `break`, so a declined
+# chord is not also swallowed.  See rdw::build for what was measured and which
+# alternative was rejected.
+proc rdw::_digit {kind state} {
+    if {[expr {$state & 0x4c}]} { return 0 }
+    rdw::key $kind
+    return 1
 }
 
 # ---------------------------------------------------------------------------

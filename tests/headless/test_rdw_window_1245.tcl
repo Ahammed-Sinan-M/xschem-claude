@@ -6050,6 +6050,136 @@ if {$live_tk} {
   catch {update idletasks}
 }
 
+
+# ============================================================================
+# SECTION KB — ISSUE 1358: THE WINDOW ANSWERS ITS OWN KEYS, WHEREVER THE
+# KEYBOARD IS
+# ============================================================================
+# THE USER'S THIRD SYMPTOM, IN THEIR WORDS: "The delete did not have an effect
+# (I left settings on the pop-up at default). Then, I tried deleting one at a
+# time. That also did not have an effect next time I printed summary."
+#
+# MEASURED on this tree before the fix, on the keys suite's own fixture and
+# with NO `focus -force` anywhere: press 2 on the canvas (focus `.drw`, one
+# block), click a parameter row as the status line instructs (focus `.rdw.p.t`,
+# targetrow 5), press Delete and accept the defaults -- the STORE moves,
+# `effective b4dev summary` goes from `{zid zid 0} {zgm zgm 1}` to
+# `{zgm zgm 1}` and the status line says so -- then press 2: nblocks stays 1,
+# the pane text is byte-identical and still reads ` zid : 11.1u`.  The edit
+# landed and the window could not be made to show it.
+#
+# ⚠ AND THE KEYSTROKE IS NOT REFUSED, IT IS NEVER HEARD.  The digits are bound
+# on the CANVAS only (src/cadence_style_rc:181-184); `.rdw`, `.rdw.p`,
+# `.rdw.p.t` and the Text class have no `<Key-2>` at all (measured: all four
+# the empty string), so Tk delivers the key to the focus widget, finds nothing,
+# and the user gets no error, no status line and no block.
+#
+# ⚠ AND THE OBVIOUS RECOVERY IS A TRAP: clicking blank canvas to get the
+# keyboard back DESELECTS the device, so the next 2 arms the pick mode instead
+# of dumping, the pane still shows the deleted row and the status line still
+# carries the OLD Delete verdict -- no new feedback either.
+#
+# THIS FILE HAS ANSWERED THE SAME QUESTION TWICE ALREADY AND BOTH TIMES ON THE
+# TOPLEVEL TAG: `<Key-Escape>` (issue 1308, ruling DD-12), whose own comment
+# names "the command mode's `1`/`2`/`3`/`4` and `<Key-Escape>`" in one breath
+# and then takes only the Escape, and the copy chord (item R3, issue 1339,
+# ruling DD-5), whose comment records that "no amount of re-binding the pane
+# would have reached it".  The digits are the half that was left behind.
+#
+# RED BEFORE THE FIX: all three.  `rdw::_digit_map` and `rdw::_digit` do not
+# exist (KB1 and KB2 answer NOPROC), and `bind .rdw <Key-1..4>` is the empty
+# string on a built window (KB3).
+#
+# PROVED NON-VACUOUS, ONE SABOTAGE EACH, EVERY ONE REDDING EXACTLY ITS ROW.
+#   KB1  `_digit_map` says `4 keep` instead of `4 refresh`  -> 1 FAILED, KB1.
+#   KB2  the mask becomes 0x4e, so a digit with CapsLock is
+#        refused                                            -> 1 FAILED, KB2.
+#   KB3  the four binds go on `all` instead of `.rdw` -- the
+#        "cheap way to get the same reach" ruling DD-5's own
+#        comment warns against, and it reaches `.drw`   -> 1 FAILED, KB3, and
+#        test_rdw_keys_1245 stays ALL PASS (87), which is the point: KD1 drives
+#        the user's gesture and CANNOT see which tag the binding lives on.
+
+set KB_RC [rw_slurp [file join $repo src cadence_style_rc]]
+## THE PROFILE'S OWN MAP, PARSED OUT OF THE FILE RATHER THAN TRANSCRIBED.  A
+## transcribed expectation golds this suite's opinion of the profile; this golds
+## the profile.
+set KB1_RC {}
+foreach _l [split $KB_RC \n] {
+  if {[regexp {^bind \.drw <Key-([0-9])>.*rdw::key ([a-z]+)} $_l -> _d _k]} {
+    lappend KB1_RC $_d $_k
+  }
+}
+check {KB1 ONE DIGIT MAP, TWO CONSUMERS, LOCKED TOGETHER: the profile binds the four bare digits on the canvas and this window binds the same four on its own toplevel, so the two definitions are parsed out of the two files and compared - a digit that stops meaning the same list in the two places is a red here rather than a window that answers a key with the wrong list} \
+  [list $KB1_RC [rw_ans ::rdw::_digit_map] \
+        [expr {$KB1_RC eq [rw_ans ::rdw::_digit_map] ? 1 : 0}]] \
+  [list {1 annotation 2 summary 3 all 4 refresh} {1 annotation 2 summary 3 all 4 refresh} 1]
+
+## THE DISPATCH AND THE MODIFIER MASK, WITH THE DESTINATION STUBBED.  The real
+## `rdw::key` selects, dumps, opens and repaints; what this row is about is
+## which kind it is handed and whether it is called at all, so the rename idiom
+## (test_sod_pick_no_select_0204.tcl:139, and this suite's own `ciw_echo`) puts
+## a recorder in its place.  0x4c = Control|Mod1(Alt)|Mod4(Super) -- the SAME
+## mask cadence_style_rc:181-184 discriminates on, because a Ctrl-2 in this
+## window must no more dump than a Ctrl-2 on the canvas does.  Lock (0x02) and
+## NumLock (Mod2, 0x10) are NOT in the mask: a plain digit with NumLock on is
+## still a plain digit, which is that profile's own recorded decision.
+set KB2_SAW {}
+if {[llength [info commands ::rdw::key]]} {
+  rename ::rdw::key ::rdw::key_kbreal
+  proc ::rdw::key {kind} { lappend ::KB2_SAW $kind ; return {} }
+}
+set KB2_R {}
+foreach {_k _s} {annotation 0 summary 0 all 0 refresh 0 summary 4 summary 8
+                 summary 64 summary 76 summary 2 summary 16 summary 18} {
+  lappend KB2_R [rw_ans ::rdw::_digit $_k $_s]
+}
+if {[llength [info commands ::rdw::key_kbreal]]} {
+  rename ::rdw::key {} ; rename ::rdw::key_kbreal ::rdw::key
+}
+check {KB2 A BARE DIGIT ACTS AND A CHORD DOES NOT: the four bare presses each hand rdw::key their own list identity and answer 1, Control-2, Alt-2, Super-2 and all three together answer 0 and call nothing, and CapsLock or NumLock still leave a plain digit plain - so the window's keyboard cannot swallow a chord the canvas forwards to the C dispatcher, and cannot refuse a key because a lock light is on} \
+  [list $KB2_R $KB2_SAW] \
+  [list {1 1 1 1 0 0 0 0 1 1 1} {annotation summary all refresh summary summary summary}]
+
+## THE LIVE HALF.  Two arms in one row, and the second is the one the user's
+## hand makes: the binding really is on the TOPLEVEL tag (so it fires from the
+## pane, the button column and the status entry alike, which is what a click on
+## a row leaves behind), it is NOT on `all` (row CP11 of the keys suite is the
+## same fence for Ctrl-C: `all` reaches `.drw`, where the digits already have a
+## meaning and a `break`), and a REAL `<Key-2>` delivered to `.rdw.p.t` -- the
+## widget a row click focuses, measured -- reaches rdw::key carrying `summary`.
+if {$live_tk} {
+  rw_ans ::rdw::open
+  rw_w update idletasks
+  set KB3_B {} ; set KB3_BREAK {} ; set KB3_ALL {} ; set KB3_PANE {}
+  foreach _d {1 2 3 4} {
+    lappend KB3_B     [expr {[rw_w bind .rdw <Key-$_d>] ne {} ? 1 : 0}]
+    lappend KB3_BREAK [expr {[string match {*break*} [rw_w bind .rdw <Key-$_d>]] ? 1 : 0}]
+    lappend KB3_ALL   [expr {[rw_w bind all <Key-$_d>] eq {} ? 1 : 0}]
+    lappend KB3_PANE  [expr {[rw_w bind .rdw.p.t <Key-$_d>] eq {} && [rw_w bind Text <Key-$_d>] eq {} ? 1 : 0}]
+  }
+  set ::KB3_SAW {}
+  if {[llength [info commands ::rdw::key]]} {
+    rename ::rdw::key ::rdw::key_kbreal
+    proc ::rdw::key {kind} { lappend ::KB3_SAW $kind ; return {} }
+  }
+  rw_w focus -force .rdw.p.t
+  rw_w update idletasks
+  set KB3_FOCUS [rw_w focus]
+  rw_w event generate .rdw.p.t <Key-2> -when now
+  rw_w update
+  rw_w event generate .rdw.p.t <Control-Key-2> -when now
+  rw_w update
+  if {[llength [info commands ::rdw::key_kbreal]]} {
+    rename ::rdw::key {} ; rename ::rdw::key_kbreal ::rdw::key
+  }
+  check {KB3 THE BINDING IS ON THE TOPLEVEL TAG AND A REAL KEY TYPED WHERE A ROW CLICK LEFT THE KEYBOARD REACHES IT: all four digits bound on .rdw and each ending in break, none of them on `all` where they would reach the design canvas and none on the pane or the Text class, and a real bare <Key-2> generated on .rdw.p.t answers `summary` while a real Control-2 on the same widget answers nothing at all} \
+    [list $KB3_B $KB3_BREAK $KB3_ALL $KB3_PANE $KB3_FOCUS $::KB3_SAW] \
+    [list {1 1 1 1} {1 1 1 1} {1 1 1 1} {1 1 1 1} {.rdw.p.t} {summary}]
+  catch {rw_ans ::rdw::close}
+  catch {update idletasks}
+}
+
 set S1_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
 check {S1 STRUCTURAL the forbidden doors: rdw.tcl reaches the seam ONLY through ase::backend_hook, never by the backend proc's name, and names none of `xschem raw value` / ase::sim_capabilities / blanket_op_save / ase::theme (op_param_lists:: moved to row BT22 when item B5 wired the store)} \
   [list [expr {$S1_F eq {NOFILE} ? {NOFILE} : [rw_has $S1_F {ase::backend_hook}]}] \
@@ -6158,7 +6288,17 @@ else { set ::ev_precision $RW_EVP_SAVE }
 ## FEWEST rows.  Issue 1355's behavioural rows are LK1 and LK2 of
 ## test_rdw_keys_1245.tcl, which need the cadence bind and a real canvas.  A
 ## floor is raised when rows are added and NEVER lowered to make a run pass.
-set RW_FLOOR 152
+## ⚠ AND RAISED 152 -> 154 BY THE REPAIR OF ISSUE 1358, IN THE SAME COMMIT AS
+## THE TWO ROWS OF SECTION KB THAT RUN ON BOTH ARMS: KB1, the cross-file digit
+## map fence, and KB2, the dispatch and the modifier mask with `rdw::key`
+## stubbed.  The section's third row, KB3, needs a built window, a real
+## keyboard focus and a real key event, so it is `live_tk`-gated and is
+## deliberately NOT counted here - the floor is the arm that runs FEWEST rows.
+## Issue 1358's behavioural rows are KD1 and KD2 of test_rdw_keys_1245.tcl,
+## which need the cadence bind, a real canvas, a real pane click, a real modal
+## and a real drag.  A floor is raised when rows are added and NEVER lowered to
+## make a run pass.
+set RW_FLOOR 154
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\

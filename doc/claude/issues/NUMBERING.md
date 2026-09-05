@@ -1851,4 +1851,39 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   summary-list Add should target the summary list is the user's call, since it
   is their spec and their expectation that disagree. Rule debt **1357**.
 
-**The next free number is 1358.**
+- **1358** — the Results Display Window cannot hear its own refresh keys, so an
+  edit that landed could not be looked at. The user's third symptom, and the
+  delete was never the problem. MEASURED with no `focus -force` anywhere: press
+  2, click the parameter row the status line INSTRUCTS you to click, press
+  Delete and accept the defaults — `op_param_lists::effective` really moves and
+  the status line really says so — then press 2 and **nothing happens**, 3/3.
+  The digits are bound on the CANVAS only (`src/cadence_style_rc:181-184`);
+  `.rdw`, `.rdw.p`, `.rdw.p.t`, the Text class and `all` all answered the empty
+  string, so Tk delivered the key to the focus widget and found nothing — no
+  block, no error, no status line. **PRE-EXISTING** (`rdw::button` calls neither
+  `rdw::_focus_canvas` nor `rdw::_arm_focus_handback` at HEAD or at 79b0a0ce);
+  it became reachable when the buttons became worth pressing. **FIXED**: the
+  four bare digits are bound on the TOPLEVEL tag, the tag this file already
+  chose for `<Key-Escape>` (issue 1308, ruling DD-12) and for the copy chord
+  (issue 1339, ruling DD-5), with `cadence_style_rc`'s own 0x4c modifier mask
+  and one shared map, `rdw::_digit_map`. **REJECTED**: handing the keyboard back
+  from `rdw::button` — it fixes only the button gesture (a click then a bare 2
+  is still swallowed) and re-creates DD-5's defect on the seven refusal arms
+  that repaint nothing. Fenced by section **KB** of `test_rdw_window_1245.tcl`
+  (`RW_FLOOR` 152 -> 154) and section **KD** of `test_rdw_keys_1245.tcl`
+  (`KX_FLOOR` 85 -> 87), each row proved by a sabotage that reds exactly it.
+  Carries **two decisions taken on the user's behalf** — the window does NOT
+  refresh itself after an edit, and key 4 is bound in the window too. Rule debt
+  **1358**.
+
+- **1359** — `tests/run_regression.tcl:217` launches every DISPLAY-ARM case
+  with no `--logdir`, so a solo T1 run — the acceptance signal CLAUDE.md itself
+  mandates — overwrites the user's `/tmp/Xschem.log.*`. MEASURED by md5 before
+  and after one run on 2026-09-05: five of nine files destroyed (`.1 .3 .4 .8
+  .9`), `.5` — the log the whole RDW batch was diagnosed from — survived. The
+  `--nogui` arms (`:176`, `:238`) are safe; a headless run without `--logdir`
+  writes no log at all. **FILED, NOT FIXED**: the fix is one argument, but the
+  display-arm list may contain a suite whose own subject is the log's default
+  placement, so it needs its own verification pass rather than a drive-by.
+
+**The next free number is 1360.**
