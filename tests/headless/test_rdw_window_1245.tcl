@@ -5547,6 +5547,229 @@ check {CY4 STRUCTURAL the three predicates are actually consulted: select_all ta
         [rw_count $CY4_BD ".rdw.p.t <<Copy>>"]] \
   {0 1 0 1 1 0 1 0 1 1 1 0 1 0 0 1}
 
+# ============================================================================
+# SECTION NW — ISSUE 1300: KEYS 1 AND 2 NARROW THE CONTENT, NOT ONLY THE
+# IDENTITY.  BOTH ARMS, BECAUSE EVERY DECISION HERE IS A PURE FUNCTION.
+# ============================================================================
+# The user's own first complaint, in their words: "1 key dumps ALL OP info for
+# a MOS FET in the RDW, when it's supposed to dump only those parameters that
+# get annotated on the schematic."  MEASURED on their own design before this
+# fix: keys 1, 2 and 3 produced BYTE-IDENTICAL 1939-character blocks, and key 1
+# printed 88 rows for one MOSFET of which their PDK's annotation list declares
+# six.  `rdw::format_answer` took no list argument and no caller ever gave it
+# one.
+#
+# ⚠ THE NARROWING HAS EXACTLY ONE DEFINITION IN THIS TREE AND THIS SECTION
+# FENCES THAT IT IS THE ONE USED.  `::op_param_lists::effective` is it, reached
+# through `rdw::_list_params` -- the reader item R2 already built for the
+# reorder, so the pane's narrowing and the pane's ORDER cannot come from two
+# opinions (invariant I1).  Issue 1300 refused its own option (a), "filter from
+# op_annot::descriptor's params", for exactly that reason, and row NW7 is what
+# reds if somebody re-derives it.
+#
+# ⚠ AND THE ORDER IS THE LIST'S, NOT THE RAW FILE'S.  Item R2 (issue 1338)
+# already promises that Up and Down move the row in the window; a key that
+# re-rendered in raw-file order would undo that promise on the very next press
+# of 1.  The permutation is `rdw::_reslot_block`'s, unchanged and re-used, so
+# there is one rule for "the list's order" and not two.
+#
+# ⚠ WHAT KEY 3 DOES IS UNCHANGED, AND NW2 IS THE CONTROL THAT SAYS SO.  Ruling
+# D-5 and DD-1 make key 3 the escape hatch -- "what this run's raw actually
+# holds" -- so it must keep printing every published row, in raw order, with no
+# narrowing sentence at all.  A narrowing that reached key 3 would make the
+# `complete` flag a lie and would leave the withheld rows unreachable.
+#
+# ⚠ AND THE SENTENCE IS NOT OPTIONAL.  A pane that silently drops 82 of 88 rows
+# is DD-1's own failure shape one surface further out: the reader cannot tell a
+# narrowed block from a device that published six columns.  So a narrowed block
+# SAYS which list narrowed it, how many rows it withheld, how many of those did
+# not converge, and that key 3 has them.  The list name goes in the BLOCK
+# rather than in window chrome because the block is what the user pastes into a
+# design review, and chrome does not travel with a paste (row NW10).
+#
+# ⚠ THE LABEL IS PAST TENSE ON PURPOSE.  "as it stood at this dump" is what
+# makes issue 1300's option (c) objection LAPSE rather than merely change
+# cause: a standing block is a record, the store is live, and a Delete that
+# removes a row from the list does not re-render blocks already on screen
+# (`rdw::_reslot_block` is a strict permutation -- its own comment: "adds
+# nothing, removes nothing").  A present-tense label would be false the moment
+# the user pressed Delete.
+#
+# RED BEFORE THE FIX, MEASURED ON THE UNMODIFIED TREE AT 79b0a0ce: NW1 NW3 NW4
+# NW6 NW7 NW9 NW10 -- seven of the ten, because `rdw::format_answer` renders
+# every published row whatever the ctx says and the four procs NW7 asks for do
+# not exist.  GREEN BEFORE THE FIX, all three of them for a reason worth
+# writing down rather than a reason to drop them:
+#   NW2  the key-3 CONTROL.  Its whole content is that this change did not move
+#        the escape hatch, so it is supposed to be green on both sides.
+#   NW8  the DD-4/DD-6 DECK FENCE.  Same: its content is that the display
+#        decision stayed out of the deck, which was true before and must stay
+#        true after.
+#   NW5  green VACUOUSLY before the fix -- with nothing narrowing anywhere,
+#        "a ctx that names no list renders the un-narrowed block" is trivially
+#        satisfied.  It becomes load-bearing the moment narrowing exists, and
+#        its sabotage (narrow on a ctx with no list) is what proves it.
+
+set NW_DESC [list devpath {\@m.@path@name} \
+                  params {{nid nid 0} {ngm ngm 1} {nvth nvth 2}}]
+catch {op_annot::register nw_dev $NW_DESC}
+rw_ans ::op_param_lists::set_class nw_dev nwcls
+## The SUMMARY list is owned so that it differs from the annotation list.  The
+## annotation list is deliberately NOT owned, so it answers the PDK seed and
+## row NW1 is about the shipped resolution path rather than about a store write.
+rw_ans ::op_param_lists::set_list class nwcls summary {{ngm ngm 1}}
+
+## SIX published columns for one primitive: four computed, one non-finite, one
+## absent.  Three of the six are in the annotation list {nid ngm nvth}, and the
+## computed ones are stored in an order the list does not hold, so a change that
+## merely FILTERED and kept raw order would still red NW1.
+set NW_ANS [rw_ansd [dict create {@m.nw1} {{nvth 0.75} {nid 1.11e-05} \
+                                           {zzz 42} {ngm 0.001}}] \
+                    {{@m.nw1 zabs}} {{@m.nw1 znf nan}} 0 ok]
+proc nw_ctx {lst {cls nwcls}} {
+  set c [rw_ctx {NW1:/} {@m.nw1} op NW1]
+  if {$lst ne {}} { dict set c list $lst }
+  if {$cls ne {}} { dict set c class $cls ; dict set c cellname {} }
+  return $c
+}
+set NW_NARROW1 {Narrowed to the nwcls annotation list as it stood at this dump. 3 columns are not in that list and not shown; this run published 6 for this device. 1 of the withheld did not converge. Press 3 for everything this run published.}
+set NW_NARROW2 {Narrowed to the nwcls summary list as it stood at this dump. 5 columns are not in that list and not shown; this run published 6 for this device. 1 of the withheld did not converge. Press 3 for everything this run published.}
+
+check {NW1 THE USER'S FIRST COMPLAINT, CLOSED: key 1 prints the class's ANNOTATION list and nothing else - three of the six columns this run published - IN THE LIST'S OWN ORDER rather than the raw file's, and the block says which list narrowed it, how many rows it withheld and that key 3 has them} \
+  [rw_text $NW_ANS [nw_ctx annotation]] \
+  [rw_lines {NW1:/} {@m.nw1} $RW_INC $NW_NARROW1 \
+            {    nid  : 11.1u} {    ngm  : 1m} {    nvth : 0.75} {}]
+
+check {NW2 CONTROL key 3 is UNCHANGED - ruling D-5's escape hatch still prints every column this run published, in raw-file order, with the non-finite words, the absent blank, its footnote and NO narrowing sentence anywhere} \
+  [rw_text $NW_ANS [nw_ctx all]] \
+  [rw_lines {NW1:/} {@m.nw1} $RW_INC \
+            {    nvth : 0.75} {    nid  : 11.1u} {    zzz  : 42} {    ngm  : 1m} \
+            {    znf  : (did not converge)} {    zabs :} $RW_ABSN {}]
+
+check {NW3 KEYS 1 AND 2 STOP RENDERING IDENTICAL BLOCKS, which is issue 1300's headline measurement inverted: the summary list is owned and holds one row, so key 2 prints that row alone and names the summary list, and the three blocks are pairwise different} \
+  [list [rw_text $NW_ANS [nw_ctx summary]] \
+        [expr {[rw_text $NW_ANS [nw_ctx annotation]] eq [rw_text $NW_ANS [nw_ctx summary]] ? 1 : 0}] \
+        [expr {[rw_text $NW_ANS [nw_ctx annotation]] eq [rw_text $NW_ANS [nw_ctx all]] ? 1 : 0}] \
+        [expr {[rw_text $NW_ANS [nw_ctx summary]] eq [rw_text $NW_ANS [nw_ctx all]] ? 1 : 0}]] \
+  [list [rw_lines {NW1:/} {@m.nw1} $RW_INC $NW_NARROW2 {    ngm : 1m} {}] 0 0 0]
+
+## NW4 — the EMPTY list, and the two agreements a counting sentence gets wrong.
+## `nwzcls` is a class nobody declared and nobody owns, so `effective` answers
+## the empty list rather than raising; the honest rendering is a SENTENCE, never
+## a header followed by nothing, which reads as a broken window.
+set NW_ONE   [rw_ansd [dict create {@m.nw1} {{nid 1.11e-05} {zzz 42}}] {} {} 0 ok]
+set NW_ALLIN [rw_ansd [dict create {@m.nw1} {{nid 1.11e-05} {ngm 0.001}}] {} {} 0 ok]
+check {NW4 THE EMPTY LIST IS A SENTENCE, NOT A BLANK BLOCK, and the counts agree with themselves: one withheld row reads `1 column is`, three read `3 columns are`, and a run every one of whose columns IS in the list says so instead of counting to zero} \
+  [list [rw_text $NW_ANS   [nw_ctx annotation nwzcls]] \
+        [rw_text $NW_ONE   [nw_ctx annotation]] \
+        [rw_text $NW_ALLIN [nw_ctx annotation]]] \
+  [list [rw_lines {NW1:/} {@m.nw1} $RW_INC \
+           {The nwzcls annotation list was empty at this dump, so nothing this run published for this device is shown. Press 3 for everything this run published.} {}] \
+        [rw_lines {NW1:/} {@m.nw1} $RW_INC \
+           {Narrowed to the nwcls annotation list as it stood at this dump. 1 column is not in that list and not shown; this run published 2 for this device. Press 3 for everything this run published.} \
+           {    nid : 11.1u} {}] \
+        [rw_lines {NW1:/} {@m.nw1} $RW_INC \
+           {Narrowed to the nwcls annotation list as it stood at this dump. Every column this run published for this device is in that list.} \
+           {    nid : 11.1u} {    ngm : 1m} {}]]
+
+check {NW5 A CALLER THAT CANNOT NAME A LIST NARROWS NOTHING - a ctx with no `list` key, and one whose device has no class, both render the un-narrowed block byte for byte, so the twenty hand-built contexts in this file and every future caller of the door keep today's answer instead of silently losing rows} \
+  [list [expr {[rw_text $NW_ANS [nw_ctx {}]] eq [rw_text $NW_ANS [nw_ctx all]] ? 1 : 0}] \
+        [expr {[rw_text $NW_ANS [nw_ctx annotation {}]] eq [rw_text $NW_ANS [nw_ctx all]] ? 1 : 0}] \
+        [rw_has [rw_text $NW_ANS [nw_ctx {}]] {Narrowed to the}] \
+        [rw_has [rw_text $NW_ANS [nw_ctx annotation {}]] {Narrowed to the}]] \
+  {1 1 0 0}
+
+check {NW6 THE THREE BUCKETS NARROW TOGETHER AND THE WITHHELD NON-CONVERGENCE IS SAID OUT LOUD: a `nonfinite` row no list declares is withheld like any other but is COUNTED in a clause of its own, so the one fact issue 1272 says a designer most wants to be told is stated rather than dropped; and the absent footnote follows the NARROWED absent bucket, so a block with no blank in it no longer explains what a blank means} \
+  [list [rw_has [rw_text $NW_ANS [nw_ctx annotation]] {(did not converge)}] \
+        [rw_has [rw_text $NW_ANS [nw_ctx annotation]] {1 of the withheld did not converge.}] \
+        [rw_has [rw_text $NW_ANS [nw_ctx annotation]] $RW_ABSN] \
+        [rw_has [rw_text $NW_ANS [nw_ctx all]] {(did not converge)}] \
+        [rw_has [rw_text $NW_ANS [nw_ctx all]] $RW_ABSN] \
+        [rw_has [rw_text $NW_ANS [nw_ctx all]] {of the withheld did not converge}]] \
+  {0 1 0 1 1 0}
+
+check {NW7 STRUCTURAL ONE DEFINITION OF THE NARROWING: format_answer asks rdw::_narrow_spec, which asks the item R2 reader rdw::_list_params, which asks ::op_param_lists::effective and nothing else - and neither the spec nor the renderer names op_annot::descriptor or reads a `params` key, which is the second definition issue 1300 refused option (a) over} \
+  [list [rw_has [rw_body ::rdw::format_answer] {rdw::_narrow_spec}] \
+        [rw_has [rw_body ::rdw::_narrow_spec] {rdw::_list_params}] \
+        [rw_has [rw_body ::rdw::_list_params] {op_param_lists::effective}] \
+        [rw_count [rw_body ::rdw::_narrow_spec] {op_annot::descriptor}] \
+        [rw_count [rw_body ::rdw::format_answer] {op_annot::descriptor}] \
+        [rw_count [rw_body ::rdw::_narrow_spec] {op_param_lists::effective}] \
+        [rw_has [rw_body ::rdw::format_answer] {rdw::_reslot_block}] \
+        [expr {[llength [info commands ::rdw::_narrow_answer]] ? 1 : 0}] \
+        [expr {[llength [info commands ::rdw::_narrow_line]] ? 1 : 0}] \
+        [expr {[llength [info commands ::rdw::_cols_are]] ? 1 : 0}]] \
+  {1 1 1 0 0 0 1 1 1 1}
+
+## NW8 / NW9 — a REAL sheet holding a REAL instance of the fixture type, so the
+## deck fence and the ctx door are driven rather than asserted.  bs_mksym and
+## bs_mksch are section BS's, re-used: one symbol shape for the whole file.
+set NW_DIR [file join $scratch nw1300]
+file mkdir $NW_DIR
+set NW_SYM [file join $NW_DIR nw.sym]
+set NW_SCH [file join $NW_DIR nw.sch]
+bs_mksym $NW_SYM nw_dev
+bs_mksch $NW_SCH $NW_SYM
+xschem load $NW_SCH
+catch {update idletasks}
+
+## NW8 — RULINGS DD-4 AND DD-6, THE ONE THING THIS FIX MAY NOT DO: "a display
+## decision NEVER changes what the simulator is asked to save".  The narrowing
+## lives entirely in the renderer, so the deck's save cards for a real instance
+## of this type are byte-identical whichever list the window is on, and they
+## still carry every row the descriptor declared -- including the two the
+## SUMMARY list does not.
+set NW8_CARDS {}
+set NW8_KEEP $::rdw::listkind
+foreach _lk {annotation summary all} {
+  catch {rw_ans ::rdw::set_list $_lk}
+  lappend NW8_CARDS [rw_ans ::op_annot::_cards_for M1 {}]
+}
+catch {rw_ans ::rdw::set_list $NW8_KEEP}
+set NW8_DESCP {}
+catch {set NW8_DESCP [dict get [::op_annot::descriptor nw_dev] params]}
+check {NW8 RULINGS DD-4 AND DD-6 the display decision stays out of the deck: a real instance's .save cards are the same three on all three list identities even though the summary list declares one row, and the descriptor's `params` - the ONE list op_annot::_cards_for builds cards from - is untouched} \
+  [list [llength [lindex $NW8_CARDS 0]] \
+        [expr {[lindex $NW8_CARDS 0] eq [lindex $NW8_CARDS 1] ? 1 : 0}] \
+        [expr {[lindex $NW8_CARDS 1] eq [lindex $NW8_CARDS 2] ? 1 : 0}] \
+        [rw_count [lindex $NW8_CARDS 1] {[nvth]}] \
+        $NW8_DESCP] \
+  [list 3 1 1 1 {{nid nid 0} {ngm ngm 1} {nvth nvth 2}}]
+
+## NW9 — THE SEAM'S ONLY DOOR CARRIES THE LIST AND THE SUBJECT, exactly as it
+## already carries `sim` (issue 1284) and `simtype` (issue 1298).  Without this
+## the keys would select an identity that never reached the renderer, which IS
+## issue 1300.  A ctx that already names a list still wins, so every hand-built
+## context in this file is unaffected.
+set NW9_BODY [rw_body ::rdw::dump_devpath]
+set NW9_KEEP $::rdw::listkind
+catch {rw_ans ::rdw::set_list summary}
+set NW9_S [rw_ans ::rdw::_list_ctx [rw_ctx {M1:/} {@m.M1} op M1]]
+catch {rw_ans ::rdw::set_list annotation}
+set NW9_A [rw_ans ::rdw::_list_ctx [rw_ctx {M1:/} {@m.M1} op M1]]
+set NW9_W [rw_ans ::rdw::_list_ctx [dict replace [rw_ctx {M1:/} {@m.M1} op M1] list all]]
+set NW9_N [rw_ans ::rdw::_list_ctx [rw_ctx {M1:/} {@m.M1} op ZZNOSUCHINST]]
+catch {rw_ans ::rdw::set_list $NW9_KEEP}
+proc nw9 {c k} {
+  if {[rw_bad $c]} { return $c }
+  if {![dict exists $c $k]} { return NOKEY }
+  return [dict get $c $k]
+}
+check {NW9 THE SEAM'S ONLY DOOR AMENDS THE CTX WITH THE LIVE LIST IDENTITY AND THE DEVICE'S CLASS, the way it already amends `sim` and `simtype`: a key press narrows without any caller knowing how, the identity really follows rdw::set_list, a ctx that already names a list still wins, and an instance the editor cannot resolve gets NO class rather than a guessed one} \
+  [list [rw_bad $NW9_BODY] [rw_has $NW9_BODY {rdw::_list_ctx}] \
+        [nw9 $NW9_S list] [nw9 $NW9_A list] [nw9 $NW9_W list] \
+        [nw9 $NW9_A class] [file tail [nw9 $NW9_A cellname]] \
+        [nw9 $NW9_N list] [nw9 $NW9_N class]] \
+  [list 0 1 summary annotation all nwcls nw.sym annotation NOKEY]
+
+check {NW10 THE LIST NAME TRAVELS WITH THE PASTE: the narrowing sentence is a line of the BLOCK, so rdw::block_text hands it to the clipboard and a dump pasted into a design review says which list it came from and that it is not the whole run - which a window title or a chrome label above the pane could not do - and it is a `note` line, not a value row} \
+  [list [rw_has [rw_ans ::rdw::block_text [rw_block $NW_ANS [nw_ctx annotation]]] $NW_NARROW1] \
+        [rw_has [rw_ans ::rdw::block_text [rw_block $NW_ANS [nw_ctx summary]]] $NW_NARROW2] \
+        [rw_has [rw_ans ::rdw::block_text [rw_block $NW_ANS [nw_ctx all]]] {Narrowed to the}] \
+        [lindex [lindex [rw_block $NW_ANS [nw_ctx annotation]] 3] 0] \
+        [rw_ans ::rdw::_row_param [lindex [rw_block $NW_ANS [nw_ctx annotation]] 3]]] \
+  {1 1 0 note {}}
+
 set S1_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
 check {S1 STRUCTURAL the forbidden doors: rdw.tcl reaches the seam ONLY through ase::backend_hook, never by the backend proc's name, and names none of `xschem raw value` / ase::sim_capabilities / blanket_op_save / ase::theme (op_param_lists:: moved to row BT22 when item B5 wired the store)} \
   [list [expr {$S1_F eq {NOFILE} ? {NOFILE} : [rw_has $S1_F {ase::backend_hook}]}] \
@@ -5633,7 +5856,17 @@ if {$live_tk} { rw_ans ::rdw::close ; catch {destroy .rdwctl} }
 if {$RW_EVP_SAVE eq {NOVAR}} { catch {unset ::ev_precision} } \
 else { set ::ev_precision $RW_EVP_SAVE }
 
-set RW_FLOOR 134
+## ⚠ AND RAISED 134 -> 144 BY THE REPAIR OF ISSUE 1300, IN THE SAME COMMIT AS
+## THE TEN ROWS IT COVERS: section NW's NW1..NW10, keys 1 and 2 narrowing the
+## pane to the list they name, the sentence that says which list withheld what,
+## the empty list, the caller that cannot name a list, the one-definition fence
+## over `op_param_lists::effective`, the DD-4/DD-6 deck fence, the ctx door and
+## the paste.  All ten run on BOTH arms - the narrowing is a pure function of an
+## answer and a context, so nothing here needs a display; issue 1300's own
+## behavioural rows are KN1 and KN2 of test_rdw_keys_1245.tcl, which need the
+## cadence bind and a real canvas.  A floor is raised when rows are added and
+## NEVER lowered to make a run pass.
+set RW_FLOOR 144
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\

@@ -1010,17 +1010,50 @@ element-lettered — `@m.x1.x1.xm2.msky130_fd_pr__nfet_01v8_lvt`. Question Q6.
 | key | list | source |
 |---|---|---|
 | `1` | **annotation** | the descriptor's `params` — the very list `6` paints |
-| `2` | **summary** | a new per-class ordered list; **default = all available** |
+| `2` | **summary** | a new per-class ordered list; **default = all available** ⚠ see below |
 | `3` | **all** | every parameter the simulator published for this device |
 
-⚠ **THE NARROWING IN THIS TABLE IS NOT IMPLEMENTED AND NO ITEM OWNS IT** (item
-B4, 2026-09-04). `rdw::format_answer` takes **no list argument**, and row `S1`
-of `tests/headless/test_rdw_window_1245.tcl` structurally forbids naming the
-list store inside `src/rdw.tcl` — so keys 1, 2 and 3 select a list **identity**
-and render **byte-identical blocks**. B4's Do cell does not mention narrowing
-and B5's is buttons and dialogs. Issue **1300**, and B4's own **E question**:
-either an item takes it, or the window must stop implying a narrowing it does
-not do. Do not read this table as describing the tree.
+✅ **THE NARROWING IS IMPLEMENTED (issue 1300, 2026-09-05).** Keys 1 and 2 now
+narrow CONTENT as well as identity, and this table describes the tree again.
+`rdw::format_answer` reads a `list` and a `class` out of its context — put
+there by `rdw::_list_ctx` at the seam's only door, beside the `sim` and
+`simtype` it already amended — and filters all three buckets by
+`::op_param_lists::effective`, reached through item R2's existing
+`rdw::_list_params` so the pane's narrowing and the pane's ORDER come from one
+list.  Key 3 is untouched: it is ruling D-5's escape hatch and still prints
+every published row in raw-file order.  A narrowed block SAYS so, naming the
+list, the number of rows withheld, how many of those did not converge and that
+key 3 has them — in the block rather than in chrome, because the block is what
+the user pastes.  Section **NW** of `tests/headless/test_rdw_window_1245.tcl`
+(ten rows, both arms) and section **KN** of `test_rdw_keys_1245.tcl` (two rows,
+real keybindings) are the fences.
+
+⚠ **AND THE TWO CORRECTIONS THIS PARAGRAPH USED TO CARRY.** It said row `S1` of
+`test_rdw_window_1245.tcl` "structurally forbids naming the list store inside
+`src/rdw.tcl`". **That has been false since item B5 wired the button column**:
+S1's own title now reads "(op_param_lists:: moved to row BT22 …)" and its six
+legs are about `ase::backend_hook`, the backend proc's name, `raw value`,
+`sim_capabilities`, `blanket_op_save` and `ase::theme`.  The fence was
+REPLACED, not relaxed: row **BT22** allows the store's thirteen PUBLISHED verbs
+by name and golds `op_param_lists::_` at zero, and `effective` is on that
+allow-list and had ten call sites in `src/rdw.tcl` before this change.  Issue
+1300's option (b) reds no row today.
+
+⚠ **"DEFAULT = ALL AVAILABLE" IS NOT WHAT THE STORE DOES, AND THE NARROWING
+MADE IT VISIBLE** (issue **1353**, 2026-09-05). An unowned summary list falls
+through `op_param_lists::effective` to `seed`, which answers **the PDK's own
+declaration** — the same triples the annotation list answers. So for every
+device on a machine with no `op_param_lists.conf` rows, **keys 1 and 2 narrow
+to the same set and still render the same block**, which is the user's own
+second complaint ("when I use 2 key, the RDW doesn't say summary") wearing a
+different cause. MEASURED on the user's tb_bandgap M18:
+`effective mos annotation` and `effective mos summary` both answer the six
+`id gm gds vgs vth vds`. The blocks are no longer byte-identical — each names
+its own list — but their ROWS are. Whether list 2's default should be the seed
+(what the store does) or the run's full published set (what this table says) is
+an **E question**, on rule debt **1300**. Not guessed here: changing the store's
+default would change what `_save_set` unions into `params` and therefore what
+the deck saves, which is ruling DD-4 ground.
 
 ⚠ **AND THE SUMMARY LIST HAS NO ORDER ON THE SHEET AT ALL** (issue **1347**,
 measured 2026-09-05). `op_annot::text` draws the descriptor's `shown` key;

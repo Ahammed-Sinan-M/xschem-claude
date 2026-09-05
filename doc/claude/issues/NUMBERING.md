@@ -1784,4 +1784,30 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   the typed text being substituted as several arguments, so it is a survey and
   a ruling, not a patch.
 
-**The next free number is 1353.**
+- **1353** — the RDW's keys 1 and 2 now narrow CONTENT, not only identity: the
+  implementing record for issue **1300**, which this closes. `format_answer`
+  filters all three buckets by `::op_param_lists::effective` (reached through
+  item R2's `rdw::_list_params`, so there is still ONE definition of the list),
+  the ctx carries the list identity and the class from `rdw::dump_devpath`, and
+  the block is re-slotted into the list's order. Measured on the user's own
+  M18: 88 rows before, 6 after, key 3 unchanged at 88, and the three blocks
+  pairwise different where they used to be byte-identical. **FIXED**, fenced by
+  section NW of `test_rdw_window_1245.tcl` (10 rows, both arms, `RW_FLOOR`
+  134 -> 144) and section KN of `test_rdw_keys_1245.tcl` (2 rows, `KX_FLOOR`
+  81 -> 83), every one proved by a sabotage. It carries **four decisions taken
+  on the user's behalf** — hide the undeclared rows and say so, a sentence for
+  an empty list, a past-tense list label inside the block, and the list's order
+  over the raw file's — and **one residual it does not fix**: an unowned summary
+  list answers the PDK seed, so keys 1 and 2 still show the same ROWS on a
+  machine with no settings-file entries. Rule debt **1353**.
+
+- **1354** — the ASE log says "468 device OP save card(s) added to the deck" and
+  prints the shape-`c` nudge for a deck that carries **zero** `.save @dev[param]`
+  cards. The count comes from `ase::op_cards_capture` (`src/ase.tcl:4506`, called
+  `:4562`) reading the captured block, while the SHAPE is chosen separately by
+  `ase::op_save_tier` (`:4792`, `:8050`); under tier `d` both sentences describe
+  a deck that was not rendered. Measured in the user's own log and deck. It is
+  what sent the RDW list batch's brief at the wrong hypothesis. **FILED, NOT
+  FIXED.**
+
+**The next free number is 1355.**

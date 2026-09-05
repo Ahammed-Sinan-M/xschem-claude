@@ -4124,6 +4124,70 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
 
 
 
+# ============================================================================
+# SECTION KN — ISSUE 1300, END TO END THROUGH THE REAL KEYBINDINGS
+# ============================================================================
+# The user's first complaint is about a KEY, so it is answered with a key.
+# Section NW of test_rdw_window_1245.tcl fences every decision as a pure
+# function on both arms; these two rows are the ones that could not be written
+# there, because they need the cadence bind, a real canvas, a real selection
+# and the live list identity that `rdw::key` moves.
+#
+# The fixture's class `b4dev` declares {zid zgm}, and the raw carries both for
+# M1.  The ANNOTATION list is owned here with `zid` alone, so the run really
+# does publish a column the list does not declare -- which is the shape the
+# user met (six declared, eighty-eight published) with the numbers made small
+# enough to gold.  The SUMMARY list is left unowned so it answers the PDK seed
+# and differs from the annotation list, which is what makes KN2 a measurement
+# of issue 1300's headline and not of a store write.
+#
+# RED BEFORE THE FIX: both.  MEASURED on the unmodified tree at 79b0a0ce, key 1
+# and key 3 produced byte-identical text and key 1's block carried `zgm`.
+
+xschem load $KX_SCH
+xschem zoom_full ; update idletasks
+kx_annot
+kx_ans ::op_param_lists::set_list class b4dev annotation {{zid zid 0}}
+kx_ans ::rdw::pick_end
+kx_reset
+xschem unselect_all
+xschem select instance M1
+update idletasks
+
+proc kn_text {} {
+  if {![llength $::rdw::blocks]} { return NO-BLOCK }
+  return [kx_ans ::rdw::block_text [lindex $::rdw::blocks 0]]
+}
+proc kn_press {k} {
+  focus -force .drw ; update idletasks
+  event generate .drw <Key-$k> -when now
+  update
+  return [kn_text]
+}
+
+set KN_T1 [kn_press 1]
+set KN_T3 [kn_press 3]
+set KN_T2 [kn_press 2]
+
+check {KN1 THE USER'S OWN GESTURE, ANSWERED: a bare 1 over a selected device prints the class's annotation list - the row it declares and NOT the row this run also published - and says which list withheld what, while a bare 3 still prints everything the run published with no narrowing sentence at all} \
+  [list [kx_has $KN_T1 { zid }] \
+        [kx_has $KN_T1 { zgm }] \
+        [kx_has $KN_T1 {Narrowed to the b4dev annotation list as it stood at this dump. 1 column is not in that list and not shown; this run published 2 for this device. Press 3 for everything this run published.}] \
+        [kx_has $KN_T3 { zid }] \
+        [kx_has $KN_T3 { zgm }] \
+        [kx_has $KN_T3 {Narrowed to the}] \
+        [kx_listkind]] \
+  {1 0 1 1 1 0 summary}
+
+check {KN2 ISSUE 1300's HEADLINE MEASUREMENT, INVERTED: on the user's own tree keys 1, 2 and 3 rendered BYTE-IDENTICAL blocks for one device - here the three are pairwise different, key 2 answers the unowned summary list's PDK seed and says so in its own words, and every one of the three blocks still names the same device} \
+  [list [expr {$KN_T1 eq $KN_T2 ? 1 : 0}] \
+        [expr {$KN_T1 eq $KN_T3 ? 1 : 0}] \
+        [expr {$KN_T2 eq $KN_T3 ? 1 : 0}] \
+        [kx_has $KN_T2 {Narrowed to the b4dev summary list as it stood at this dump. Every column this run published for this device is in that list.}] \
+        [kx_has $KN_T1 {M1:/}] [kx_has $KN_T2 {M1:/}] [kx_has $KN_T3 {M1:/}] \
+        [kx_nblocks]] \
+  {0 0 0 1 1 1 1 3}
+
 if {[llength [info commands kx_ciw_echo_real]]} { rename kx_ciw_echo_real ciw_echo }
 catch {xschem raw clear}
 
@@ -4216,7 +4280,15 @@ catch {xschem raw clear}
 ## indices standing over the new text, so the next press of the chord copied a
 ## slice of the refusal sentence, silently.  CP16 is in section CP, behind the
 ## same guard, so it drops with the rest when no display comes up.
-set KX_FLOOR 81
+## ⚠ AND RAISED 81 -> 83 IN THE SAME COMMIT AS KN1 AND KN2, the two rows that
+## answer issue 1300 through the real keybindings: a bare 1 over a selected
+## device prints the class's annotation list and not the row the run also
+## published, and keys 1, 2 and 3 stop rendering the byte-identical blocks the
+## user met.  Section KN is NOT behind the `have_tk` guard - it drives real key
+## events on a real canvas, which this suite cannot run without at all - so the
+## two rows are always in the denominator.  A floor is raised when rows are
+## added and NEVER lowered to make a run pass.
+set KX_FLOOR 83
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\

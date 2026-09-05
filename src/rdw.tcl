@@ -239,6 +239,189 @@ proc rdw::_analysis_line {ctx} {
     return "These numbers come from the first point of results xschem reports as a $sty analysis, not as a standalone operating point. A $sty sweep's first point is one sweep step, and xschem also reports a multi-point operating point as $sty."
 }
 
+# ===========================================================================
+# ISSUE 1300 -- THE NARROWING.  KEYS 1 AND 2 SELECT A LIST'S CONTENT, NOT ONLY
+# ITS IDENTITY.
+# ===========================================================================
+# The user's first complaint, in their own words: "1 key dumps ALL OP info for
+# a MOS FET in the RDW, when it's supposed to dump only those parameters that
+# get annotated on the schematic."  MEASURED on their own design before this
+# fix: keys 1, 2 and 3 rendered BYTE-IDENTICAL 1939-character blocks, and key 1
+# printed 88 rows for one MOSFET of which their PDK's annotation list declares
+# six.  `rdw::format_answer` took no list argument and no caller ever gave it
+# one -- item B4 shipped the IDENTITY and left the CONTENT to the item that
+# owns the store, and no item ever took it.
+#
+# ⚠ WHY THE USER SAYS "WAS WORKING OK BEFORE", WHICH IS A REAL QUESTION AND NOT
+# A THROWAWAY.  Until 2026-09-05 00:41 the deck used save shape `c`, which
+# emits one `.save @dev[param]` card per DECLARED parameter, so the raw held the
+# annotation list and nothing else and an UNNARROWED pane LOOKED narrowed --
+# measured on the user's own tb_bandgap: 468 cards, 78 devices, exactly the six
+# parameters `id gm gds vgs vth vds`.  Shape `d` -- `set altshow` plus
+# `show all`, chosen automatically by `ase::op_save_tier` when the backend
+# reports `altshow_op_dump`, which the user's ngspice-46+ does -- merges the
+# whole dump into the raw instead: 212 devices, 7825 parameters, 88 of them for
+# their M18.  NOTHING ABOUT THIS WINDOW REGRESSED.  The deck stopped covering
+# for the pane, and the pane's silence became visible.
+#
+# ⚠ THE NARROWING HAS EXACTLY ONE DEFINITION IN THIS TREE AND IT IS NOT HERE.
+# `::op_param_lists::effective` is it, and `rdw::_list_params` -- item R2's
+# reader, built for the reorder -- is this file's one door on to it.  Issue
+# 1300 costed and refused the alternative, "filter from
+# `op_annot::descriptor`'s `params`", because it mints a SECOND definition of
+# "the annotation list" beside ruling DD-6's, which is precisely the drift
+# invariant I1 exists to prevent.  Reusing R2's reader also means the pane's
+# narrowing and the pane's ORDER come from one list, so a reorder the user
+# makes with Up or Down cannot put the two out of step.
+#
+# ⚠ AND IT IS THE RENDERER, NOT THE SEAM.  `ase::op_param_set`'s own written
+# contract is "which parameter columns THIS RUN'S CURRENTLY SELECTED RAW SLOT
+# actually holds"; key 3's content IS that answer (ruling D-5) and the
+# `complete` flag is a statement about it.  Narrowing there would make key 3
+# unimplementable and turn DD-1's honesty flag into a lie.
+#
+# ⚠ AND IT DOES NOT REACH THE DECK -- RULINGS DD-4 AND DD-6, "a display
+# decision NEVER changes what the simulator is asked to save".  Nothing here
+# writes a descriptor, calls `op_param_lists::apply` or names
+# `op_annot::save_cards`.  Row NW8 of the window suite drives a real instance's
+# `.save` cards on all three list identities and golds that they do not move.
+
+# "82 columns are" / "1 column is".  The count and its agreement TOGETHER,
+# because they are always used together and two helpers is how a sentence ends
+# up reading "1 columns are" (issue 1297's family: the analysis kind that read
+# "a op analysis" because the article was a literal).
+proc rdw::_cols_are {n} {
+    if {$n == 1} { return {1 column is} }
+    return "$n columns are"
+}
+
+# ⚠ THE NARROWING IS SAID OUT LOUD, AND THAT IS DD-1's OBLIGATION ONE SURFACE
+# FURTHER OUT.  DD-1's corollary is that a renderer which prints the pairs
+# silently reads as a COMPLETE list; a pane that silently drops 82 of 88 rows
+# has exactly that shape, and worse, because the reader cannot tell it from a
+# device that published six columns.  So a narrowed block says WHICH list
+# narrowed it, HOW MANY rows it withheld, how many of those DID NOT CONVERGE,
+# and that key 3 has them.
+#
+# ⚠ IT GOES IN THE BLOCK, NOT IN WINDOW CHROME.  The block is what the user
+# pastes into a design review (item R3), and a window title or a label above
+# the pane does not travel with a paste.  Row NW10 is the fence.
+#
+# ⚠ AND IT IS PAST TENSE ON PURPOSE.  Issue 1300 refused a `list: annotation`
+# label as "worse than silence", on the ground that a label naming a list whose
+# content is identical for all three IMPLIES a narrowing that did not happen.
+# Half of that objection lapses the moment the narrowing is real.  The half
+# that does NOT lapse is that a standing block is a RECORD and the store is
+# LIVE: `rdw::_reslot_block` is a strict permutation ("adds nothing, removes
+# nothing"), so no edit path re-narrows a block already on screen, and a Delete
+# would leave a present-tense label asserting something false.  "as it stood at
+# this dump" is what makes the sentence true for the life of the block.
+#
+# ⚠ THE WITHHELD NON-CONVERGENCE GETS ITS OWN CLAUSE.  Ruling DD-1 and issue
+# 1272 both say a `nonfinite` row is the one fact a designer most wants to be
+# told about -- it means the device did not converge -- so narrowing it away in
+# silence throws away exactly what obligation 2 exists to preserve.  It is
+# still withheld (the alternative is a pane whose length depends on how badly
+# the circuit failed), and it is COUNTED, so the fact survives the narrowing
+# even when the row does not.  DECISION, unratified, on rule debt 1300.
+proc rdw::_narrow_line {cls listname total withheld wnf norder} {
+    if {$norder == 0} {
+        return "The $cls $listname list was empty at this dump, so nothing this run published for this device is shown. Press 3 for everything this run published."
+    }
+    if {$withheld == 0} {
+        return "Narrowed to the $cls $listname list as it stood at this dump. Every column this run published for this device is in that list."
+    }
+    set s "Narrowed to the $cls $listname list as it stood at this dump. [rdw::_cols_are $withheld] not in that list and not shown; this run published $total for this device."
+    if {$wnf > 0} { append s " $wnf of the withheld did not converge." }
+    return "$s Press 3 for everything this run published."
+}
+
+# Keep only the rows `order` declares, in ALL THREE BUCKETS, and count what was
+# dropped.  Answers {ans total kept withheld-nonfinite}.
+#
+# ⚠ THE THREE BUCKETS ARE THREE DIFFERENT FACTS AND THE FILTER IS ONE RULE.
+# `devices` is a measurement, `absent` a column the raw does not carry,
+# `nonfinite` one it carries for a device that did not converge; the seam keeps
+# them apart so a caller can render each differently, and this proc does not
+# collapse them -- it applies the same membership test to each and rebuilds the
+# same five-key answer, so every downstream reader (`_rowdevs`, the absent
+# footnote, `_incomplete_line`) sees a well-formed narrowed answer rather than
+# a special case.
+#
+# ⚠ `total` COUNTS ROWS, NOT PARAMETERS, and it counts them across every
+# primitive of the union.  One XR1 resolves to several primitives (ruling D-3)
+# and the sentence is about what the BLOCK would have shown.
+proc rdw::_narrow_answer {ans order} {
+    set pairs [dict create]
+    catch {set pairs [dict get $ans devices]}
+    set abs {}
+    catch {set abs [dict get $ans absent]}
+    set nf {}
+    catch {set nf [dict get $ans nonfinite]}
+    set total 0 ; set kept 0 ; set wnf 0
+    set np [dict create]
+    foreach d [dict keys $pairs] {
+        set keep {}
+        foreach pv [dict get $pairs $d] {
+            incr total
+            if {[lsearch -exact $order [lindex $pv 0]] >= 0} {
+                lappend keep $pv ; incr kept
+            }
+        }
+        if {[llength $keep]} { dict set np $d $keep }
+    }
+    set na {}
+    foreach e $abs {
+        incr total
+        if {[lsearch -exact $order [lindex $e 1]] >= 0} {
+            lappend na $e ; incr kept
+        }
+    }
+    set nn {}
+    foreach e $nf {
+        incr total
+        if {[lsearch -exact $order [lindex $e 1]] >= 0} {
+            lappend nn $e ; incr kept
+        } else {
+            incr wnf
+        }
+    }
+    set out $ans
+    catch {dict set out devices   $np}
+    catch {dict set out absent    $na}
+    catch {dict set out nonfinite $nn}
+    return [list $out $total $kept $wnf]
+}
+
+# WHAT NARROWS THIS BLOCK, OR {} FOR "NOTHING DOES".  Answers
+# {listname class ordered-raw-param-names}.
+#
+# ⚠ {} IS THE ANSWER FOR A CALLER THAT CANNOT NAME A LIST, AND IT IS NOT THE
+# SAME AS AN EMPTY LIST.  A ctx with no `list` key (every hand-built context in
+# the suites, and any future caller of the door that has no window state to
+# read), a ctx on list `all` (ruling D-5's escape hatch), and a device whose
+# type the editor cannot resolve all narrow NOTHING -- today's block, byte for
+# byte.  A class that resolves and whose list is genuinely EMPTY narrows
+# everything away and says so in a sentence, which is a different fact and gets
+# different words.  Reading one as the other would either lose every row of a
+# block nobody asked to narrow, or print a header with nothing under it.
+#
+# ⚠ THIS IS THE ONLY PROC IN THIS BLOCK THAT IS NOT PURE: it reads the list
+# store, through `rdw::_list_params` and no other way.  Row NW7 of the window
+# suite golds that chain and golds that neither this proc nor the renderer
+# names `op_annot::descriptor`.
+proc rdw::_narrow_spec {ctx} {
+    set ln {}
+    catch {set ln [dict get $ctx list]}
+    if {$ln ne {annotation} && $ln ne {summary}} { return {} }
+    set cls {}
+    catch {set cls [dict get $ctx class]}
+    if {$cls eq {}} { return {} }
+    set cell {}
+    catch {set cell [dict get $ctx cellname]}
+    return [list $ln $cls [rdw::_list_params $cls $ln $cell]]
+}
+
 # ISSUE 1284.  THE ANSWER DICT IS NOT TRUSTED INPUT.  It is whatever a backend
 # hands over, and ruling D-5 records that the user IS BUILDING A CUSTOM NGSPICE
 # the seam exists to admit -- so the first backend to hand this window a shape
@@ -653,6 +836,33 @@ proc rdw::format_answer {ans ctx} {
     set inc [rdw::_incomplete_line $ans]
     if {$inc ne {}} { lappend out [rdw::_line note $inc] }
 
+    ## ISSUE 1300.  THE NARROWING, AND ITS SENTENCE.
+    ##
+    ## ⚠ THE ORDER OF THE TWO NOTES IS DELIBERATE.  DD-1's incompleteness line
+    ## is about THE RUN -- these are the columns the deck saved -- and this one
+    ## is about THE DISPLAY.  A reader learns what the numbers are, then that
+    ## the run's set is partial, then that the pane narrowed it further; put
+    ## the other way round the DD-1 sentence reads as an explanation of the
+    ## narrowing, which is a different and false claim.
+    ##
+    ## ⚠ AND THE ANSWER IS REPLACED, NOT SIDE-STEPPED.  Everything below --
+    ## the row set, the width, the sub-header suppression, the absent footnote
+    ## -- is computed from `$ans`, so narrowing the ANSWER narrows all of them
+    ## with one change and leaves each of those decisions with exactly one
+    ## implementation.  A filter applied only to the row loop would have left
+    ## the footnote explaining a blank that is no longer on screen and the
+    ## width padding to a name that is no longer printed.
+    set norder {}
+    set nspec [rdw::_narrow_spec $ctx]
+    if {$nspec ne {}} {
+        set norder [lindex $nspec 2]
+        lassign [rdw::_narrow_answer $ans $norder] ans ntot nkept nwnf
+        lappend out [rdw::_line note \
+            [rdw::_narrow_line [lindex $nspec 1] [lindex $nspec 0] \
+                $ntot [expr {$ntot - $nkept}] $nwnf [llength $norder]]]
+        set devs [rdw::_rowdevs $ans]
+    }
+
     set pairs [dict create]
     catch {set pairs [dict get $ans devices]}
     set abs {}
@@ -712,6 +922,23 @@ proc rdw::format_answer {ans ctx} {
     }
     if {[llength $abs] > 0} { lappend out [rdw::_line note [rdw::_absent_line]] }
     lappend out [list {} {}]
+    ## ISSUE 1300, THE ORDER HALF.  A narrowed block is rendered in THE LIST'S
+    ## OWN ORDER, not the raw file's, and the permutation is `_reslot_block`'s
+    ## -- item R2's, unchanged and re-used.  Two reasons, and neither is taste:
+    ## item R2 (issue 1338) already promises that Up and Down move the row in
+    ## this window, and a key that re-rendered in raw order would undo that
+    ## promise on the very next press of 1; and "the list's order" then has one
+    ## implementation in this file instead of two that can disagree.
+    ##
+    ## Every surviving row is one the list declares -- that is what the filter
+    ## did -- so the permutation is TOTAL within each primitive and cannot
+    ## leave a row stranded.  It stays confined to one primitive's contiguous
+    ## run (ruling D-3), so no number moves under a device that did not publish
+    ## it.  The un-narrowed block is not re-slotted at all: key 3's order is
+    ## the raw file's, by ruling D-5, and there is no list to sort it by.
+    if {[llength $norder]} {
+        set out [lindex [rdw::_reslot_block $out $norder] 0]
+    }
     return $out
 }
 
@@ -851,6 +1078,43 @@ proc rdw::_sim_refusal {s} {
     return "Simulator $s is registered but declares no operating-point reader - the op_param_set hook - so this window has nothing to show for it. A backend adds that hook to publish operating-point columns."
 }
 
+# ISSUE 1300.  THE LIST IDENTITY AND THE DEVICE'S CLASS, ADDED TO A CONTEXT
+# THAT DOES NOT ALREADY CARRY THEM.
+#
+# ⚠ IT IS THE THIRD THING THE SEAM'S ONLY DOOR AMENDS, FOR THE SAME REASON AS
+# THE FIRST TWO.  `sim` was added there for issue 1284 and `simtype` for issue
+# 1298, both because items B4 and B5 call `rdw::dump_devpath` with contexts
+# they build themselves, and a fact the renderer needs that only ONE caller
+# supplies is a fact the other callers silently render without.  The list is
+# exactly that shape: `rdw::key` moves `::rdw::listkind` and every other caller
+# knows nothing about it.
+#
+# ⚠ A ctx THAT ALREADY NAMES A LIST WINS, and so does one that already names a
+# class.  The suites' hand-built contexts are the reason -- twenty of them in
+# `test_rdw_window_1245.tcl` alone -- and the rule is the one `simtype` already
+# follows: an explicit value is a caller's decision and this door does not
+# overrule it.
+#
+# ⚠ AND AN UNRESOLVABLE INSTANCE GETS NO CLASS AT ALL, not a guessed one.
+# `rdw::_narrow_spec` reads a missing class as "narrow nothing", so a device
+# the editor cannot resolve renders exactly the block it renders today rather
+# than being narrowed by somebody else's list.  Invariant I3's spirit: a
+# missing datum renders blank, never a wrong assertion.
+proc rdw::_list_ctx {ctx} {
+    variable listkind
+    if {![dict exists $ctx list]} { catch {dict set ctx list $listkind} }
+    if {![dict exists $ctx class]} {
+        set inst {}
+        catch {set inst [dict get $ctx instname]}
+        set tc [rdw::_type_cell $inst]
+        if {$tc ne {}} {
+            catch {dict set ctx class [::op_param_lists::class [lindex $tc 0]]}
+            catch {dict set ctx cellname [lindex $tc 1]}
+        }
+    }
+    return $ctx
+}
+
 proc rdw::dump_devpath {devpath ctx} {
     set s [rdw::sim]
     ## The renderer's malformed-answer sentence names the backend, so the
@@ -869,6 +1133,10 @@ proc rdw::dump_devpath {devpath ctx} {
     if {![dict exists $ctx simtype]} {
         catch {dict set ctx simtype [xschem raw sim_type]}
     }
+    ## ⚠ AND SO DOES THE LIST IDENTITY -- ISSUE 1300, and it is the same
+    ## argument a third time: keys 1, 2 and 3 selected a list that never
+    ## reached the renderer, so all three printed the same block.
+    set ctx [rdw::_list_ctx $ctx]
     if {$s eq {}} {
         set blk [rdw::_refusal $ctx \
             {No simulator backend is registered, so there is nothing to ask for this device.}]
@@ -992,6 +1260,29 @@ proc rdw::_stamped {block} {
     return [expr {$n >= 3 ? 1 : 0}]
 }
 
+# {type cellname} read RIGHT NOW off the live editor for one instance name, or
+# {} when the type cannot be trusted (`rdw::_subject_resolved`'s two refusals).
+#
+# ⚠ IT EXISTS BECAUSE THERE ARE NOW TWO READERS OF THAT PAIR AND ONLY ONE OF
+# THEM IS THE BLOCK STAMP (issue 1300).  `rdw::_capture_subject` reads it to
+# stamp a block at push time; `rdw::_list_ctx` reads it BEFORE the seam is
+# asked, so the renderer knows which class's list narrows this dump.  Two
+# inline copies of the same three catches is invariant I1's two-builders drift
+# in miniature, and the half that would rot is the `missing` refusal -- which
+# is not a courtesy: `op_param_lists::class` answers the TOKEN for a type
+# nobody mapped, by contract, so a caller that let xschem's own
+# symbol-not-found placeholder through would narrow a pane by a class named
+# `missing` and say so on screen.
+proc rdw::_type_cell {inst} {
+    if {$inst eq {}} { return {} }
+    set type {}
+    catch {set type [::op_annot::type $inst]}
+    if {![rdw::_subject_resolved $type]} { return {} }
+    set cell {}
+    catch {set cell [xschem getprop instance $inst cell::name]}
+    return [list $type $cell]
+}
+
 # {instname type cellname schname} read RIGHT NOW -- from the block's own
 # header text and the sheet that is still open -- or {} when nothing can be
 # trusted.  Every read is caught: a dump must never fail because an instance
@@ -1001,11 +1292,10 @@ proc rdw::_capture_subject {block} {
     catch {set line [lindex [lindex $block 0] 1]}
     set inst [rdw::_hdr_instname $line]
     if {$inst eq {}} { return {} }
-    set type {}
-    catch {set type [::op_annot::type $inst]}
-    if {![rdw::_subject_resolved $type]} { return {} }
-    set cell {}
-    catch {set cell [xschem getprop instance $inst cell::name]}
+    set tc [rdw::_type_cell $inst]
+    if {$tc eq {}} { return {} }
+    set type [lindex $tc 0]
+    set cell [lindex $tc 1]
     set sch {}
     catch {set sch [xschem get schname]}
     return [dict create instname $inst type $type cellname $cell schname $sch]

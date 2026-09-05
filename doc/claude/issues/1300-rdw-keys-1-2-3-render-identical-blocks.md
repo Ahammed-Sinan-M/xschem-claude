@@ -1,7 +1,26 @@
 # 1300 — the RDW's keys 1, 2 and 3 select a list IDENTITY and narrow no CONTENT
 
-**Status: FILED, NOT FIXED.** Found by item **B4** while implementing the keys.
-This is B4's own **E question** and it is on the owed ledger.
+**Status: FIXED, 2026-09-05.** Found by item **B4** while implementing the keys;
+answered by the fix recorded in issue **1353**. Keys 1 and 2 now narrow CONTENT
+as well as identity, from `::op_param_lists::effective` reached through item
+R2's `rdw::_list_params`, and key 3 is untouched. **Measured on the user's own
+`M18:/x1/x1`: 88 rows before, 6 after; key 3 still 88; the three blocks now
+pairwise different (469 / 466 / 1939 characters) where they were byte-identical
+at 1939.** Fenced by section **NW** of `tests/headless/test_rdw_window_1245.tcl`
+(ten rows, both arms) and section **KN** of `test_rdw_keys_1245.tcl` (two rows,
+real keybindings), every one proved by a sabotage that reds it.
+
+> ⚠ **THE `[1300]` LEDGER ROW STAYS OPEN, AND THAT IS NOT AN OVERSIGHT.** It
+> carries two *other* ratifications that this fix does not touch — the refusal
+> split (`src/rdw.tcl:1292` / `:1295`) and the un-snapped-mouse refusal — and a
+> rule debt clears only when the user says so. The four decisions THIS fix took
+> on the user's behalf are on the separate rule debt **1353**, minted rather
+> than folded in because `owed.sh add rule` is deduped by id and would have
+> overwritten the text above.
+
+**⚠ THE QUESTION BELOW WAS ANSWERED BY THE FIX, NOT BY THE USER.** Everything
+from here down is the record of how the question stood; issue 1353 records which
+option was taken and why, and the user may still overrule it.
 
 > **⚠ ITEM B4 WAS REVERTED (status F, 2026-09-04)** on issues **1303**, **1304**
 > and the two holes in `PLAN.md`'s B4 table. The keys described below are
@@ -61,6 +80,18 @@ today's answer (zero occurrences of the store's namespace in `src/rdw.tcl`), so
 whichever way this is ruled, the fix reds that row rather than passing in
 silence.
 
+> ⚠ **BOTH SENTENCES ABOVE WERE STALE BY THE TIME THE FIX CAME, AND THE SECOND
+> ONE MATTERS.** Row **K11** no longer counts the store's namespace at zero —
+> item B5 wired the button column and the term moved to row **BT22**, which
+> allows the store's thirteen PUBLISHED verbs by name (`effective` among them)
+> and golds `op_param_lists::_` at zero instead. `src/rdw.tcl` already had ten
+> `effective` call sites before this fix, so option **(b) reds no row**, and
+> the fix did not have to move a fence to land. Issue **1278**'s glob freeze is
+> also not a blocker: `rdw::_edit` already reaches `effective` from a button
+> press, so this widens the exposure from a click to a keystroke rather than
+> introducing it, and `governs` evaluates no user glob at all on a settings
+> file with no flavor rows. 1278 is still open and should still be fixed.
+
 ---
 
 ## UPDATE, 2026-09-04 — the keys are still not in the tree, and this ruling gains a THIRD sentence to judge
@@ -114,3 +145,34 @@ created.**
 **Read alongside:** issue **1308**, filed by B4-3, which asks the *same* user
 the *same* kind of question about the same window — whether it should hold the
 keyboard at all — and must be ruled on together with this one.
+
+---
+
+## UPDATE, 2026-09-05 — **FIXED**, and what the fix did NOT close
+
+The narrowing landed. `rdw::format_answer` reads a `list` and a `class` out of
+its context — put there by `rdw::_list_ctx` at `rdw::dump_devpath`, THE SEAM'S
+ONLY DOOR, beside the `sim` (issue 1284) and `simtype` (issue 1298) that door
+already amended — and filters all three buckets by
+`::op_param_lists::effective`, through item R2's existing `rdw::_list_params`.
+The block is then re-slotted by `rdw::_reslot_block`, so the pane's order is the
+list's order and item R2's Up/Down promise still holds.
+
+**Option (a) stays refused** for the reason filed above. **Option (c) was
+re-costed and half-taken**: the block DOES now name its list, because once the
+narrowing is real a label naming it stops implying something that did not
+happen. The half of (c)'s objection that does NOT lapse — a block is a record
+and the store is live, so a later Delete would falsify a present-tense label —
+is answered by wording it **past tense**, *"as it stood at this dump"*.
+
+**Read alongside issue 1353**, which carries the four decisions taken on the
+user's behalf and the one thing this fix does not close: on a machine with no
+`op_param_lists.conf` entries an unowned SUMMARY list falls through to the PDK
+seed, so keys 1 and 2 narrow to the same ROWS and differ only in the sentence
+that names them. That is the user's second complaint wearing a different cause,
+and it is an E question because changing the store's default would change what
+the deck saves (ruling DD-4).
+
+**Also read issue 1354**, filed from the same diagnosis: the log line that says
+468 save cards were added to a deck that carries none is what sent this batch's
+brief at the wrong hypothesis about why the pane "was working OK before".
