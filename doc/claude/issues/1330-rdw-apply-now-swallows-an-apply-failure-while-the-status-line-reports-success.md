@@ -1,6 +1,8 @@
 # 1330 — `rdw::_apply_now` swallows an `apply` failure while the status line reports success
 
-**Status: FILED, NOT FIXED.** Found by item **B5-3**'s adversary, reproduced
+**Status: FIXED** by item **R2** (issue 1338, commit `0122c9a7`), which is the
+item that made this channel load-bearing; the correction was verified again by
+item P4 of the repair batch. Found by item **B5-3**'s adversary, reproduced
 independently by the write-up agent. Subject: `rdw::_apply_now`
 (`src/rdw.tcl`) and the call order inside `rdw::button`.
 
@@ -77,3 +79,25 @@ failure is the duplicate-label descriptor of issue 1326, and **DD-15** now
 refuses that at `op_annot::register`. This is a **silent-failure channel**, not
 a live defect — which is exactly the kind that surfaces the first time some
 later item gives `apply` a second way to fail.
+
+## What landed (2026-09-05, item P4 of the repair batch)
+
+The code fix landed with item **R2** and this file's header did not, for four
+crews running. `rdw::_apply_now` now returns a REASON rather than `{}`, both
+`rdw::button` arms append it to the status sentence, and the recommended shape
+above is what was built: `rdw::_store_tail`'s idiom moved one call later.
+
+Fenced by row **RE6** of `tests/headless/test_rdw_window_1245.tcl`, which
+`rename`s `op_param_lists::apply` to a proc that raises and asserts four
+things: the edit itself still stands, the sentence still names the parameter,
+it is ONE line, it is NOT the sentence the identical press produces when the
+apply succeeds, and it says something did not happen. The restore of the real
+`apply` is asserted as a leg of the same row.
+
+R2's adversary drove it independently and reported "the issue-1330 fix is real
+(`_apply_now` answers rather than swallowing)".
+
+**The lesson is about the FILE, not the code.** Four write-ups in a row copied
+"1330 — FILED, NOT FIXED" forward out of this header while the tree had been
+fixed for a day. A status line is read by everyone and re-derived by nobody;
+correcting it is one line and is part of the fix, not of the paperwork.

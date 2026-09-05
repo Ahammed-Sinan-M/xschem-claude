@@ -1714,4 +1714,46 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   invisible in a normal run and indistinguishable from a real regression when
   several agents share the box. **FILED, NOT FIXED.**
 
-**The next free number is 1347.**
+* **1347** — **a key-2 (summary) reorder made the Results Display Window
+  contradict the sheet, and the fence could not see it.** Found by item R2's
+  adversary with all four suites green. The user asked for a reorder to be
+  "reflected in the Results Display Window as well as the schematic annotation
+  — if applied to annotation params (1 key) or summary list (2 key)"; for list
+  2 the window followed and the sheet did not, while the status line reported a
+  plain success. Structural, and older than R2: `op_param_lists::_show_set`
+  filters the annotation+summary union by the ANNOTATION list's labels in union
+  order, so the summary list's order can never reach `op_annot::text`. The
+  fence, row RE7, golds `annot_overlay_flushes` — measured +2 while the drawn
+  string was byte-identical, because `op_annot::register` bumps the epoch on any
+  re-register. Fixed by `rdw::_drawn_note`, one clause on the summary reorder
+  arm saying the drawn order did not move; row **RE8** added, golding the drawn
+  STRING for both legs. **The E question — should list 2 reach the sheet at all
+  — is the USER's**, rule debt `1347_R2_summary_order_on_the_sheet`.
+  **FIXED (the false sentence); the ruling is OPEN.**
+
+* **1348** — **a device-flavor reorder re-slotted a block of a cell the entry
+  does not match.** `rdw::_reorder_shown` re-slotted every block of the edited
+  CLASS rather than every block the WRITE reached, so a press whose own sentence
+  read "for cells matching …/p4n.sym" moved a different cell's block, and a
+  broad write over a shadowed device re-slotted the very block
+  `rdw::_shadow_why` was telling the user had not changed. Fixed by
+  `rdw::_write_key`, ONE builder of the store key an edit writes at, shared by
+  `_edit` and `_reorder_shown`. Rows **RE9** and **RE11**. **FIXED.**
+
+* **1349** — **Delete and Add left the RDW pane and the store disagreeing about
+  order.** Up/Down maintained "the window shows the order the store holds"; the
+  two buttons either side of them did not, on a stated reason about MEMBERSHIP
+  ("a re-slot could neither add the new row nor remove the deleted one") that is
+  true and is not about ORDER — `rdw::_reslot_block` is a strict permutation
+  over the rows the run published. Fixed by calling `_reorder_shown` on that arm
+  too, with the scope the dialog answered. Row **RE10**. **FIXED.**
+
+* **1350** — **after a reorder, the NEXT dump of the same device lands in raw
+  order and contradicts the blocks below it.** `rdw::push` does not re-slot, so
+  the oldest dumps carry the newest order and the newest dump carries the raw
+  one — which falsifies row RE5's own title. Both fixes change a decision the
+  batch already took (re-slotting on push reds RE0's control with nothing
+  wrong), so it is an E question: rule debt
+  `1350_R2_does_a_new_dump_follow_the_store`. **FILED, NOT FIXED.**
+
+**The next free number is 1351.**

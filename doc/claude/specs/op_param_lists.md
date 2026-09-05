@@ -1022,6 +1022,21 @@ and B5's is buttons and dialogs. Issue **1300**, and B4's own **E question**:
 either an item takes it, or the window must stop implying a narrowing it does
 not do. Do not read this table as describing the tree.
 
+⚠ **AND THE SUMMARY LIST HAS NO ORDER ON THE SHEET AT ALL** (issue **1347**,
+measured 2026-09-05). `op_annot::text` draws the descriptor's `shown` key;
+`_show_set` builds `shown` by filtering the annotation+summary UNION by the
+labels of `effective $cls **annotation**`, **in union order**, and `_save_set`
+lays the union out **annotation-first**. So every drawn row takes its position
+from list `1`, and a label list `2` alone carries is not drawn at all —
+**a summary reorder can never move the drawn text, for any input.** MEASURED:
+two accepted Up presses on list 2 moved the store and the window and left
+`op_annot::text` byte-identical, while `annot_overlay_flushes` moved **+2**
+(`op_annot::register` bumps the epoch on any re-register, so the counter is not
+the sheet). The Results Display Window now says so on that arm; whether list 2
+*should* reach the sheet is a live rule debt,
+`1347_R2_summary_order_on_the_sheet`. Row **RE8** of
+`tests/headless/test_rdw_window_1245.tcl` golds the drawn STRING for both legs.
+
 **B5. Where "all" comes from — the seam, RULED D-4 + D-5.**
 
 Key 3 never asks ngspice a question directly. It asks the **backend** one:

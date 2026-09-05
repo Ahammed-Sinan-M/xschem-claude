@@ -876,3 +876,173 @@ and **1343** stand.
 
 **No look debt.** Nothing user-visible changed — this is a test-harness repair,
 and the only thing a human could look at is a suite log.
+
+---
+
+## P4 — issues 1347/1348/1349: the summary half of R2's subject line, said out loud, and three orders the window got wrong
+
+**Subject:** `src/rdw.tcl` (`rdw::_write_key` and `rdw::_drawn_note` added,
+`rdw::_edit`, `rdw::_reorder_shown` and both arms of `rdw::button` changed),
+`tests/headless/test_rdw_window_1245.tcl` (section RE, rows **RE8 RE9 RE10
+RE11** added; floor 141 → 145, `:99` 153 → 157). Issue **1330**'s file header
+corrected. Issues **1347 1348 1349 1350** filed, `NUMBERING.md` updated.
+
+**Every defect was DRIVEN AND SHOWN before anything was changed**, on the
+shipped R2 (`0122c9a7`), with a standalone rebuild of section RE's own fixture
+(`…/scratchpad/p4/`). Receipts below are that run's output.
+
+### 1. The summary half of the user's own subject line (issue 1347)
+
+The user asked for the reorder to be *"reflected in the Results Display Window
+as well as the schematic annotation — **if applied to annotation params (1 key)
+or summary list (2 key)**"*. Driven, cursor on M1's `gds`, `set_list summary`,
+two accepted Ups:
+
+```
+store summary     ids gm gds  ->  gds ids gm
+the pane          ids gds gm  ->  gds ids gm     moved
+op_annot::text M1 "id  =\ngm  =\ngds =\n"  ->  IDENTICAL
+annot_overlay_flushes                       +2
+status line       "Up: moved gds up in the summary list for class p4cls."
+```
+
+**It is structural and older than R2.** `op_param_lists::_show_set`
+(`src/op_param_lists.tcl:1746`) filters the annotation+summary union by the
+**annotation** list's labels, in union order, and `_save_set` lays the union out
+annotation-first — so every drawn row takes its position from list 1 and the
+summary list's order can never reach `op_annot::text`. Before R2 the two
+surfaces agreed because both stood still; R2 moved one of them.
+
+**What was fixed is the false sentence, not the mechanism.** `rdw::_drawn_note`,
+on the summary reorder arm only, beside DD-16's `_sheet_note`:
+
+> `Up: moved gds up in the summary list for class p4cls. The schematic draws the annotation list, so what it draws did not move - press 1 and reorder there to change the sheet.`
+
+The pane still follows the summary order, because that half **is** what the user
+asked for on list 2. Delete and Add on the summary list are untouched: they
+promise nothing about drawn order, so nothing they say is false.
+
+**Whether list 2 should reach the sheet at all is the USER's** — it needs a rule
+for combining two orders and reopens DD-6's "shown is derived by filtering".
+**Rule debt `1347_R2_summary_order_on_the_sheet`**, options (a) say it (shipped)
+/ (b) make list 2 drive the sheet / (c) stop re-slotting the pane.
+
+### 2. The fence measured the wrong thing (issue 1347, row RE8)
+
+Row **RE7** golds `annot_overlay_flushes >= 1`. Measured **+2** for the two
+presses above **while the drawn string was byte-identical** —
+`op_annot::register` bumps `::op_annot::gen` on any re-register. RE7's own title
+is true (the schematic IS asked to re-render) and it is **left exactly as it
+is**; a counter simply cannot see that the answer came back the same.
+
+Row **RE8** golds the STRING `op_annot::text` puts on the sheet, both legs, with
+the counter read on both — so the row says out loud that the counter cannot tell
+the two presses apart:
+
+```
+annotation leg   labels  id gm gds -> id gds gm   text moved   flush +1
+summary    leg   labels  id gm gds -> id gm gds   IDENTICAL    flush +1
+                 pane    ids gds gm -> gds ids gm  == the store
+                 sentence says something did not happen
+```
+
+### 3. A flavor reorder re-slotted a block it never reached (issue 1348)
+
+Driven with a flavor entry on M1's cell only, one accepted Up:
+
+```
+status  "…moved gds up in the annotation list for cells matching …/p4n.sym of class p4cls."
+class annotation list  ids gm gds -> ids gm gds   (unmoved, correctly)
+flavor list            ids gm gds -> ids gds gm
+M1's block             ids gds gm -> ids gds gm
+M2's block             gm  ids    -> ids gm       <- NOBODY ASKED
+```
+
+`rdw::_reorder_shown` re-slotted every block of the edited **class** rather than
+every block the **write** reached. Fixed by `rdw::_write_key`, **one** builder
+of the `{<scope> <key>}` an edit writes at, used by `_edit` for the write and by
+`_reorder_shown` for the test — two builders for one narrowing being invariant
+I1's drift, which defect A6 of item B5-2 already cost this feature once.
+
+The same guard fixes the other side: a **broad** write over a device a flavor
+entry shadows no longer re-slots that device's block, so the pane stops
+contradicting `rdw::_shadow_why`'s own sentence printed beneath it (row RE11).
+
+### 4. Delete and Add abandoned the property R2 had just taught (issue 1349)
+
+```
+Up on gds       store ids gds gm   pane ids gds gm    agree
+Delete gds (1)  store ids gm       pane ids gds gm
+Add    gds (3)  store ids gm gds   pane ids gds gm    DISAGREE, nothing said
+```
+
+The comment justifying that arm argued about **membership** — "a re-slot could
+neither add the new row nor remove the deleted one" — and both halves are true
+and neither is about **order**: `rdw::_reslot_block` is a strict permutation
+over exactly the rows the run published AND the list declares. The arm now
+re-slots with the key the dialog's scope resolves to, and row **RE10** golds
+BOTH the order agreeing and the pane's row SET being unchanged from the first
+press to the last, so the old comment's worry is fenced rather than argued away.
+
+### 5. NOT fixed, and it is an E question — issue 1350
+
+RE5's own title says *"the window never shows one class list in two different
+orders at once"*. **A new dump breaks it**, because `rdw::push` does not
+re-slot:
+
+```
+two Ups     store gds ids gm     M1's block gds ids gm
+push M1     block 0 (NEWEST)  ids gds gm   <- raw order
+            block 3 (oldest)  gds ids gm   <- the store's order
+```
+
+Both fixes change a decision the batch already took. Re-slotting in `push` was
+**measured to red row RE0's own control** (it golds the M1 block at
+`{ids gds gm}`; the seed order is `ids gm gds`) — that is a decision about what
+the window IS, not a repair. Overruling the other way deletes RE5. Filed as
+**1350** with all three options; **rule debt
+`1350_R2_does_a_new_dump_follow_the_store`**. The existing debt
+`1338_R2_every_block_of_the_class_follows` covers "an older dump re-orders under
+you" and not "and the newest one then disagrees with it", which is why it is
+separate.
+
+### RED before green
+
+The four new rows were driven against the shipped `src/rdw.tcl` restored from
+`HEAD` over the working file, then restored by `cp` with **`md5sum` verified
+identical** before any number below was taken:
+
+```
+FAIL: RE8 …    FAIL: RE9 …    FAIL: RE10 …    FAIL: RE11 …
+RESULT: 4 FAILED (141 passed)
+```
+
+and `ALL PASS (145)` with the fix. **No pre-existing row moved in either
+direction in that sabotaged run** — the 141 that passed are the 141 that passed
+before, which is also the measurement that says these four are the only rows in
+the suite that can see any of this.
+
+### Name+status diff
+
+Every suite below is asserted to have printed a RESULT line.
+
+| suite | how | before | after | rows that moved |
+|---|---|---|---|---|
+| `test_rdw_window_1245` | `--nogui` | ALL PASS (141) | **ALL PASS (145)** | RE8 RE9 RE10 RE11 added; nothing else moved |
+| `test_rdw_window_1245` | `:99` | ALL PASS (153) | **ALL PASS (157)** | the same four |
+| `test_rdw_keys_1245` | `:99` | ALL PASS (77) | **ALL PASS (77)** | none |
+| `test_op_param_store_1245` | `--nogui` | ALL PASS (130) | **ALL PASS (130)** | none |
+| `test_op_annot` *(control)* | `--nogui` | ALL PASS (485) | **ALL PASS (485)** | none |
+
+### Issue 1330's header, fixed rather than re-recorded
+
+The code fix landed with R2 and the file still opened *"Status: FILED, NOT
+FIXED"*. **Four crews in a row wrote that down instead of editing one line.** It
+now reads FIXED, names row RE6 as the fence, and carries the lesson: a status
+line is read by everyone and re-derived by nobody.
+
+### No look debt
+
+Nothing new is drawn. The one thing a human sees is a status sentence, and its
+wording rides the standing rule debt `1245_B3_window_wording` like every other
+sentence in this window; the decision behind it is on `1347_R2_summary_order_on_the_sheet`.

@@ -4729,6 +4729,207 @@ check {RE7 FENCE DD-4 the schematic is asked to re-render for an ACCEPTED reorde
         [re_ok1 $RE7_M4 {list 3}] $RE7_D4] \
   [list 1 1 1 1 1 0 1 1 1 0]
 
+# ============================================================================
+# THE FOUR ROWS R2's ADVERSARY NEEDED AND R2 DID NOT HAVE
+# ============================================================================
+# All four were driven RED against the shipped R2 (commit 0122c9a7) before
+# they were written; the receipts are in doc/claude/rdw_batch/LEDGER.md.  Each
+# one exists because a green count said a thing that was not true:
+#
+#   RE8   issue 1347.  RE7 golds `annot_overlay_flushes`, and that counter
+#         moves on ANY re-register -- `op_annot::register` bumps
+#         `::op_annot::gen` whether or not the descriptor came back different.
+#         So RE7 goes green for a summary reorder whose drawn result is BYTE-
+#         IDENTICAL, which is the shipped state.  This row golds the STRING
+#         `op_annot::text` puts on the sheet.
+#   RE9   issue 1348.  A device-flavor reorder re-slotted a block of a cell the
+#         entry does not match.
+#   RE10  issue 1349.  Delete and Add left the pane and the store disagreeing
+#         about ORDER.
+#   RE11  issue 1348's other side.  A BROAD write over a device a flavor entry
+#         shadows must not re-slot that device's block -- which is what
+#         `rdw::_shadow_why`'s own broad sentence already tells the user.
+
+## The LABEL ORDER the SHEET actually draws, out of the proc that draws it.
+## Never a re-derivation from the store: the whole question here is whether the
+## two agree, and a reader that asked the store would answer yes by
+## construction.
+proc re_text {inst} {
+  set t [rw_ans ::op_annot::text $inst]
+  if {[rw_bad $t]} { return $t }
+  return $t
+}
+proc re_labels {inst} {
+  set t [re_text $inst]
+  if {[rw_bad $t]} { return $t }
+  set out {}
+  foreach l [split $t "\n"] {
+    set l [string trim $l]
+    if {$l eq {}} { continue }
+    lappend out [lindex [split $l =] 0]
+  }
+  set trimmed {}
+  foreach l $out { lappend trimmed [string trim $l] }
+  return $trimmed
+}
+
+# --- RE8  THE DRAWN RESULT, NOT THE COUNTER (issue 1347) ---------------------
+## ⚠ THE TWO LEGS ARE DELIBERATELY ASYMMETRIC, AND THE ASYMMETRY IS THE FACT.
+## `op_param_lists::_show_set` filters the annotation+summary union by the
+## ANNOTATION list's labels, in union order, and `_save_set` lays the union out
+## annotation-first -- so every drawn row takes its position from list 1 and
+## the summary list's order can never reach the sheet at all.  DD-4 says "only
+## lists 1 and 2 re-render the schematic" and that is TRUE of the re-render;
+## it is not true of the RESULT, and R2's status line said the plain success
+## sentence for both.
+##
+## The counter is read on both legs and golded as moving on both, which is what
+## makes this row a statement about RE7 as well: two presses that differ in the
+## only way the user can see are INDISTINGUISHABLE to the fence that was
+## supposed to defend them.
+re_reset
+rw_ans ::rdw::set_list annotation
+rw_ans ::rdw::set_row 17
+set RE8_A0 [re_labels M1] ; set RE8_T0 [re_text M1] ; set RE8_F0 [re_flush]
+set RE8_MA [re_press up]
+set RE8_A1 [re_labels M1] ; set RE8_T1 [re_text M1]
+set RE8_DA [expr {[re_flush] - $RE8_F0}]
+re_reset
+rw_ans ::rdw::set_list summary
+rw_ans ::rdw::set_row 17
+set RE8_B0 [re_labels M1] ; set RE8_S0 [re_text M1] ; set RE8_F2 [re_flush]
+set RE8_MB1 [re_press up]
+set RE8_MB2 [re_press up]
+set RE8_B1 [re_labels M1] ; set RE8_S1 [re_text M1]
+set RE8_DB [expr {[re_flush] - $RE8_F2}]
+set RE8_PANE [re_params 2] ; set RE8_LIST [re_lparams summary]
+rw_ans ::rdw::set_list annotation
+check {RE8 the fence is the DRAWN RESULT and not the re-render counter: an accepted annotation reorder really does move the string op_annot::text puts on the sheet, an accepted SUMMARY reorder leaves it BYTE-IDENTICAL because the sheet draws the annotation list, the window follows the summary order anyway because that half is what the user asked for, and the status line SAYS the drawn order did not move - while annot_overlay_flushes moves on BOTH, so the counter cannot tell the two apart} \
+  [list [re_ok1 $RE8_MA gds] $RE8_A0 $RE8_A1 \
+        [expr {$RE8_T1 ne $RE8_T0 ? 1 : 0}] [expr {$RE8_DA >= 1 ? 1 : 0}] \
+        [re_negated $RE8_MA] \
+        [re_ok1 $RE8_MB2 gds] $RE8_B0 $RE8_B1 \
+        [expr {$RE8_S1 eq $RE8_S0 ? 1 : 0}] [expr {$RE8_DB >= 1 ? 1 : 0}] \
+        [re_negated $RE8_MB2] $RE8_PANE $RE8_LIST] \
+  [list 1 {id gm gds} {id gds gm} 1 1 0 \
+        1 {id gm gds} {id gm gds} 1 1 1 {gds ids gm} {gds ids gm}]
+
+# --- RE9  A FLAVOR REORDER REACHES THE CELLS THE ENTRY MATCHES (issue 1348) --
+## The press's own sentence names the glob it wrote at.  MEASURED at the
+## shipped R2, with a flavor entry on M1's cell only: the class list stood
+## still, M1's block followed the flavor entry -- and M2's block, a different
+## cell governed by the unmoved class entry, went `gm ids` -> `ids gm`.  A
+## block re-slotted by a press that did not touch its list is a window telling
+## the user a change reached further than it did, and the store cannot support
+## the reading either way.
+##
+## TWO PRESSES, because one leaves M1's pane where it already was: the flavor
+## list starts equal to the seed and the pane's `gm` is non-finite, so the
+## first press moves the LIST and not the DISPLAY (row RE1's own trap).
+re_reset
+set RE9_CELL [rw_w xschem getprop instance M1 cell::name]
+set RE9_SET [rw_ans ::op_param_lists::set_list flavor [list re2cls $RE9_CELL] \
+                annotation {{id ids 0} {gm gm 1} {gds gds 1}}]
+set RE9_G [rw_ans ::op_param_lists::governs re2cls annotation $RE9_CELL]
+rw_ans ::rdw::set_list annotation
+rw_ans ::rdw::set_row 17
+set RE9_M1 [re_press up]
+set RE9_M2 [re_press up]
+set RE9_FL {}
+foreach t [rw_ans ::op_param_lists::effective re2cls annotation $RE9_CELL] {
+  lappend RE9_FL [lindex $t 1]
+}
+check {RE9 a device-flavor reorder reaches the blocks that entry governs and no others: the press writes the flavor list, the CLASS list stands still, the block of the cell the glob matches follows - and the block of a sibling cell governed by the untouched class entry keeps its own order, so the window never shows a change reaching further than the sentence says it did} \
+  [list $RE9_SET [lindex $RE9_G 0] \
+        [re_ok1 $RE9_M2 gds] [re_ok1 $RE9_M2 $RE9_CELL] \
+        $RE9_FL [re_lparams annotation] \
+        [re_params 2] [re_params 1] [re_params 0]] \
+  [list 1 flavor 1 1 {gds ids gm} $RE_SEEDP {gds ids gm} {gm ids} {gm ids}]
+
+# --- RE10  DELETE AND ADD KEEP THE PANE AND THE STORE AGREEING (issue 1349) --
+## ⚠ `rename`, NEVER `proc`, for the dialog stub - section BT's own idiom and
+## row RE6's, and the restore is asserted as a leg.
+##
+## MEASURED at the shipped R2: after an Up the two agreed on `ids gds gm`; a
+## broad Delete of `gds` and an Add of it back left the store at `ids gm gds`
+## against a pane still reading `ids gds gm`, with nothing said.  The reason
+## the code gave for not re-slotting here was an argument about MEMBERSHIP --
+## "a re-slot could neither add the new row nor remove the deleted one" -- and
+## both halves are true and neither is about ORDER: `rdw::_reslot_block` is a
+## strict permutation over the rows the run published AND the list declares.
+## So this row golds BOTH: the order agrees, and the pane's row SET is
+## unchanged from first press to last.
+re_reset
+set RE10_REN 0
+if {[llength [info commands ::rdw::scope_dialog]]} {
+  rename ::rdw::scope_dialog ::re10_real_dialog
+  set RE10_REN 1
+}
+set ::re10_answer {}
+proc ::rdw::scope_dialog {args} { return $::re10_answer }
+rw_ans ::rdw::set_list annotation
+rw_ans ::rdw::set_row 17
+set RE10_SET0 [lsort [re_params 2]]
+set RE10_MU [re_press up]
+set RE10_AU [expr {[re_params 2] eq [re_lparams annotation] ? 1 : 0}]
+set ::re10_answer [dict create scope broad]
+set RE10_MD [re_press delete]
+set RE10_PD [re_params 2]
+rw_ans ::rdw::set_list all
+set ::re10_answer [dict create scope broad list annotation]
+set RE10_MA [re_press add]
+rw_ans ::rdw::set_list annotation
+set RE10_PA [re_params 2] ; set RE10_LA [re_lparams annotation]
+set RE10_SET1 [lsort [re_params 2]]
+catch {rename ::rdw::scope_dialog {}}
+set RE10_REST 0
+if {$RE10_REN} {
+  rename ::re10_real_dialog ::rdw::scope_dialog
+  set RE10_REST [expr {[llength [info commands ::rdw::scope_dialog]] ? 1 : 0}]
+}
+check {RE10 Delete and Add leave the pane and the store agreeing about ORDER, which is the property Up and Down had just taught the user to rely on: a broad Delete then an Add of the same parameter puts the store back in a new order and the pane follows it, while the pane's row SET is untouched from the first press to the last - a re-slot is a permutation over the rows this run published, so it adds no row the simulator did not report and drops none that it did} \
+  [list $RE10_REN $RE10_REST \
+        [re_ok1 $RE10_MU gds] $RE10_AU \
+        [re_ok1 $RE10_MD gds] $RE10_PD \
+        [re_ok1 $RE10_MA gds] $RE10_PA $RE10_LA \
+        [expr {$RE10_PA eq $RE10_LA ? 1 : 0}] \
+        [expr {$RE10_SET1 eq $RE10_SET0 ? 1 : 0}] [llength $RE10_PA]] \
+  [list 1 1 1 1 1 {ids gds gm} 1 {ids gm gds} {ids gm gds} 1 1 3]
+
+# --- RE11  A BROAD WRITE DOES NOT RE-SLOT A BLOCK IT DID NOT REACH ----------
+## The other side of issue 1348, and it is `rdw::_shadow_why`'s own sentence
+## made true in the pane: a broad Delete over a device a flavor entry governs
+## really does change the class list and really does not reach that device, and
+## the status line says so in those words.  A pane that re-slotted the cursored
+## block anyway would be contradicting the sentence printed beneath it - while
+## the sibling block, which the class entry really does govern, must follow.
+re_reset
+set RE11_CELL [rw_w xschem getprop instance M1 cell::name]
+rw_ans ::op_param_lists::set_list flavor [list re2cls $RE11_CELL] \
+  annotation {{id ids 0} {gm gm 1} {gds gds 1}}
+set RE11_REN 0
+if {[llength [info commands ::rdw::scope_dialog]]} {
+  rename ::rdw::scope_dialog ::re11_real_dialog
+  set RE11_REN 1
+}
+proc ::rdw::scope_dialog {args} { return [dict create scope broad] }
+rw_ans ::rdw::set_list annotation
+rw_ans ::rdw::set_row 17
+set RE11_M [re_press delete]
+set RE11_P2 [re_params 2] ; set RE11_P1 [re_params 1]
+set RE11_CL [re_lparams annotation]
+catch {rename ::rdw::scope_dialog {}}
+set RE11_REST 0
+if {$RE11_REN} {
+  rename ::re11_real_dialog ::rdw::scope_dialog
+  set RE11_REST [expr {[llength [info commands ::rdw::scope_dialog]] ? 1 : 0}]
+}
+check {RE11 a BROAD write over a device a flavor entry shadows does not re-slot that device's block: the class list really moves, the status line says in DD-8's own words that this device's own rows did not change, the cursored block is byte-identical to prove it - and the sibling block, which the class entry really does govern, follows the list that really moved} \
+  [list $RE11_REN $RE11_REST \
+        [re_ok1 $RE11_M gds] [re_ok1 $RE11_M {did not change}] \
+        $RE11_CL $RE11_P2 $RE11_P1] \
+  [list 1 1 1 1 {ids gm} {ids gds gm} {ids gm}]
+
 # --- the section leaves the tree as it found it ------------------------------
 rw_ans ::op_param_lists::reset
 catch {op_annot::register re2ndev {}}

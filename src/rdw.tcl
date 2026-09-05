@@ -3108,11 +3108,17 @@ proc rdw::_subject {blockindex} {
 #
 # ⚠ THE CELL IS PASSED, so each block is re-slotted into the order that governs
 # IT.  A device-flavor entry legitimately governs one block and not another
-# (`rdw::_scope_for` asks exactly this question before the write), so a block
-# the flavor entry does not match must keep the class order it is actually
-# drawn in.  With no flavor entry in the settings file -- the ordinary case --
-# `effective` falls through to the class entry and then to the PDK seed, so the
-# extra argument changes nothing at all.
+# (`rdw::_scope_for` asks exactly this question before the write).  With no
+# flavor entry in the settings file -- the ordinary case -- `effective` falls
+# through to the class entry and then to the PDK seed, so the extra argument
+# changes nothing at all.
+#
+# ⚠ WHICH BLOCK GETS RE-SLOTTED AT ALL IS DECIDED ONE LAYER OUT, and it is not
+# this proc's question.  A block a write did not reach is skipped by
+# `rdw::_reorder_shown`'s `wkey` test (issue 1348) rather than re-slotted into
+# whatever order happens to govern it -- an earlier revision did the latter and
+# reordered a sibling cell's block on a press whose own sentence named a
+# different cell file.
 #
 # Deduped because `order` is used as a fill sequence below: a list carrying two
 # triples with the same RAW param would otherwise place that row twice and drop
@@ -3208,13 +3214,28 @@ proc rdw::_reslot_block {block order} {
 # pane line the cursor should move to.  `loc` is the {blockindex entryindex}
 # the cursor was at and `line` its flat pane line.
 #
-# ⚠ EVERY BLOCK OF THE CLASS, NOT JUST THE ONE THE CURSOR IS IN.  The store is
-# class-wide, so a window that reordered only the cursored block would show the
-# SAME class list in two different orders at once -- a statement the store
-# cannot support, and one the user would have to reconcile by hand.  This is an
-# E question neither DD-3 nor DD-4 answers; it is on the owed ledger as rule
-# debt 1338_R2_every_block_of_the_class_follows for the user to overrule, and
-# row RE5 is what an overrule would delete.
+# ⚠ EVERY BLOCK THE WRITE REACHED, NOT JUST THE ONE THE CURSOR IS IN.  The
+# store's entries are class- and flavor-wide, so a window that reordered only
+# the cursored block would show the SAME list in two different orders at once
+# -- a statement the store cannot support, and one the user would have to
+# reconcile by hand.  This is an E question neither DD-3 nor DD-4 answers; it
+# is on the owed ledger as rule debt 1338_R2_every_block_of_the_class_follows
+# for the user to overrule, and row RE5 is what an overrule would delete.
+#
+# ⚠ BUT "THE WRITE REACHED IT" IS A NARROWER TEST THAN "SAME CLASS", AND THE
+# DIFFERENCE IS ISSUE 1348.  `wkey` is the {<scope> <key>} the edit actually
+# wrote at, built by the ONE builder `rdw::_write_key`; a block is re-slotted
+# only when the entry that GOVERNS its own cell is that same entry.  Without
+# that test a device-flavor press -- whose own sentence reads "for cells
+# matching <glob> of class <cls>" -- visibly reordered a block of a cell the
+# glob does not match, re-slotting it into a class list the press had not
+# touched.  MEASURED: M2's block went `gm ids` -> `ids gm` on a press that
+# named M1's cell file and left the class list byte-identical.  The same test
+# is what makes a BROAD write agree with `rdw::_shadow_why`'s own broad
+# sentence -- "this device's own rows did not change" -- instead of silently
+# reordering the very block that sentence is about.
+# `wkey` {} disables the guard, which is what a caller with no key to name
+# would need; no shipped caller passes one.
 #
 # ⚠ A BLOCK WITH NO SUBJECT IS NOT TOUCHED, and neither is one of another
 # class.  A block whose device could not be resolved at dump time carries no
@@ -3223,7 +3244,7 @@ proc rdw::_reslot_block {block order} {
 # list nobody edited.  Row RE5's other two blocks are spelled in the order a
 # class-wide reorder WOULD produce, so "left alone" and "reordered" are
 # distinguishable on them.
-proc rdw::_reorder_shown {cls listname loc line} {
+proc rdw::_reorder_shown {cls listname wkey loc line} {
     variable blocks
     set out {}
     set bi 0
@@ -3237,6 +3258,9 @@ proc rdw::_reorder_shown {cls listname loc line} {
         }
         set cell {}
         catch {set cell [dict get $s cellname]}
+        if {$wkey ne {} && [rdw::_scope_for $cls $listname $cell] ne $wkey} {
+            lappend out $b ; incr bi ; continue
+        }
         set ord [rdw::_list_params $cls $listname $cell]
         if {[llength $ord] == 0} { lappend out $b ; incr bi ; continue }
         lassign [rdw::_reslot_block $b $ord] nb map
@@ -3318,6 +3342,82 @@ proc rdw::_scope_for {cls listname cell} {
         return [list flavor [lindex $g 1]]
     }
     return [list class $cls]
+}
+
+# THE ONE BUILDER OF THE STORE KEY AN EDIT WRITES AT -- {<scope> <key>}, the
+# two arguments `op_param_lists::set_list` takes, or {} when this scope cannot
+# name one for this device.
+#
+# ⚠ IT EXISTS BECAUSE TWO CALLERS NOW NEED THE SAME ANSWER, AND A SECOND
+# DERIVATION OF IT IS INVARIANT I1's TWO-BUILDERS DRIFT.  `rdw::_edit` needs
+# the key to WRITE at; `rdw::_reorder_shown` needs it to decide which stored
+# blocks the write actually REACHED.  Before issue 1348 only the first existed
+# and the second re-slotted every block of the class -- so a press whose own
+# sentence said "for cells matching <glob>" visibly reordered a block of a
+# DIFFERENT cell, one the flavor entry does not match and the write never
+# touched.  MEASURED, three blocks, a flavor entry on M1's cell only:
+#     class annotation list   ids gm gds  ->  ids gm gds   (unmoved, correctly)
+#     flavor list             ids gm gds  ->  ids gds gm
+#     M1's block              ids gds gm  ->  ids gds gm   (its own list)
+#     M2's block              gm  ids     ->  ids gm       <- NOBODY ASKED
+#
+# ⚠ AND `broad` IS NOT `class` BY ACCIDENT ON THE OTHER SIDE EITHER.  A broad
+# write over a device a flavor entry governs really does change the class list
+# and really does NOT reach that device -- which is the sentence
+# `rdw::_shadow_why`'s broad arm already says out loud.  Comparing this key
+# against each block's own `_scope_for` is what makes the pane agree with that
+# sentence instead of contradicting it.
+proc rdw::_write_key {cls cell listname scope} {
+    if {$scope eq {narrow}} {
+        if {$cell eq {}} { return {} }
+        return [list flavor [list $cls $cell]]
+    }
+    if {$scope eq {broad}} { return [list class $cls] }
+    ## `governing` -- Up and Down, which raise no dialog and so have no answer
+    ## to obey.
+    return [rdw::_scope_for $cls $listname $cell]
+}
+
+# WHAT A REORDER OF THIS LIST DOES **NOT** DO TO THE SHEET (issue 1347).
+#
+# ⚠ THE SUMMARY LIST HAS NO ORDER ON THE SHEET, AND THAT IS STRUCTURAL, NOT A
+# BUG IN THIS WINDOW.  `op_annot::text` (src/op_annot.tcl) draws the
+# descriptor's `shown` key; `op_param_lists::_show_set` builds `shown` by
+# filtering `params` -- the annotation+summary UNION -- by the labels of
+# `effective $cls ANNOTATION`, in union order, and `_save_set` lays the union
+# out annotation-first.  So every drawn row takes its position from the
+# ANNOTATION list, and a row the summary list alone carries is not drawn at
+# all.  MEASURED, two accepted Up presses on the summary list:
+#     store summary   ids gm gds  ->  gds ids gm
+#     the pane        ids gds gm  ->  gds ids gm
+#     op_annot::text  "id =\ngm =\ngds =\n"  BYTE-IDENTICAL
+# while `xschem get annot_overlay_flushes` moved +2, because
+# `op_annot::register` bumps the epoch on any re-register.
+#
+# ⚠ SO THE COUNTER IS NOT THE SHEET, AND ROW RE7 GOLDS THE COUNTER.  RE7's own
+# title is true -- the schematic IS asked to re-render -- but it cannot see
+# that the answer came back the same, and DD-4's "lists 1 and 2 re-render the
+# schematic" was read as though it could.  Row RE8 golds `op_annot::text`'s
+# STRING for both legs and is the fence that would have caught this.
+#
+# ⚠ THE EDIT IS NOT REFUSED AND THE PANE STILL FOLLOWS IT.  The user's words
+# for item R2 are "reflected in the Results Display Window as well as the
+# schematic annotation - if applied to annotation params (1 key) or summary
+# list (2 key)", so the WINDOW half is owed for list 2 and is delivered; what
+# cannot be delivered without deciding what the SHEET draws is the other half,
+# and a window that quietly showed one order while the sheet drew another is
+# the contradiction this clause removes.  Whether list 2 should reach the sheet
+# at all is an E question the user has not answered -- issue 1347, rule debt
+# `1347_R2_summary_order_on_the_sheet`.
+#
+# ONE CLAUSE, ON THE REORDER ARM ONLY.  Delete and Add on the summary list
+# promise nothing about drawn ORDER, so their sentences are already complete
+# and true; R2 is the item that promises the schematic follows, which is the
+# same argument row RE6 makes for issue 1330.
+proc rdw::_drawn_note {op listname} {
+    if {$op ne {up} && $op ne {down}} { return {} }
+    if {$listname ne {summary}} { return {} }
+    return {The schematic draws the annotation list, so what it draws did not move - press 1 and reorder there to change the sheet.}
 }
 
 # ---------------------------------------------------------------------------
@@ -3476,7 +3576,7 @@ proc rdw::_edit {op subject listname scope param} {
         # UP AND DOWN, WHICH RAISE NO DIALOG AND SO HAVE NO ANSWER TO OBEY.
         # They write at whatever entry governs this device today, because a
         # reorder whose only effect is invisible is a broken button.
-        set g    [rdw::_scope_for $cls $listname $cell]
+        set g    [rdw::_write_key $cls $cell $listname governing]
         set skey [lindex $g 0]
         set key  [lindex $g 1]
         if {$skey eq {flavor}} {
@@ -3507,13 +3607,15 @@ proc rdw::_edit {op subject listname scope param} {
         if {![string match -nocase $cell $cell]} {
             return [list refused "the cell name $cell contains glob characters, and a device-flavor entry is matched as a glob - a key written from it would never match this device again. Choose every device of class $cls instead."]
         }
-        set skey  flavor
-        set key   [list $cls $cell]
+        set g     [rdw::_write_key $cls $cell $listname narrow]
+        set skey  [lindex $g 0]
+        set key   [lindex $g 1]
         set base  [::op_param_lists::effective $cls $listname $cell]
         set where "for cell $cell only"
     } else {
-        set skey  class
-        set key   $cls
+        set g     [rdw::_write_key $cls $cell $listname broad]
+        set skey  [lindex $g 0]
+        set key   [lindex $g 1]
         set base  [::op_param_lists::effective $cls $listname]
         set where "for class $cls"
     }
@@ -3639,6 +3741,12 @@ proc rdw::_edit {op subject listname scope param} {
     ## refusal sentences above are already complete and true without it.
     set sheet [rdw::_sheet_note $subject]
     if {$sheet ne {}} { append say " $sheet" }
+    ## ISSUE 1347, AND IT SITS HERE FOR RULING DD-16's OWN REASON: the success
+    ## arm only, at exactly one place, so all three `ok` returns below carry it
+    ## and no refusal arm does.  A refusal moved nothing, so the false belief
+    ## it corrects never forms.
+    set drawn [rdw::_drawn_note $op $listname]
+    if {$drawn ne {}} { append say " $drawn" }
     set shadow [rdw::_shadow_why $scope $cls $listname $cell $skey $key]
     if {$shadow ne {}} { return [list ok "$say $shadow"] }
     if {$scope ne {narrow}} { return [list ok $say] }
@@ -3990,7 +4098,14 @@ proc rdw::button {id} {
         # re-rendered still leaves the WINDOW agreeing with the store the user
         # just changed -- the edit stood, and the sentence below says which
         # half did not follow (issue 1330).
-        set line [rdw::_reorder_shown [dict get $subj class] $ln $loc $line]
+        #
+        # ⚠ AND ONLY THE BLOCKS THE WRITE REACHED (issue 1348).  The key is
+        # built by `rdw::_write_key`, the same builder `rdw::_edit` writes at,
+        # so the pane cannot follow an entry the press did not touch.
+        set line [rdw::_reorder_shown [dict get $subj class] $ln \
+                    [rdw::_write_key [dict get $subj class] \
+                                     [dict get $subj cellname] $ln governing] \
+                    $loc $line]
         rdw::set_row $line
         rdw::render_pane
         set why [rdw::_apply_now $subj]
@@ -4014,12 +4129,34 @@ proc rdw::button {id} {
     ## `_apply_now` to put the change on the sheet, so a swallowed failure was
     ## just as false here; it was only never fenced because no row asked.
     ##
-    ## ⚠ AND THE BLOCKS ARE NOT RE-SLOTTED ON THIS ARM.  A Delete or an Add
-    ## changes WHICH rows the list holds, and the pane's rows are what THIS RUN
-    ## published -- a re-slot could neither add the new row (no run published
-    ## it) nor remove the deleted one (the run still did).  Ruling DD-3 gives
-    ## item R2 the reorder and nothing else; a window that dropped a row the
-    ## simulator really reported would be inventing a dump.
+    ## ⚠ AND THE BLOCKS ARE RE-SLOTTED ON THIS ARM TOO, WHICH REVERSES WHAT
+    ## THIS COMMENT USED TO SAY (issue 1349).  It argued that a re-slot "could
+    ## neither add the new row (no run published it) nor remove the deleted one
+    ## (the run still did)".  Both halves are TRUE and neither is an argument
+    ## about ORDER: `rdw::_reslot_block` is a strict PERMUTATION of the rows
+    ## already in the block, over exactly the rows the run published AND the
+    ## list declares, so it adds nothing, removes nothing, and leaves every
+    ## undeclared row in its own slot.  Membership and order are different
+    ## questions and the old reason answered only the first.
+    ##
+    ## MEASURED at the shipped state: an Up left pane and store agreeing on
+    ## `ids gds gm`; a broad Delete of `gds` and an Add of it back left the
+    ## store at `ids gm gds` against a pane still reading `ids gds gm`, with no
+    ## sentence about the difference.  So the very property item R2 had just
+    ## taught the user to rely on -- the window shows the order the store holds
+    ## -- was maintained by Up and Down alone and quietly abandoned by the two
+    ## buttons either side of them.
+    ##
+    ## The key is the ONE builder's again, so a NARROW write re-slots only the
+    ## blocks that flavor entry governs and a BROAD one skips the blocks a
+    ## flavor entry shadows -- which is `rdw::_shadow_why`'s own sentence, kept
+    ## true in the pane as well as in the status line.
+    set line [rdw::_reorder_shown [dict get $subj class] $ln \
+                [rdw::_write_key [dict get $subj class] \
+                                 [dict get $subj cellname] $ln $scope] \
+                $loc $line]
+    rdw::set_row $line
+    rdw::render_pane
     set why [rdw::_apply_now $subj]
     if {$why ne {}} { return [rdw::status "$label: $sentence $why"] }
     return [rdw::status "$label: $sentence"]
