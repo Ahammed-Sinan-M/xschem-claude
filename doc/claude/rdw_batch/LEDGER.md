@@ -778,3 +778,101 @@ answers the string **`0000g`**, and the sheet prints that too.
 byte-identical, and the only visible difference needs a deliberately broken
 `ev_precision`. The format itself is still owed an eyeball on the standing look
 debt `the_RDW_engineering_notation`, unchanged by this repair.
+
+---
+
+## P3 — issue 1332: the keys suite's modal driver polls, so `$DISPLAY` is measurable again
+
+**Subject:** `tests/headless/test_rdw_keys_1245.tcl`, section SD only (rows
+SD1, SD2, SD3b converted; SD5, SD6, SD7 added; floor 74 → 77). **No `src/`
+file touched** — this is a test defect, and the adversaries said so.
+
+**Why it mattered more than "once in 134 runs".** VERIFY #5 measured it firing
+on **2 of 2 runs on the user's own VcXsrv**, which made every future `$DISPLAY`
+count for this suite unusable — and `$DISPLAY` is the only server that can
+settle issue **1343** (item R4's raise). Reproduced here: **SD2 on 1 of 4**
+pre-fix VcXsrv runs, giving VERIFY #5's exact shape `7 FAILED (67 passed)`.
+
+**Driven before it was touched, deterministically, twice.** A scratchpad probe
+wrapped `rdw::scope_dialog_build` and spun the **event loop** (a busy-wait
+proves nothing — no timer fires while Tcl is out of the loop). The repo file was
+never mutated; `md5sum` verified.
+
+* **Shape A, known** — delay 300 ms *before* the build:
+  fixed `after 100` → `{0 0 0 {} 0 0 {}}` **in 5004 ms**, byte-identical to
+  issue 1332's own recorded tuple; poll → the expected tuple in 315 ms.
+* **Shape B, NOT in the filing, and the one that hurts** — delay 200 ms *after*
+  the build, before `focus -force $w`: the toplevel **already exists**, so a
+  poll on `winfo exists` alone would have shipped the bug intact. Tk redirects a
+  key event to the **display's focus window**, so SD2's Escape lands on `.drw`
+  and **ends the user's canvas command mode**: `run1 0` (exp 1), then the full
+  5 s deadman. Poll → `run1 1` in 205 ms.
+
+**The fix.** `sd_arm` / `sd_poll_modal` / `sd_disarm` re-arm on `after 5` until
+`[winfo exists .rdw.scope]` **AND** `[grab current] ne {}`. That pair is exact,
+not lucky: `rdw::scope_dialog` runs `grab set` then `focus -force` with **no
+event loop between them and `tkwait window`**, so a driver that sees a grab is
+inside `tkwait` on a dialog that is fully modal and already holds the keyboard.
+Budget 900 × 5 ms = 4.5 s, **inside** the unchanged 5 s deadman, so a poll that
+never finds its dialog gives up instead of driving a later row's toplevel. **The
+delay was not widened** — the issue file and the crew brief both forbid it.
+
+**A second latent flake removed on the way past.** Both timers are now cancelled
+when the row ends. They were not: SD1's 5 s deadman stayed armed while SD3b's
+dialog was up, one `catch {destroy .rdw.scope}` from cancelling a dialog another
+row was mid-drive.
+
+**RED before green**, on a **copy** whose `sd_arm` was reverted to `after 100`
+(copy deleted, repo file `md5sum`-verified unchanged):
+
+```
+FAIL SD5 -> {0 0 0 {} 0 {} 1 0 1 0}
+FAIL SD6 -> {1 CANCELLED 0 .drw 0 {} 1 0 1 0}
+FAIL SD7 -> {CANCELLED 1 0 1 CANCELLED 1 1 0 {} 1}
+RESULT: 3 FAILED (74 passed)
+```
+
+**SD1, SD2 and SD3b passed in that same sabotaged run** — the old rows cannot
+see this defect on a quiet `:99`, which is exactly why it survived 134 runs.
+Each new row carries an elapsed-time leg, so a poll quietly reverted to a fixed
+delay cannot pass by accident.
+
+**Name+status diff** (every suite confirmed to have printed a RESULT line; the
+`--nogui` arm of the keys suite still says `RESULT: SKIP`, not an empty cell):
+
+| suite | how | before | after | rows that moved |
+|---|---|---|---|---|
+| `test_rdw_keys_1245` | `:99` | ALL PASS (74) | **ALL PASS (77) × 12/12** | SD5 SD6 SD7 added; SD1 SD2 SD3b converted, all still green |
+| `test_rdw_keys_1245` | `:99`, **6-way spinner + concurrent `test_op_annot` on the same display** | **SD3b fired 2 of 13** | **SD rows 0 of 13** | issue 1332's own acceptance clause |
+| `test_rdw_keys_1245` | **`$DISPLAY`, the user's VcXsrv** | **SD2 fired 1 of 4** (`7 FAILED`) | **`5 FAILED (72 passed)` × 7, SD rows 0 of 7** | the 5 are **RA1..RA5 = issue 1343**, not this |
+| `test_rdw_window_1245` | `--nogui` | ALL PASS (141) | **ALL PASS (141)** | none |
+| `test_op_param_store_1245` | `--nogui` | ALL PASS (130) | **ALL PASS (130)** | none |
+| `test_op_annot` *(control)* | `--nogui` | ALL PASS (485) | **ALL PASS (485)** | none |
+| T1 `run_regression.tcl` | solo | 0 counted | **0 counted** | none; no `exit 127` / `couldn't execute` |
+
+**Reported clean, not fixed, as instructed.** On `$DISPLAY` the suite now sits
+steady at `5 FAILED (72 passed)` and the five are **RA1 RA2 RA3 RA4 RA5**, issue
+**1343**, item R4's — untouched here. One run in seven also flaked **CU7**,
+pre-existing and unrelated.
+
+**Other rows of this suite flake under a 6-way CPU spinner, in BOTH arms
+identically** — F1 F3 F4 B2 B3 B4 B5 V2 D1 CP1 RA1 RA2 RA3 RA6, measured
+**interleaved** pre/post (seven pairs, same machine, same minute) so it is
+demonstrably not this change's doing. Not issue 1332, not fixed here, and
+**filed as issue 1346** with the interleaved table, so it is not lost: quiet the
+suite is 12/12 green, and under crew load it is noisy in a dozen places that
+have nothing to do with the modal — which is where a real regression hides.
+
+**Faster, as a side effect.** The same drive lands in 17 ms under the poll
+against 107 ms under the fixed timer, so the three converted rows give back more
+than the new ones cost.
+
+**Still open, unchanged and said out loud:** `test_ase_bus_bits_0159.tcl:258`
+(BB34/BB35) still uses the fixed-delay idiom the SD rows copied from — another
+item's file, not measured flaking, not touched. Issue **1330**'s file still
+opens *"Status: FILED, NOT FIXED"* while the code is fixed (now the **eighth**
+item to record that rather than edit another item's file), and issues **1331**
+and **1343** stand.
+
+**No look debt.** Nothing user-visible changed — this is a test-harness repair,
+and the only thing a human could look at is a suite log.

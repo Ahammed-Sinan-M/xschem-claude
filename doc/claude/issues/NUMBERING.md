@@ -1705,4 +1705,13 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   instead of inheriting the reader's (measured: eleven and six rows red
   respectively under a non-default one). **FIXED.**
 
-**The next free number is 1346.**
+* **1346** — **`test_rdw_keys_1245` flakes in about fourteen focus/binding rows
+  under CPU load**, in sections F, B, V, D, CU and RA. Found while measuring
+  issue 1332's fix under that issue's own acceptance load (a 6-way spinner plus
+  a concurrent suite on the same display). Measured **interleaved** pre/post so
+  it is demonstrably not 1332's doing: the same set appears in both arms in the
+  same proportions. Quiet, the suite is 12/12 ALL PASS (77) on `:99`, so this is
+  invisible in a normal run and indistinguishable from a real regression when
+  several agents share the box. **FILED, NOT FIXED.**
+
+**The next free number is 1347.**

@@ -1687,11 +1687,18 @@ if {[rdw::have_tk]} {
 # a `tkwait window` with nobody to click it does not FAIL - it HANGS, and takes
 # the whole audit with it. The tree has exactly one place that exercises a real
 # modal safely, tests/headless/test_ase_bus_bits_0159.tcl:263-280, and this
-# section is copied from it verbatim in shape:
+# section was copied from it verbatim in shape:
 #   after 100  {invoke the widgets}      drives it while it is blocked
 #   after 5000 {destroy the toplevel}    the DEADMAN: if the first timer never
 #                                        fires the window goes away anyway and
 #                                        tkwait returns, so this can never hang
+# ⚠ AND THE FIRST HALF OF THAT IDIOM IS NOW GONE, BECAUSE IT FLAKED (issue
+# 1332). `after 100` is a BET that the dialog is up by then, and it was lost on
+# 2 of 2 runs on the user's own VcXsrv server. The invoke half is now a POLL
+# (`sd_arm` / `sd_poll_modal`, just below the fixture) that waits for the
+# dialog to exist AND hold its grab; the deadman half is unchanged and still
+# not optional. The two shapes the bet loses, and what each costs, are measured
+# in the comment on `sd_arm` and fenced by rows SD5, SD6 and SD7.
 # The consumer rows - what a Delete or an Add DOES with the answer - are in
 # test_rdw_window_1245.tcl's section BT, under the `rename`-not-`proc` stub
 # idiom, and run on BOTH arms. This section drives the widgets themselves,
@@ -1780,6 +1787,111 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
     return {}
   }
 
+  # --- THE MODAL DRIVER: A POLL, NEVER A FIXED DELAY (issue 1332) -----------
+  ## ⚠ THIS SECTION USED TO ARM ITS DRIVER ON A BARE `after 100`, COPIED IN
+  ## SHAPE FROM tests/headless/test_ase_bus_bits_0159.tcl:263-280, AND IT
+  ## FLAKED FOR IT. The delay is a bet that the dialog is up by then. Losing
+  ## the bet is not a hang and not a loud failure - every `catch` inside the
+  ## driver hits nothing, the deadman cancels the dialog 4.9 s later, and the
+  ## row reports a PLAUSIBLE all-zeros tuple.
+  ##
+  ## MEASURED, both losing shapes, deterministically (scratchpad probes; the
+  ## delay was installed on a wrapper around `rdw::scope_dialog_build` and the
+  ## repo file was never touched):
+  ##
+  ##   delay BEFORE the toplevel is built (300 ms):
+  ##     fixed `after 100` -> {0 0 0 {} 0 0 {}} in 5004 ms   <- issue 1332's
+  ##                          own recorded tuple, byte for byte
+  ##     poll              -> the expected tuple in 315 ms
+  ##   delay AFTER the build but BEFORE `focus -force $w` (200 ms):
+  ##     fixed `after 100` -> the Escape is REDIRECTED to the display's focus
+  ##                          window, which is still `.drw`, so it ends the
+  ##                          user's canvas command mode: run1 0, expected 1
+  ##                          - that is SD2's failure on the user's VcXsrv
+  ##     poll              -> run1 1, in 205 ms
+  ##
+  ## So the poll waits for BOTH conditions, and they are the right two:
+  ## `rdw::scope_dialog` sets the grab and forces the focus with NO event loop
+  ## between them and `tkwait window`, so a driver that sees a grab is running
+  ## from inside `tkwait` on a dialog that is fully modal and already holds the
+  ## keyboard. Waiting on `winfo exists` alone would still lose the second
+  ## shape: the toplevel exists all through the build's own `update`.
+  ##
+  ## THE DEADMAN IS UNCHANGED AND STILL NOT OPTIONAL (issue 0803): `tkwait`
+  ## must return even if the driver never runs. The poll's budget is 900 x 5 ms
+  ## = 4.5 s, deliberately INSIDE the 5 s deadman, so a poll that never sees
+  ## its dialog gives up rather than driving whatever is on screen later.
+  ##
+  ## AND BOTH TIMERS ARE CANCELLED WHEN THE ROW ENDS. They used to be left
+  ## armed: SD1's 5 s deadman was still live while SD3b's dialog was up, one
+  ## `catch {destroy .rdw.scope}` away from cancelling a dialog a later row was
+  ## in the middle of driving.
+  set ::SD_POLL_ID {} ; set ::SD_DEADMAN {} ; set ::SD_POLLS 0
+  set ::SD_GAVEUP 0   ; set ::SD_RAN 0
+  proc sd_arm {script {budget 900} {deadman 5000}} {
+    set ::SD_POLLS 0 ; set ::SD_GAVEUP 0 ; set ::SD_RAN 0
+    set ::SD_POLL_ID {}
+    set ::SD_DEADMAN [after $deadman {catch {destroy .rdw.scope}}]
+    sd_poll_modal $script $budget
+    return {}
+  }
+  proc sd_poll_modal {script budget} {
+    set ::SD_POLL_ID {}
+    incr ::SD_POLLS
+    if {[winfo exists .rdw.scope] && [grab current] ne {}} {
+      set ::SD_RAN 1
+      uplevel #0 $script
+      return
+    }
+    if {$::SD_POLLS >= $budget} { set ::SD_GAVEUP 1 ; return }
+    set ::SD_POLL_ID [after 5 [list sd_poll_modal $script $budget]]
+  }
+  proc sd_disarm {} {
+    if {$::SD_POLL_ID ne {}} { catch {after cancel $::SD_POLL_ID} }
+    if {$::SD_DEADMAN ne {}} { catch {after cancel $::SD_DEADMAN} }
+    set ::SD_POLL_ID {} ; set ::SD_DEADMAN {}
+    return {}
+  }
+  ## The sabotage rows below delay the real build by spinning the EVENT LOOP,
+  ## which is what display contention does to this path on a loaded box - a
+  ## busy-wait would prove nothing, because no timer can fire while Tcl is not
+  ## in the event loop. `rename`, never `proc` (test_ase_bus_bits_0159.tcl:129).
+  proc sd_slow_install {when ms} {
+    set ::SD_SLOW_WHEN $when ; set ::SD_SLOW_MS $ms
+    if {![llength [info commands ::rdw::sd_real_build]]} {
+      rename ::rdw::scope_dialog_build ::rdw::sd_real_build
+    }
+    proc ::rdw::scope_dialog_build {args} {
+      if {$::SD_SLOW_WHEN eq {before}} { sd_spin $::SD_SLOW_MS }
+      set w [uplevel 1 [linsert $args 0 ::rdw::sd_real_build]]
+      if {$::SD_SLOW_WHEN eq {after}} { sd_spin $::SD_SLOW_MS }
+      return $w
+    }
+    return {}
+  }
+  proc sd_slow_none {} {
+    set ::SD_SLOW_WHEN none
+    if {![llength [info commands ::rdw::sd_real_build]]} {
+      rename ::rdw::scope_dialog_build ::rdw::sd_real_build
+    }
+    proc ::rdw::scope_dialog_build {args} { return NO-DIALOG-EVER-BUILT }
+    return {}
+  }
+  proc sd_slow_remove {} {
+    if {[llength [info commands ::rdw::sd_real_build]]} {
+      catch {rename ::rdw::scope_dialog_build {}}
+      rename ::rdw::sd_real_build ::rdw::scope_dialog_build
+    }
+    set ::SD_SLOW_WHEN none
+    return [llength [info commands ::rdw::scope_dialog_build]]
+  }
+  proc sd_spin {ms} {
+    set ::SD_SPIN_GATE 0
+    after $ms {set ::SD_SPIN_GATE 1}
+    vwait ::SD_SPIN_GATE
+    return {}
+  }
+
   # --- SD1  THE REAL MODAL, DRIVEN, WITH A DEADMAN --------------------------
   ## ⚠ THE POINTER IS PARKED SOMEWHERE NEUTRAL FIRST (issue 1269). A raise
   ## followed by a focus-dependent read INHERITS the pointer position, and
@@ -1791,14 +1903,14 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
   sd_blocks
   update idletasks
   set SD1_TL {}
-  after 100 {
+  sd_arm {
     catch {set ::SD1_TL [bindtags .rdw.scope]}
     catch {.rdw.scope.sc.narrow invoke}
     catch {.rdw.scope.btns.ok invoke}
   }
-  after 5000 {catch {destroy .rdw.scope}}
   set SD1_GOT [kx_ans ::rdw::scope_dialog delete $SD_SUBJ annotation]
   update
+  sd_disarm
   check {SD1 the REAL scope dialog, through its real wrapper and its real widgets: narrow + OK answers this device flavor only for the list it was opened on, and it leaves NO grab and NO window behind - driven with a timer and a deadman, so it cannot hang the suite (issue 0803)} \
     [list [sd_pair $SD1_GOT] \
           [expr {[winfo exists .rdw.scope] ? 1 : 0}] \
@@ -1819,10 +1931,10 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
   ## would silently END THE COMMAND MODE the user is in the middle of.
   kx_ans ::rdw::pick_start
   set SD2_RUN0 [kx_ans ::rdw::pick_running]
-  after 100  {catch {event generate .rdw.scope <Key-Escape> -when now}}
-  after 5000 {catch {destroy .rdw.scope}}
+  sd_arm {catch {event generate .rdw.scope <Key-Escape> -when now}}
   set SD2_GOT [kx_ans ::rdw::scope_dialog delete $SD_SUBJ annotation]
   update
+  sd_disarm
   set SD2_RUN1 [kx_ans ::rdw::pick_running]
   kx_ans ::rdw::pick_end
   check {SD2 Escape on the scope dialog is CANCEL - it answers nothing and stores nothing - and it does NOT end a live canvas command mode, because the child toplevel does not inherit the window's own DD-12 Escape} \
@@ -1903,15 +2015,15 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
   update idletasks
   set ::SD3B_SEEN 0
   set ::SD3B_GRAB {}
-  after 100 {
+  sd_arm {
     catch {set ::SD3B_SEEN [expr {[winfo exists .rdw.scope] ? 1 : 0}]}
     catch {set ::SD3B_GRAB [grab current]}
     catch {.rdw.scope.sc.broad invoke}
     catch {.rdw.scope.btns.ok invoke}
   }
-  after 5000 {catch {destroy .rdw.scope}}
   catch {.rdw.b.delete invoke}
   update
+  sd_disarm
   check {SD3b a REAL .rdw.b.delete invoke really BUILDS the scope dialog - no stub anywhere on the path - the dialog held a grab while it was up, broad + OK moved the class list the cursor's own block belongs to, the OTHER class was left unowned, and nothing is left behind (issue 0803's deadman, issue 1314's stub shadow)} \
     [list $::SD3B_SEEN \
           [expr {$::SD3B_GRAB ne {} ? 1 : 0}] \
@@ -1921,6 +2033,125 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
           [expr {[winfo exists .rdw.scope] ? 1 : 0}] \
           [grab current]] \
     [list 1 1 1 {{id ids 0} {gds gds 1}} 0 0 {}]
+
+
+  # --- SD5  THE FLAKE ITSELF, MADE DETERMINISTIC (issue 1332) ---------------
+  ## THE ROW THAT WOULD HAVE CAUGHT IT. SD3b's shape with the dialog's
+  ## construction deliberately delayed past the old 100 ms timer, by spinning
+  ## the EVENT LOOP - which is what a contended X display does to this path,
+  ## and the only kind of delay a timer can fire during. Under the old
+  ## `after 100` this row is issue 1332's own recorded failure, byte for byte:
+  ##     {0 0 0 {} 0 0 {}}  in 5004 ms, the deadman
+  ## and note what that tuple LOOKS like - a plausible "nothing happened",
+  ## not a crash and not a hang. Under the poll the driver waits and the store
+  ## moves. The elapsed time is a leg, so a poll quietly reverted to a fixed
+  ## delay cannot pass this row by accident.
+  sd_slow_install before 300
+  kx_ans ::op_param_lists::reset
+  kx_ans ::op_param_lists::set_class b5ndev b5cls
+  kx_ans ::op_param_lists::set_class b5pdev b5pcls
+  kx_ans ::op_param_lists::said_clear
+  sd_blocks
+  kx_ans ::rdw::set_list annotation
+  kx_ans ::rdw::set_row 10
+  update idletasks
+  set ::SD5_SEEN 0 ; set ::SD5_GRAB {}
+  sd_arm {
+    catch {set ::SD5_SEEN [expr {[winfo exists .rdw.scope] ? 1 : 0}]}
+    catch {set ::SD5_GRAB [grab current]}
+    catch {.rdw.scope.sc.broad invoke}
+    catch {.rdw.scope.btns.ok invoke}
+  }
+  set SD5_T0 [clock milliseconds]
+  catch {.rdw.b.delete invoke}
+  update
+  set SD5_DT [expr {[clock milliseconds] - $SD5_T0}]
+  sd_disarm
+  check {SD5 the driver is a POLL and not a bet: with the dialog's construction delayed 300 ms - past the old fixed 100 ms timer, and delayed by spinning the event loop the way a contended display does - the driver still lands on a real modal holding a real grab, broad + OK still moves the cursor's own class list, and it all happens in well under the 5 s deadman. Under `after 100` this row is issue 1332's own tuple: {0 0 0 {} 0 0 {}} at 5004 ms} \
+    [list $::SD5_SEEN \
+          [expr {$::SD5_GRAB ne {} ? 1 : 0}] \
+          [kx_ans ::op_param_lists::owns class b5cls annotation] \
+          [kx_ans ::op_param_lists::get_list class b5cls annotation] \
+          [expr {[winfo exists .rdw.scope] ? 1 : 0}] [grab current] \
+          [expr {$SD5_DT >= 250 ? 1 : 0}] [expr {$SD5_DT < 3000 ? 1 : 0}] \
+          $::SD_RAN $::SD_GAVEUP] \
+    [list 1 1 1 {{id ids 0} {gds gds 1}} 0 {} 1 1 1 0]
+
+  # --- SD6  THE OTHER LOSING SHAPE: THE KEYBOARD IS NOT THERE YET -----------
+  ## SD2's Escape, with the delay moved to AFTER the toplevel is built and
+  ## BEFORE `rdw::scope_dialog` forces the keyboard onto it. A driver that
+  ## waited only on `winfo exists .rdw.scope` would fire HERE, and Tk redirects
+  ## a key event to the DISPLAY's focus window rather than to the window the
+  ## event names - so the Escape lands on `.drw` and silently ENDS the user's
+  ## canvas command mode, which is the very thing SD2 exists to forbid.
+  ## MEASURED under the old `after 100`, delay 200 ms: run1 0, expected 1, and
+  ## the dialog then sat there until the deadman at 5000 ms. That is SD2's
+  ## failure on the user's own VcXsrv, reproduced without one. This row is why
+  ## `sd_poll_modal` waits on the GRAB and not merely on the window.
+  sd_slow_install after 200
+  kx_ans ::rdw::pick_start
+  set SD6_RUN0 [kx_ans ::rdw::pick_running]
+  set ::SD6_FOCUS UNSET
+  sd_arm {
+    catch {set ::SD6_FOCUS [focus]}
+    catch {event generate .rdw.scope <Key-Escape> -when now}
+  }
+  set SD6_T0 [clock milliseconds]
+  set SD6_GOT [kx_ans ::rdw::scope_dialog delete $SD_SUBJ annotation]
+  update
+  set SD6_DT [expr {[clock milliseconds] - $SD6_T0}]
+  sd_disarm
+  set SD6_RUN1 [kx_ans ::rdw::pick_running]
+  kx_ans ::rdw::pick_end
+  check {SD6 and the poll waits for the KEYBOARD, not just for the window: with the delay moved between the build and rdw::scope_dialog's own `focus -force`, the driver still finds the focus on the dialog, the Escape cancels the dialog instead of being redirected to the canvas, and the user's command mode is STILL RUNNING afterwards - under a fixed `after 100`, or under a poll that waited on `winfo exists` alone, this row reds with run1 0 and burns the full 5 s deadman} \
+    [list $SD6_RUN0 [sd_pair $SD6_GOT] $SD6_RUN1 \
+          $::SD6_FOCUS \
+          [expr {[winfo exists .rdw.scope] ? 1 : 0}] [grab current] \
+          [expr {$SD6_DT >= 150 ? 1 : 0}] [expr {$SD6_DT < 3000 ? 1 : 0}] \
+          $::SD_RAN $::SD_GAVEUP] \
+    [list 1 CANCELLED 1 .rdw.scope 0 {} 1 1 1 0]
+
+  # --- SD7  A POLL THAT NEVER SEES ITS DIALOG GIVES UP, AND LOUDLY ----------
+  ## The acceptance clause of issue 1332, and the half a poll could get wrong
+  ## in a NEW way: a self-re-arming timer that never finds its subject must
+  ## stop, and it must stop INSIDE the deadman rather than living on to drive
+  ## whatever toplevel a later row happens to put on screen. Two legs, one
+  ## fixture each:
+  ##   (a) no dialog is ever CONSTRUCTED - the wrapper returns a string, so
+  ##       `rdw::scope_dialog`'s own `winfo exists` guard returns Cancel at
+  ##       once; the poll must give up on its budget and its script must never
+  ##       have run;
+  ##   (b) a REAL dialog is built and NOBODY drives it - `tkwait` is entered
+  ##       for real and only the deadman can end it. Issue 0803's property,
+  ##       asserted under the poll rather than assumed. A short deadman is
+  ##       passed so the row costs a third of a second, not five.
+  sd_slow_none
+  sd_arm {catch {.rdw.scope.btns.ok invoke}} 10
+  set SD7A_GOT [kx_ans ::rdw::scope_dialog delete $SD_SUBJ annotation]
+  update
+  ## ⚠ `after 120` ALONE WOULD PROVE NOTHING - a bare `after ms` BLOCKS and
+  ## enters no event loop, so the poll's own timers cannot fire during it and
+  ## the budget is never spent. Measured: the give-up leg read 0 that way. The
+  ## spin below is a `vwait`, which is the event loop.
+  sd_spin 120
+  update
+  set SD7A_RAN $::SD_RAN ; set SD7A_GAVE $::SD_GAVEUP
+  sd_disarm
+  set SD7_RESTORED [sd_slow_remove]
+  sd_arm {} 900 300
+  set SD7_T0 [clock milliseconds]
+  set SD7B_GOT [kx_ans ::rdw::scope_dialog delete $SD_SUBJ annotation]
+  update
+  set SD7_DT [expr {[clock milliseconds] - $SD7_T0}]
+  sd_disarm
+  check {SD7 the poll can fail but it cannot lie or linger: with no dialog ever CONSTRUCTED the driver script never runs and the poll gives up on its own budget instead of re-arming forever into the next row; and with a real dialog built and NOBODY driving it, the deadman still ends it - tkwait returns, the answer is Cancel, no grab and no window are left, and the real scope_dialog_build is back in place afterwards (issue 0803 under the poll, issue 1314's rename-not-proc)} \
+    [list [sd_pair $SD7A_GOT] $SD7A_RAN $SD7A_GAVE \
+          $SD7_RESTORED \
+          [sd_pair $SD7B_GOT] \
+          [expr {$SD7_DT >= 250 ? 1 : 0}] [expr {$SD7_DT < 2000 ? 1 : 0}] \
+          [expr {[winfo exists .rdw.scope] ? 1 : 0}] [grab current] \
+          [expr {[llength [info commands ::rdw::sd_real_build]] == 0 ? 1 : 0}]] \
+    [list CANCELLED 0 1 1 CANCELLED 1 1 0 {} 1]
 
   ## HYGIENE for this section: the real dialog is already back (SD3b needed it),
   ## so forget the fixture and leave no settings file anywhere near the
