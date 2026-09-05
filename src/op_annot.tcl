@@ -1786,6 +1786,20 @@ proc op_annot::db_attach {path {level {}}} {
     }
     return [list 0 $e]
   }
+  ## ⚠ THE SIDECAR MERGE, AND IT GOES HERE RATHER THAN IN A RUN CALLBACK
+  ## (issue 1333). Two measured reasons. `xschem raw add` raises "No raw file
+  ## loaded" unless a database is already on this window, so the merge cannot
+  ## happen when the run finishes -- only when one is attached. And db_attach is
+  ## the ONE place that puts an operating point onto a window: ASE-L's surface
+  ## (ase_window.tcl) and the cadence profile (utils/annot_mode.tcl) both come
+  ## through here, so one call covers both and neither can be forgotten.
+  ##
+  ## CAUGHT, and deliberately not fatal. The raw itself attached successfully;
+  ## its node half is good and every shape but d has all its numbers in it. A
+  ## sidecar that will not parse must not turn a working attach into a refusal —
+  ## ase::op_report_missing is the surface that speaks about a dump that did not
+  ## arrive, and it has the run's shape in hand to say it precisely.
+  catch {::op_annot::opdump_merge $np}
   ::op_annot::_db_stamp $np
   return [list 1 {}]
 }
@@ -3640,6 +3654,26 @@ proc op_annot::_opdump_kv {line} {
   return {}
 }
 
+## The device names a dump answered for, as they appear in its block headers
+## (no leading `@` -- the caller adds whichever spelling it compares against).
+## Cheap enough to run on a real dump: one regexp per line, no parsing of the
+## bodies, because the question is only which devices are in there.
+proc op_annot::opdump_devices {path} {
+  set out {}
+  if {![file isfile $path]} { return {} }
+  set fh [open $path r]
+  set body [read $fh]
+  close $fh
+  set seen [dict create]
+  foreach line [split $body "\n"] {
+    if {![regexp {^([^ ][^:]*):$} $line -> d]} { continue }
+    if {[dict exists $seen $d]} { continue }
+    dict set seen $d 1
+    lappend out $d
+  }
+  return $out
+}
+
 ## READ A DUMP AND PUBLISH IT INTO THE CURRENTLY LOADED DATABASE.
 ##
 ## Returns a dict: {devices N params N skipped N dups N path <p>}.
@@ -3658,6 +3692,42 @@ proc op_annot::_opdump_kv {line} {
 ## serves the update_op snapshot, not live vector storage, so skipping the
 ## republish returns a full set of silent ZEROS -- which look like real
 ## annotations, and are worse than the blank row they replace.
+## MERGE THE SIDECAR DUMP THAT BELONGS TO <rawpath>, IF THERE IS ONE.
+##
+## ⚠ THIS IS THE CALL THE FEATURE SHIPPED WITHOUT (issue 1333), and its absence
+## was not a missing convenience -- it was the 0617 defect restored. Shape d
+## emits NO per-device save card, so with nothing reading the dump the raw held
+## no device parameters at all and `op_annot::text M1` rendered
+## `id =  gm =  gds =  vgs =  vth =  vds =` on a run that exited 0 with a
+## perfect raw and a clean log. MEASURED on the ngspice build carrying the
+## printer fix; the same cell on the per-device shape annotated five of those
+## six rows.
+##
+## Silence is the right answer for a raw with no sidecar beside it, which is
+## every run of every other shape: this proc is on the path of ALL operating
+## point annotation, not just shape d's.
+##
+## ⚠ A STALE SIDECAR IS NOT MERGED, for issue 0838's reason word for word. A
+## number painted onto a schematic carries no provenance and no timestamp, so
+## one left behind by an earlier run is indistinguishable from a live one. The
+## raw gets its freshness check from `ase::results_stale`; the sidecar gets this
+## one, against the raw it claims to belong to. Equal mtimes pass -- one run
+## writes both, and on a coarse filesystem clock they land on the same second.
+proc op_annot::opdump_merge {rawpath} {
+  set dump {}
+  if {[catch {::op_annot::opdump_path $rawpath} dump]} { return {} }
+  if {$dump eq {} || ![file isfile $dump]} { return {} }
+  set rt 0 ; set dt 0
+  if {[catch {file mtime $rawpath} rt]} { return {} }
+  if {[catch {file mtime $dump} dt]} { return {} }
+  if {$dt < $rt} { return [dict create stale 1 path $dump] }
+  set r {}
+  if {[catch {::op_annot::opdump_read $dump} r]} {
+    return [dict create error $r path $dump]
+  }
+  return $r
+}
+
 proc op_annot::opdump_read {path} {
   set path [string tolower $path]
 

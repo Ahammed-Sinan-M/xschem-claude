@@ -1552,4 +1552,49 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   100 ms timer. The deadman worked — it false-redded, it did not hang. A TEST
   defect; the fix is to poll, not to widen the delay. **FILED, NOT FIXED.**
 
-**The next free number is 1333.**
+* **1333** — **the blanket operating-point dump shipped with no caller.**
+  `op_annot::opdump_read` was defined, tested at 33 green checks and invoked by
+  nothing; shape `d` emits no per-device card, so the raw held zero device
+  parameters and every annotation row rendered blank — issue 0617 verbatim.
+  Measured on the ngspice build carrying the printer fix: five working rows
+  became five blank ones. Merge now runs in `op_annot::db_attach`. **FIXED.**
+
+* **1334** — **a mixed-case run folder silently loses the dump, and the probe
+  cannot see it.** ngspice folds the whole `show >` target and exits 0 writing
+  nothing; capability deck C asks with a *relative* target so it has no
+  directory to fold. Control proves it is shape `d`'s own regression: the
+  per-device shape annotates fine in the same directory. New guard **G3b**,
+  reason token `dumppath`. **FIXED.**
+
+* **1335** — **the missing-numbers report is silent under shape d.** Defeated by
+  `.options savecurrents`, which puts `i(@dev[id])` in the raw with no card
+  behind it; the reporter compares devices, so one free vector marked the device
+  answered while six rows were blank. `meta` now carries `optier` and the
+  reporter asks the sidecar. **FIXED.**
+
+* **1336** — **`test_op_dump_altshow` was absent from `full_audit.sh`.** The
+  `nogui_tests=` list is explicit, so the audit never asked the suite and
+  reported the same totals either way. **FIXED.**
+
+## Reserved: 1337–1341, the RDW batch (`doc/claude/rdw_batch/`)
+
+* **1337** — RDW line cursor: clicking a line shades the whole line.
+* **1338** — Up/Down move the cursored row in the window AND re-render the
+  schematic annotation when the edited list is the annotation or summary list.
+* **1339** — select + `Ctrl-C` does not copy (VcXsrv); double-click-then-drag
+  extend is unreliable. PRIMARY is not CLIPBOARD.
+* **1340** — the RDW must RAISE when something is sent to it, like the Library
+  Manager on Ctrl-Alt-S — raise only, no focus.
+* **1341** — RDW parameter values print in engineering notation, through the
+  same proc the schematic annotation uses.
+
+* **1342** — **the probe's own suite reddened when a third deck was added.**
+  Row C5 of `test_ase_simcaps_0948` counted `.control` blocks against
+  `set filetype=ascii`, and the altshow probe's deck C produces TEXT by
+  construction and writes no raw. Counting `write` LINES instead is also wrong —
+  deck A writes twice on purpose, and that repetition is the `appendwrite`
+  measurement. C5 now splits into blocks and asks only of blocks that write a
+  raw. The sibling branch's hand-off note named three suites to check and not
+  this one, which belongs to the very probe it changed. **FIXED.**
+
+**The next free number is 1343.**

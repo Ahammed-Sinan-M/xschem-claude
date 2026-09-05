@@ -223,8 +223,9 @@ set STUB [file join $scratch stub_ngspice]
 set fh [open $STUB w]; puts $fh "#!/bin/sh\nexit 0"; close $fh
 file attributes $STUB -permissions 0755
 
-proc t_tier {caps} {
+proc t_tier {caps {dir {}}} {
   global STUB scratch
+  if {$dir eq {}} { set dir [file join $scratch orun] }
   catch {ase::sim_caps_clear} ; catch {ase::sim_clear}
   ase::sim_register optier $STUB
   ase::sim_select optier
@@ -232,7 +233,7 @@ proc t_tier {caps} {
   set ::ase::sim_caps [dict create $r [list stamp [ase::cap_stamp $r] caps $caps]]
   set st [ase::state_default]
   dict set st design [dict create lib zzlib cell zzcell view schematic]
-  dict set st rundir [file join $scratch orun]
+  dict set st rundir $dir
   dict set st analyses {{type op enabled 1}}
   dict set st save_op_params 1
   set d [ase::op_save_tier $st]
@@ -257,6 +258,163 @@ check {T4 nothing measured at all still refuses shape d} \
 check {T5 ORDERING d beats a: shape a's capability is cold code on every released ngspice, so a build answering both must take the shape whose printer was actually watched working} \
   [t_tier [dict merge $C_BASE {blanket_op_save 1 altshow_op_dump 1}]] {d dump}
 catch {ase::sim_caps_clear} ; catch {ase::sim_clear}
+
+# ============================================================================
+# X — THE PATH THE DUMP CANNOT REACH (issue 1334)
+# ============================================================================
+# ngspice case-folds the WHOLE `show >` target, directory included, and splits
+# it on whitespace -- both silently, at exit 0, with nothing written.
+#
+# MEASURED END TO END on the ver_50 build that carries the printer fix, same
+# cell (sky130_tests/test_nfet_final), only the run directory changed:
+#
+#   rundir `lower_ok`   -> probe 1, tier d, exit 0, .opinfo written
+#   rundir `MixedCase`  -> probe 1, tier d, exit 0, .opinfo *** NOT WRITTEN ***
+#                          raw perfect, log clean, annotation five rows blank
+#   CONTROL, same rundir, per-device shape on 45.2 -> all five rows annotate
+#
+# So the fold is not a shared hazard the older shape also has: it is a
+# regression this shape introduces, and the probe cannot see it because deck C
+# asks with a RELATIVE target (`show all > probe_c.txt`) that has nothing to
+# fold. The question therefore gets asked where the answer is known -- before
+# the shape is chosen -- and a path the redirect cannot survive takes the
+# per-device form, which is the one that always works.
+check_true {X1 a lowercase, space-free directory is reachable} \
+  [ase::op_dump_reachable_dir /home/u/sim]
+check_true {X2 a MIXED-CASE directory is NOT reachable: ngspice folds it, writes nothing, and exits 0} \
+  [expr {![ase::op_dump_reachable_dir /home/u/MixedCase]}]
+check_true {X3 nor is one containing a SPACE -- the redirect is unquoted and ngspice splits on it} \
+  [expr {![ase::op_dump_reachable_dir {/home/u/with space}]}]
+check_true {X4 an unknown directory is not reachable: refusing is what lands on the shape that always works} \
+  [expr {![ase::op_dump_reachable_dir {}]}]
+check {X5 a SOUND printer under a MIXED-CASE run directory does not take shape d, and the reason token says which guard refused} \
+  [t_tier [dict merge $C_BASE {altshow_op_dump 1}] [file join $scratch OrunMixed]] {c dumppath}
+check {X6 the same printer under a lowercase directory still takes shape d, so the guard is not simply off} \
+  [t_tier [dict merge $C_BASE {altshow_op_dump 1}] [file join $scratch orun2]] {d dump}
+
+# ============================================================================
+# W — THE WIRING: the dump is MERGED WHEN THE RAW IS ATTACHED (issue 1333)
+# ============================================================================
+# ⚠ THE FEATURE AS FIRST WRITTEN HAD NO CALLER AT ALL. `opdump_read` was
+# defined and tested and nothing in the tree invoked it, so shape d -- which
+# emits NO per-device card -- left the raw with no device parameters and every
+# annotation row blank. MEASURED on the ver_50 build, same cell, tier d:
+# `op_annot::text M1` rendered `id =  gm =  gds =  vgs =  vth =  vds =`, which
+# is issue 0617 verbatim, the defect the whole feature exists to remove.
+#
+# The merge goes in `op_annot::db_attach` rather than in a run callback for two
+# reasons that were both measured: `xschem raw add` raises "No raw file loaded"
+# unless a database is already on the window, and db_attach is the ONE place
+# that puts an operating point onto a window -- ASE-L's surface and the cadence
+# profile both come through it, so one call covers both.
+set WDIR [file join $scratch wattach]
+file mkdir $WDIR
+set WRAW [file join $WDIR w.raw]
+set fh [open $WRAW w]
+puts $fh "Title: t"
+puts $fh "Plotname: Operating Point"
+puts $fh "Flags: real"
+puts $fh "No. Variables: 2"
+puts $fh "No. Points: 1"
+puts $fh "Variables:"
+puts $fh "\t0\tv(vbg)\tvoltage"
+puts $fh "\t1\tv(vcc)\tvoltage"
+puts $fh "Values:"
+puts $fh "0\t1.2"
+puts $fh "\t1.8"
+close $fh
+check {W1 the sidecar is named from the raw by the ONE proc both sides use} \
+  [file tail [::op_annot::opdump_path $WRAW]] {w.opinfo}
+
+set WDUMP [::op_annot::opdump_path $WRAW]
+set fh [open $WDUMP w]
+puts $fh "m.x1.xm1.mnfet:"
+puts $fh "    id                 = 5.33333e-05"
+puts $fh "    gm                 = 0.000266667"
+close $fh
+# the dump must not look older than the raw it belongs to
+file mtime $WDUMP [expr {[file mtime $WRAW] + 1}]
+
+catch {xschem raw clear}
+set watt [::op_annot::db_attach $WRAW]
+check_true {W2 the raw attaches} [lindex $watt 0]
+check {W3 ATTACHING A RAW MERGES THE SIDECAR DUMP -- without this the row is blank and nothing anywhere says why} \
+  [::op_annot::raw_or_blank {@m.x1.xm1.mnfet[id]}] {5.33333e-05}
+check {W4 and the node half the deck's own `.save all` supplied is untouched by the merge} \
+  [::op_annot::raw_or_blank {v(vbg)}] {1.2}
+
+## ⚠ A STALE SIDECAR IS NOT MERGED, for issue 0838's reason exactly: a number
+## painted onto a schematic carries no provenance, so one from an earlier run
+## is indistinguishable from a live one. The raw gets a stale-check by
+## `ase::results_stale`; the sidecar gets this one, against the raw it claims
+## to belong to.
+set WRAW2 [file join $WDIR w2.raw]
+file copy -force $WRAW $WRAW2
+set WD2 [::op_annot::opdump_path $WRAW2]
+set fh [open $WD2 w] ; puts $fh "m.x1.xm1.mnfet:" ; puts $fh "    id                 = 9.99e-09" ; close $fh
+file mtime $WD2 [expr {[file mtime $WRAW2] - 60}]
+catch {xschem raw clear}
+set watt2 [::op_annot::db_attach $WRAW2]
+check_true {W5 the raw still attaches when its sidecar is stale -- the node half is good and refusing it would be worse} \
+  [lindex $watt2 0]
+check {W6 but a sidecar OLDER than its raw is NOT merged, so a previous run's device numbers cannot be painted on} \
+  [::op_annot::raw_or_blank {@m.x1.xm1.mnfet[id]}] {}
+check_true {W7 and a raw with no sidecar at all attaches exactly as it always did} \
+  [expr {[lindex [::op_annot::db_attach $RAW] 0] == 1}]
+catch {xschem raw clear}
+
+# ============================================================================
+# Y — THE MISSING-NUMBERS REPORT KNOWS ABOUT SHAPE D (issue 1335)
+# ============================================================================
+# ⚠ THE GUARD BUILT TO STOP SILENT BLANK ROWS WAS DEFEATED BY THIS SHAPE, and
+# measurement is the only reason anyone found out: on the ver_50 run above,
+# `ase::op_report_missing` returned <silent> while five of six rows were blank.
+# The mechanism is test_ase_final's own F18 trap. `.options savecurrents` puts
+#
+#     i(@m.xm1.msky130_fd_pr__nfet_01v8[id])
+#
+# in the raw with NO card present, and the reporter compares DEVICES, so that
+# one vector marked the device answered and the sentence never fired.
+#
+# Shape d does not put its numbers in the raw at all -- they are in the sidecar
+# -- so asking the raw about them is the wrong question. The reporter is told
+# which shape the deck used and asks the right one.
+set YDIR [file join $scratch yreport]
+file mkdir $YDIR
+set YST [ase::state_default]
+dict set YST design [dict create lib zzlib cell yrep view schematic]
+dict set YST rundir $YDIR
+dict set YST simulator ngspice
+set YRAW [ase::backend::ngspice::raw_file $YST]
+file copy -force $WRAW $YRAW
+set YBLK ".save @m.x1.xm1.mnfet\[id\]\n.save @m.x1.xm1.mnfet\[gm\]\n"
+
+set YMETA_C [list opblock $YBLK optier c]
+check_true {Y1 CONTROL on the per-device shape the report is unchanged: cards were asked for, the raw answered none, so it speaks} \
+  [expr {[ase::op_report_missing $YST $YMETA_C 0] ne {}}]
+
+set YMETA_D [list opblock $YBLK optier d]
+check_true {Y2 on shape d with NO sidecar the report SPEAKS -- this is the folded-path run, whose raw and log are both perfectly clean} \
+  [expr {[ase::op_report_missing $YST $YMETA_D 0] ne {}}]
+check {Y3 and it says the DUMP is what is missing rather than blaming the simulator log, which has nothing in it to find} \
+  [ase::op_report_missing $YST $YMETA_D 0] {op_dump_missing}
+
+set YDUMP [::op_annot::opdump_path $YRAW]
+set fh [open $YDUMP w]
+puts $fh "m.x1.xm1.mnfet:"
+puts $fh "    id                 = 5.33333e-05"
+puts $fh "    gm                 = 0.000266667"
+close $fh
+file mtime $YDUMP [expr {[file mtime $YRAW] + 1}]
+check {Y4 with a GOOD sidecar covering the devices the report is silent -- a run that worked must not be told it failed} \
+  [ase::op_report_missing $YST $YMETA_D 0] {}
+
+## The savecurrents trap itself, pinned so it cannot come back: a device whose
+## ONLY vector is the free `i(@dev[id])` has not answered the question.
+set fh [open $YDUMP w] ; puts $fh "q.other.qpnp:" ; puts $fh "    vbe                = 0.77" ; close $fh
+file mtime $YDUMP [expr {[file mtime $YRAW] + 1}]
+check_true {Y5 a sidecar that does not cover the block's devices is reported, not accepted because SOME file was there} \
+  [expr {[ase::op_report_missing $YST $YMETA_D 0] ne {}}]
 
 cd $T_OLDPWD
 check_true {H1 HYGIENE the suite left the cwd where it found it and made no untitled* in the repo root} \

@@ -767,18 +767,49 @@ if {$NGREAL eq {}} {
 check {C4 the simulator this box actually has is measured in one go: it keeps every analysis, and it cannot save every device at once} $C4GOT $C4EXP
 
 ## STRUCTURAL: the probe asks for a results file it can read as text, in EVERY
-## deck it writes and not merely the first. It is a request and not a
+## deck THAT WRITES ONE and not merely the first. It is a request and not a
 ## requirement -- rows B7 and B8 prove the reader copes with a build that
 ## ignores it -- but a deck that quietly stopped asking would hand every later
-## reader a file of raw numbers for no reason at all. Tied to the number of
-## decks the probe emits rather than to a fixed count, so splitting or merging
-## a deck cannot redden this row for a reason that is not about the subject.
+## reader a file of raw numbers for no reason at all.
+##
+## ⚠ THE SUBJECT IS RAW-WRITING DECKS, NOT DECKS (issue 1342). The row used to
+## count `.control` blocks, which was the same number until the altshow probe
+## added a third deck whose OUTPUT IS TEXT BY CONSTRUCTION -- it redirects
+## `show all` to a .txt and writes no raw at all, so `set filetype=ascii` would
+## be a request about a file it never creates. Counting blocks reddened this row
+## for a deck that cannot violate its promise. Both counts are still MEASURED
+## from the probe's own source, so splitting or merging a deck still cannot
+## redden it for a reason that is not about the subject, and a raw-writing deck
+## that drops the request still does.
+## ⚠ PER BLOCK, NOT PER LINE. Deck A writes its raw TWICE on purpose -- that
+## repetition IS the appendwrite measurement -- so counting `write` lines
+## answers 3 where the honest answer is 2 decks. The split is on `.control`.
+proc a_c5_blocks {src} {
+    set out {}
+    foreach b [split [string tolower $src] "\n"] { lappend out $b }
+    set blocks {}
+    set cur {}
+    set inb 0
+    foreach ln $out {
+        if {[string match {*.control*} $ln]} { set inb 1 ; set cur {} ; continue }
+        if {$inb && [string match {*.endc*} $ln]} { lappend blocks $cur ; set inb 0 ; continue }
+        if {$inb} { append cur $ln "\n" }
+    }
+    return $blocks
+}
 set C5SRC [a_probe_src]
 set C5DECKS [a_count $C5SRC {.control}]
-set C5ASK [a_count [string tolower $C5SRC] {set filetype=ascii}]
-check {C5 STRUCTURAL every deck the probe hands the simulator asks for a results file in plain text, not just the first one} \
-  [list [expr {$C5SRC ne {NOPROBE}}] [expr {$C5DECKS >= 2}] [expr {$C5ASK == $C5DECKS}]] \
-  [list 1 1 1]
+set C5RAW 0
+set C5ASK 0
+foreach blk [a_c5_blocks $C5SRC] {
+    if {![string match {*write *} $blk]} { continue }
+    incr C5RAW
+    if {[string match {*set filetype=ascii*} $blk]} { incr C5ASK }
+}
+check {C5 STRUCTURAL every deck that writes a results file asks for it in plain text, not just the first one} \
+  [list [expr {$C5SRC ne {NOPROBE}}] [expr {$C5DECKS >= 2}] [expr {$C5RAW >= 2}] \
+        [expr {$C5ASK == $C5RAW}]] \
+  [list 1 1 1 1]
 
 # ============================================================================
 # D. THE ANSWER IS WORKED OUT ONCE, AND RE-WORKED WHEN THE BUILD CHANGES

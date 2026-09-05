@@ -821,9 +821,19 @@ proc ase::sim_why {kind name path {extra {}}} {
     op_numbers_no_file {
       return "Your simulator finished without reporting any problem, but it produced no results file at all -- no [file tail $extra] was written into the run folder. So there are no numbers to put on your schematic and the waveform window has nothing to show either. One thing that causes this: when a run is asked for device numbers on one short line, a single device name the simulator cannot match is enough to make it throw the whole result away and still finish quietly. Open this run's log to see what it printed, then ask for the numbers one device at a time."
     }
+    op_dump_missing {
+      return "Your simulator finished without reporting any problem, but the file holding this run's device numbers -- [file tail $extra] -- was never written, so every device number on your schematic will be blank. The simulator does not treat this as an error, which is why its log looks clean. The usual cause is the name of the run folder: this way of collecting the numbers writes them through a path the simulator converts to lower case and cuts at the first space, so a folder with a capital letter or a space in its name silently gets nothing. Rename the run folder in lower case with no spaces, or run again and xschem will ask for the numbers one device at a time instead."
+    }
+    op_dump_partial {
+      lassign $extra ntot ngot fname
+      return "This run collected device numbers into $fname, but only $ngot of the $ntot devices your schematic asks about are in it, so the rest of the rows will be blank. That usually means those devices are spelled differently in the deck than on the sheet. Open the file to see which devices it did report, or ask for the numbers one device at a time instead."
+    }
     op_tier_perdevice {
       set head "This run asked your simulator for each device's operating-point numbers one request at a time. That is the way that always works, and it is where the numbers on your schematic come from."
       switch -- $extra {
+        dumppath {
+          return "$head There is a much faster way that collects every device at once, and your simulator can do it -- but it writes the numbers through a path it converts to lower case and cuts at the first space, and this run folder's name has a capital letter or a space in it, so that way would have produced nothing at all and said nothing about it. Rename the run folder in lower case with no spaces to get the faster way."
+        }
         unknown {
           return "$head xschem was not able to find out anything about what $path can do, so it did not try a shorter way. Nothing is wrong; the deck is just longer than it has to be."
         }
@@ -3950,6 +3960,50 @@ proc ase::cap_altshow_verdict {text} {
   return 1
 }
 
+# ===========================================================================
+# CAN SHAPE D'S DUMP ACTUALLY LAND? (issue 1334)
+# ===========================================================================
+#
+# ⚠ A STRING QUESTION, ON PURPOSE, AND PURE. ngspice case-folds the WHOLE
+# `show >` target -- directory component included -- and splits it on
+# whitespace, and it does both at exit 0 with nothing written. So whether the
+# dump can land is decided by the SPELLING of the run directory and by nothing
+# on disk, which is what lets this guard run before that directory exists.
+#
+# ⚠ AND THE PROBE CANNOT ANSWER IT. Deck C asks with a RELATIVE target
+# (`show all > probe_c.txt`) which has no directory to fold, so a probe that
+# watched the printer work says nothing whatever about the path the real deck
+# will use. MEASURED on the build carrying the printer fix, same cell, only the
+# run directory changed: `lower_ok` wrote the dump, `MixedCase` wrote nothing
+# and annotated five blank rows, while the per-device shape in that same
+# directory annotated all five. The fold is this shape's own regression, not a
+# hazard the older shape shares, so it is refused here rather than survived
+# later.
+proc ase::op_dump_reachable_dir {dir} {
+  if {$dir eq {}} { return 0 }
+  if {[string tolower $dir] ne $dir} { return 0 }
+  if {[regexp {[ \t\n]} $dir]} { return 0 }
+  return 1
+}
+
+# The directory shape d would write its dump into, WITHOUT CREATING IT.
+# `set_netlist_dir 2` is the read-only spelling (`what == 2` returns the
+# directory and makes nothing); `ase::rundir`'s own fallback is `0`, which
+# mkdirs, and a proc that only decides how to save operating points must not
+# have that side effect -- ase::op_tier_report calls it just to describe a run.
+proc ase::op_dump_dir {state} {
+  set rd [ase::state_get $state rundir]
+  if {$rd eq {}} { catch {set rd [set_netlist_dir 2]} }
+  if {$rd eq {}} { return {} }
+  set n {}
+  if {[catch {file normalize $rd} n]} { return {} }
+  return $n
+}
+
+proc ase::op_dump_reachable {state} {
+  return [ase::op_dump_reachable_dir [ase::op_dump_dir $state]]
+}
+
 # The wildcard request for each DISTINCT device a captured block names — the
 # shape the probe measured, one entry per device, covering every parameter that
 # device has. Derived from the block, never rebuilt (invariant I1).
@@ -4051,6 +4105,17 @@ proc ase::op_save_tier {state} {
     if {![dict exists $caps known] || [dict get $caps known] != 1} {
       set tier c
       set reason unknown
+    } elseif {[dict exists $caps altshow_op_dump] &&
+              [dict get $caps altshow_op_dump] == 1 &&
+              ![ase::op_dump_reachable $state]} {
+      # G3b -- THE PRINTER IS SOUND BUT THE PATH IS NOT (issue 1334). Its own
+      # reason token, because `c unsafe` would say the shorter way is risky
+      # when what is actually true is that this run folder's NAME defeats the
+      # redirect. Falling through to the blanket guard instead would be worse
+      # still: it would answer a question about the path with a shape chosen
+      # for a different reason entirely.
+      set tier c
+      set reason dumppath
     } elseif {[dict exists $caps altshow_op_dump] &&
               [dict get $caps altshow_op_dump] == 1} {
       # G3a -- THE DUMP SHAPE, AND IT IS ABOVE THE BLANKET GUARD ON PURPOSE.
@@ -4172,6 +4237,17 @@ proc ase::op_report_missing {state meta exitcode} {
     ase::sim_say op_numbers_no_file $sim $path $raw error
     return op_numbers_no_file
   }
+  ## ⚠ SHAPE D KEEPS ITS NUMBERS SOMEWHERE ELSE (issue 1335), so asking the raw
+  ## about them is the wrong question -- and the wrong question got a reassuring
+  ## answer. MEASURED: on a shape-d run with every annotation row blank this
+  ## proc returned SILENCE, because `.options savecurrents` had put
+  ## `i(@m.xm1.m...[id])` in the raw with no card behind it, and the
+  ## device-level comparison below counted the device answered. That is
+  ## test_ase_final's own F18 trap defeating the guard written to stop exactly
+  ## this class of silence.
+  if {[ase::state_get $meta optier {}] eq {d}} {
+    return [ase::op_report_missing_dump $sim $path $raw $devs]
+  }
   set vars {}
   catch {
     set vars [lindex [ase::cap_plot [ase::cap_raw_plots $raw] {Operating Point}] 2]
@@ -4238,6 +4314,43 @@ proc ase::op_report_missing {state meta exitcode} {
   ase::sim_say op_numbers_missing $sim $path \
     [list [llength $devs] [expr {[llength $devs] - [llength $miss]}] $miss] error
   return op_numbers_missing
+}
+
+# THE SHAPE-D HALF OF ase::op_report_missing (issue 1335).
+#
+# The same question -- did this run produce the device numbers the sheet is
+# about to ask for -- put to the file that would actually hold them. Two
+# answers are worth a sentence and they are different situations:
+#
+#   * NO DUMP AT ALL. The run exited 0, the raw is perfect and the simulator's
+#     log is clean, because ngspice does not treat a redirect it could not open
+#     as an error. This is the folded-path run (issue 1334) and anything else
+#     that stopped the file being written, and without this sentence it is
+#     completely silent.
+#   * A DUMP THAT DOES NOT COVER THE DEVICES. Something was written, but not
+#     for the devices this sheet names, so the rows would still be blank.
+#
+# A dump that covers them is SILENCE, deliberately: a run that worked must not
+# be told it failed, which is the defect issue 0975 was closed on.
+proc ase::op_report_missing_dump {sim path raw devs} {
+  set dump [::op_annot::opdump_path $raw]
+  if {![file isfile $dump] || [file size $dump] == 0} {
+    ase::sim_say op_dump_missing $sim $path $dump error
+    return op_dump_missing
+  }
+  set have [dict create]
+  set names {}
+  if {[catch {set names [::op_annot::opdump_devices $dump]}]} { set names {} }
+  foreach d $names { dict set have "@$d" 1 }
+  set miss {}
+  foreach d $devs {
+    if {![dict exists $have $d]} { lappend miss $d }
+  }
+  if {![llength $miss]} { return {} }
+  ase::sim_say op_dump_partial $sim $path \
+    [list [llength $devs] [expr {[llength $devs] - [llength $miss]}] \
+          [file tail $dump]] error
+  return op_dump_partial
 }
 
 # Does the design buffer carry unsaved edits? Exactly `xschem get modified`,
@@ -4667,9 +4780,20 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   ## that parameter for the metadata and two callbacks disagreeing about what
   ## argument four means is the defect neither branch would have caught alone.
   ## ase::run_log_header renders it; empty writes nothing.
+  ## WHICH SHAPE THE DECK ACTUALLY USED (issue 1335). The block above says what
+  ## was ASKED FOR; this says HOW, and they are not the same question. Shape d
+  ## puts its numbers in a sidecar dump rather than in the raw, so a reporter
+  ## that only knows the block looks in the wrong file -- and finds the one free
+  ## `i(@dev[id])` that `.options savecurrents` leaves there, calls the device
+  ## answered, and goes silent while every row on the sheet is blank. Computed
+  ## under render_deck's own two gates so the two cannot disagree.
+  set optier {}
+  if {$opblock ne {}} {
+    catch {set optier [dict get [ase::op_save_tier $state] tier]}
+  }
   set meta [dict create cell $cell simulator $sim cmd $cmd dir $rd \
                         deck $deckpath started [clock seconds] \
-                        opblock $opblock casenote $casenote \
+                        opblock $opblock casenote $casenote optier $optier \
                         t0 [clock milliseconds]]
   catch {ase::run_log_write $logpath $meta {} {}}
 
