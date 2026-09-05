@@ -1199,6 +1199,40 @@ shipped editing action for cadence-profile users only. Question Q5.
 > list **identity**, never on list **content**, which is why issue **1278**'s
 > unbounded-glob freeze does **not** land on this window's redraw.
 
+> ✅ **ISSUE 1355, 2026-09-05 — THE WINDOW NOW SAYS WHICH LIST IS IN FORCE, AND
+> THE POP-UP SAYS WHICH LIST IT IS ABOUT.** The greying above is DERIVED state
+> and is unchanged; what was missing is the state it is derived FROM. MEASURED
+> at HEAD `d81b4b24` on the user's own `M18:/x1/x1`: the title was `Results
+> Display Window` on all three identities, the status line was empty on the
+> whole dump path, `.rdw` had three children and none named a list, and the
+> scope dialog was **byte-identical on annotation and on summary** with no
+> `.q2`. So lists 1 and 2 differed on screen by the **Add** button alone — which
+> is what the user reached for, and it is evidence for *"not list 3"* and none
+> at all for *"I am on summary"*. Added: a chrome `::label` `.rdw.hdr` above the
+> pane, the list's name in `wm title`, and `.rdw.scope.q2` as a **STATEMENT** on
+> lists 1 and 2 in the exact slot list 3 uses for its **QUESTION** — all read
+> from one name/gloss builder (`rdw::_list_name` / `_list_gloss` /
+> `_list_phrase`, which the two `.li.*` radiobuttons above now read too) and all
+> refreshed by the ONE proc `rdw::set_list` calls, `rdw::apply_list_state`
+> (formerly `apply_button_states`). **⚠ THE Add CELL'S CONSEQUENCE IS NOW SAID
+> OUT LOUD:** an Add from list 2 writes the ANNOTATION list, and the statement
+> names that list rather than the identity in force — `rdw::_edit_list` is the
+> one answer to "which list", read by the button, by the dialog's pre-set choice
+> and by the statement. Whether it SHOULD is issue **1357**, unratified. Five
+> new sentences, rule debt **1355**. Fenced by section **LX** and row **BT31**
+> of `test_rdw_window_1245.tcl` and section **LK** of `test_rdw_keys_1245.tcl`.
+
+> ✅ **ISSUE 1356, 2026-09-05 — THE BUTTONS ACT ON THE CURSOR ROW, AND THE
+> WINDOW SAYS SO.** The table above is silent about what a *selection* does, and
+> the user read a six-row drag as a six-row Delete. MEASURED: `tag ranges sel` =
+> `8.4 13.4` with `::rdw::targetrow` = 8, and one press produced one verdict
+> about one parameter — every reader of the text selection in `src/rdw.tcl` is
+> on the CLIPBOARD path. A conditional clause now rides every verdict when a
+> selection really spans two or more lines. **The multi-row edit itself is a
+> ruling and is NOT built**: one dialog for N rows, one status line for N
+> outcomes, and ruling **DD-10**'s last-row refusal evaluated over a batch.
+> Rule debt **1356**.
+
 > ✅ **ITEM B2, 2026-09-03 — LIST 3 HAS NO PERSISTED STATE, AND THE STORE HAS
 > NO SLOT FOR IT.** It is live from the run, its Delete is greyed above, and a
 > persisted `all` would be a list no simulator ever published — the invented

@@ -4188,6 +4188,81 @@ check {KN2 ISSUE 1300's HEADLINE MEASUREMENT, INVERTED: on the user's own tree k
         [kx_nblocks]] \
   {0 0 0 1 1 1 1 3}
 
+# ============================================================================
+# SECTION LK — ISSUE 1355, END TO END THROUGH THE REAL KEYS AND THE REAL MODAL
+# ============================================================================
+# The user's second complaint is about a KEY and a POP-UP, so both are driven
+# as such.  Section LX of test_rdw_window_1245.tcl fences every decision as a
+# pure function on both arms; these two rows are the ones that could not be
+# written there, because they need the cadence bind, a real canvas, a real
+# selection and a real modal with a real grab.
+#
+# RED BEFORE THE FIX: both.  `.rdw.hdr` does not exist, the title is the bare
+# `Results Display Window` whatever key was pressed, and the dialog a real
+# Delete raises on the summary list carries no `.rdw.scope.q2` at all.
+
+if {[kx_ans ::rdw::have_tk] eq {1}} {
+  xschem unselect_all
+  xschem select instance M1
+  update idletasks
+  proc lk_hdr {} {
+    if {![winfo exists .rdw.hdr]} { return NO-WIDGET }
+    if {[catch {.rdw.hdr cget -text} t]} { return "ERR:$t" }
+    return $t
+  }
+  proc lk_title {} {
+    if {![winfo exists .rdw]} { return NO-WINDOW }
+    if {[catch {wm title .rdw} t]} { return "ERR:$t" }
+    return $t
+  }
+  proc lk_press {k} {
+    focus -force .drw ; update idletasks
+    event generate .drw <Key-$k> -when now
+    update
+    return [list [kx_listkind] [lk_hdr] [lk_title]]
+  }
+  set LK1_A [lk_press 1]
+  set LK1_S [lk_press 2]
+  set LK1_W [lk_press 3]
+  check {LK1 THE USER'S SECOND COMPLAINT, ANSWERED BY THE KEY THAT CAUSED IT: a bare 1, 2 or 3 on the canvas moves the window's own chrome line AND its title along with the identity, so "the RDW doesn't say summary view" is answered on two surfaces without the user having to read the button greying} \
+    [list $LK1_A $LK1_S $LK1_W] \
+    [list [list annotation [kx_ans ::rdw::_chrome_line annotation] [kx_ans ::rdw::_title annotation]] \
+          [list summary    [kx_ans ::rdw::_chrome_line summary]    [kx_ans ::rdw::_title summary]] \
+          [list all        [kx_ans ::rdw::_chrome_line all]        [kx_ans ::rdw::_title all]]]
+
+  ## THE REAL MODAL.  A real `.rdw.b.delete` invoke on the SUMMARY list, read
+  ## while the dialog is up and its grab is the dialog's own, then cancelled -
+  ## the sd_arm machinery section SD already uses, for the reason it records:
+  ## a fixed timer is a coin toss under display contention and a dialog nobody
+  ## clicks hangs the suite (issue 0803).
+  event generate .drw <Key-2> -when now ; update
+  set LK2_ROW 0
+  set LK2_N 0
+  foreach _b $::rdw::blocks {
+    foreach _e $_b {
+      incr LK2_N
+      if {$LK2_ROW == 0 && [kx_ans ::rdw::_row_param $_e] ne {}} { set LK2_ROW $LK2_N }
+    }
+  }
+  kx_ans ::rdw::set_row $LK2_ROW
+  set ::LK2_Q2 NOT-RUN
+  set ::LK2_TITLE NOT-RUN
+  sd_arm {
+    set ::LK2_Q2 [expr {[winfo exists .rdw.scope.q2] ? [.rdw.scope.q2 cget -text] : {ABSENT}}]
+    set ::LK2_TITLE [wm title .rdw.scope]
+    rdw::scope_dialog_done .rdw.scope cancel
+  }
+  .rdw.b.delete invoke
+  sd_disarm
+  catch {destroy .rdw.scope}
+  update idletasks
+  check {LK2 THE USER'S OWN POP-UP, ANSWERED: the dialog a real Delete raises while the SUMMARY list is in force now says which list it is about, in the slot list 3 already used for its question - "it doesn't say summary list, which would be good for the user to know", driven through the real button, the real modal and the real grab} \
+    [list $::SD_RAN $::LK2_Q2 $::LK2_TITLE [kx_listkind] \
+          [expr {[winfo exists .rdw.scope] ? 1 : 0}] [grab current]] \
+    [list 1 [kx_ans ::rdw::_scope_statement delete summary] {Which devices?} summary 0 {}]
+  kx_ans ::rdw::set_list summary
+}
+
 if {[llength [info commands kx_ciw_echo_real]]} { rename kx_ciw_echo_real ciw_echo }
 catch {xschem raw clear}
 
@@ -4288,7 +4363,16 @@ catch {xschem raw clear}
 ## events on a real canvas, which this suite cannot run without at all - so the
 ## two rows are always in the denominator.  A floor is raised when rows are
 ## added and NEVER lowered to make a run pass.
-set KX_FLOOR 83
+## ⚠ AND RAISED 83 -> 85 IN THE SAME COMMIT AS LK1 AND LK2, the two rows that
+## answer the user's SECOND complaint through the real keys and the real modal:
+## a bare 1, 2 or 3 moving the window's chrome line and its title along with the
+## identity, and the pop-up a real Delete raises on the summary list finally
+## naming the list it is about.  Both are inside this file's
+## `[kx_ans ::rdw::have_tk] eq {1}` guard - a display that fails to come up
+## drops both silently, which is exactly what a floor is for.  Issue 1355's
+## pure decisions are section LX of test_rdw_window_1245.tcl.  A floor is
+## raised when rows are added and NEVER lowered to make a run pass.
+set KX_FLOOR 85
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\

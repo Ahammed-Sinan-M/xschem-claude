@@ -1680,12 +1680,18 @@ catch {update idletasks}
 set W1_KIDS [llength [rw_w winfo children .]]
 set W1_OPEN2 [rw_ans ::rdw::open]
 catch {update idletasks}
-check {W1 singleton: open builds .rdw with the spec's title, a second open RAISES the same toplevel rather than building a second, and WM_DELETE_WINDOW is rdw::close} \
+## ⚠ THE TITLE GAINED THE LIST'S NAME (issue 1355) AND THIS GOLDEN MOVED WITH
+## IT.  It is the ONE golden row the chrome cost, measured: the chrome LABEL
+## moves none at all, on either arm.  The title is read through the same
+## `rdw::_title` accessor the window uses, so this row asserts that the window
+## really titles itself from the identity in force and not that some literal
+## happens to match -- row LX6 is where the literal is golded, once.
+check {W1 singleton: open builds .rdw titled for the list identity in force, a second open RAISES the same toplevel rather than building a second, and WM_DELETE_WINDOW is rdw::close} \
   [list $W1_OPEN [rw_w winfo exists .rdw] [rw_w winfo class .rdw] \
         [rw_w wm title .rdw] $W1_OPEN2 \
         [llength [rw_w winfo children .]] \
         [rw_w wm protocol .rdw WM_DELETE_WINDOW]] \
-  [list .rdw 1 Toplevel {Results Display Window} .rdw $W1_KIDS rdw::close]
+  [list .rdw 1 Toplevel [rw_ans ::rdw::_title $::rdw::listkind] .rdw $W1_KIDS rdw::close]
 
 catch {wm iconify .rdw} ; catch {update}
 rw_ans ::rdw::open
@@ -3832,6 +3838,65 @@ if {$live_tk} {
           [b5_ok1 $BT23_M gm]] \
     [list {1 1 1 1 1} 1 {{gm gm 1} {id ids 0} {gds gds 1}} 1 1 1]
   catch {destroy .rdw.scope}
+
+  # --- BT31  ISSUE 1356: THE USER'S OWN GESTURE, AND WHAT IT REALLY DID -------
+  ## THE USER'S WORDS: "I select a bunch of lines - sa, sb, up to scc - and
+  ## press Delete".  MEASURED on their own M18 at HEAD d81b4b24: `tag ranges
+  ## sel` covered SIX rows, `::rdw::targetrow` was the anchor row alone, and
+  ## one press produced ONE verdict about ONE parameter.  A multi-row delete is
+  ## not a thing this window does -- `rdw::button` reads `rdw::_target_line`,
+  ## whose only setter is the <Button-1> click, while every reader of the text
+  ## selection in this file is on the CLIPBOARD path -- and nothing on screen
+  ## said so, which is why "the delete did not have an effect" was a reasonable
+  ## reading of a delete that had exactly one.
+  ##
+  ## THE ROW ASSERTS BOTH HALVES, because a note that fired unconditionally
+  ## would be noise rather than an answer: with a multi-line selection standing
+  ## the sentence is there, and with the selection gone the very same press on
+  ## the very same fixture is byte-identical without it.
+  b5_lists_reset
+  b5_dlg {scope broad list annotation}
+  b5_fixture_blocks
+  rw_ans ::rdw::open
+  catch {update idletasks}
+  rw_ans ::rdw::set_list annotation
+  rw_ans ::rdw::render_pane
+  catch {update idletasks}
+  set BT31_PR {}
+  set BT31_N 0
+  foreach _e [b5_flat] {
+    incr BT31_N
+    if {[rw_ans ::rdw::_row_param $_e] ne {}} { lappend BT31_PR $BT31_N }
+  }
+  set BT31_FIRST [lindex $BT31_PR 0]
+  set BT31_LAST  [lindex $BT31_PR end]
+  catch {.rdw.p.t tag remove sel 1.0 end}
+  catch {.rdw.p.t tag add sel $BT31_FIRST.0 [expr {$BT31_LAST + 1}].0}
+  catch {update idletasks}
+  set BT31_SEL   [rw_ans ::rdw::_selection_lines]
+  set BT31_TROW  [rw_ans ::rdw::set_row $BT31_FIRST]
+  set BT31_EFF0  [b5_eff annotation]
+  set BT31_M     [b5_press delete]
+  set BT31_EFF1  [b5_eff annotation]
+  ## THE CONTROL: the same fixture, the same press, no selection standing.
+  b5_lists_reset
+  b5_dlg {scope broad list annotation}
+  b5_fixture_blocks
+  rw_ans ::rdw::render_pane
+  catch {.rdw.p.t tag remove sel 1.0 end}
+  catch {update idletasks}
+  rw_ans ::rdw::set_row $BT31_FIRST
+  set BT31_M2 [b5_press delete]
+  check {BT31 ISSUE 1356 THE USER'S OWN GESTURE: a mouse selection covering every parameter row of a block, then one Delete - exactly ONE parameter leaves the list, and the window SAYS the selection was not the target instead of leaving the user to infer it from a store they cannot see; the identical press with no selection standing carries no such clause, so the sentence is an answer and not noise} \
+    [list [expr {$BT31_SEL >= 2 ? 1 : 0}] $BT31_TROW \
+          [expr {[llength $BT31_EFF0] - [llength $BT31_EFF1]}] \
+          [b5_ok1 $BT31_M {the buttons act on the shaded row alone}] \
+          [rw_count $BT31_M {Delete:}] \
+          [rw_has $BT31_M2 {the buttons act on the shaded row alone}] \
+          [expr {$BT31_M2 ne {} && $BT31_M2 ne {NOVAR} ? 1 : 0}]] \
+    [list 1 $BT31_FIRST 1 1 1 0 1]
+  catch {.rdw.p.t tag remove sel 1.0 end}
+  catch {destroy .rdw.scope}
   rw_ans ::rdw::close
   catch {update idletasks}
 }
@@ -5770,6 +5835,221 @@ check {NW10 THE LIST NAME TRAVELS WITH THE PASTE: the narrowing sentence is a li
         [rw_ans ::rdw::_row_param [lindex [rw_block $NW_ANS [nw_ctx annotation]] 3]]] \
   {1 1 0 note {}}
 
+
+# ============================================================================
+# SECTION LX — ISSUE 1355: THE WINDOW SAYS WHICH LIST IS IN FORCE, AND THE
+# SCOPE DIALOG SAYS WHICH LIST IT IS ABOUT
+# ============================================================================
+# THE USER'S SECOND COMPLAINT, IN THEIR OWN WORDS: "When I use 2 key, the RDW
+# doesn't say 'summary' view, so it's not clear.  The fact that the Delete
+# button is NOT greyed out is a clue. ... I ... press Delete and get the pop up
+# dialog asking where to apply, but it doesn't say 'summary list'."
+#
+# MEASURED AT HEAD d81b4b24, AFTER THE NARROWING LANDED, ON THE USER'S OWN
+# M18:/x1/x1: the window TITLE is `Results Display Window` on all three
+# identities, the status line is EMPTY on the dump path, `.rdw` has exactly
+# three children (`.rdw.s .rdw.b .rdw.p`) and none of them names a list, and
+# the REAL scope dialog raised by a real Delete is BYTE-IDENTICAL on
+# annotation and on summary: `.rdw.scope.q` = "Delete on M18: which devices
+# should this change?", two scope radiobuttons, OK, Cancel, and NO `.q2` at
+# all.  So the only on-screen difference between list 1 and list 2 is still
+# the Add button's grey, which is what the user reached for -- and it is
+# EVIDENCE FOR "not list 3" AND NO EVIDENCE AT ALL FOR "I am on summary".
+#
+# ⚠ THE BLOCK ALREADY NAMES A LIST AND THIS IS NOT A SECOND ANNOUNCEMENT.
+# Issue 1353's narrowing sentence (`rdw::_narrow_line`, row NW10) is PAST
+# TENSE and is about THE BLOCK -- "as it stood at this dump" -- because a block
+# is a RECORD that travels with the paste.  The chrome is PRESENT TENSE and is
+# about THE BUTTONS: it names the identity `::rdw::listkind` holds now, which
+# is what Up, Down, Delete and Add will act on WHATEVER dump the user happens
+# to be reading.  They are two different facts and they answer two different
+# questions; the failure the user hit is exactly the gap between them, because
+# pressing 2 without re-dumping leaves a block saying `annotation` over buttons
+# acting on `summary`.  Rows LX5 and LX10 are the fences that keep them one
+# builder and keep the chrome OUT of the paste.
+#
+# ⚠ AND THE CHROME DOES NOT SAY THE PANE IS WIDER THAN THE LIST.  The list-
+# identity diagnosis proposed a second sentence, "The pane shows every row this
+# run published", and said in the same breath that it must be DELETED when the
+# narrowing lands.  It landed first (issue 1353), so it is never written.  Row
+# LX4 is the fence: a chrome line that went on telling the user the pane is
+# wider than the list after it stopped being true would be the same defect as
+# the status line that cited a fixed issue 1312 as its reason.
+#
+# RED BEFORE THE FIX: every row of this section except LX11's silent legs.
+# The six procs LX1..LX6 assert do not exist, `.rdw.hdr` does not exist,
+# `.rdw.scope.q2` does not exist on lists 1 and 2, and `rdw::button` reports a
+# one-row edit with no word about the six rows the user had highlighted.
+
+set LX_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
+
+check {LX1 ONE BUILDER FOR THE LIST'S NAME AND ITS GLOSS: three identities, one table each, and the phrase composes them - so the dialog's radiobuttons, the dialog's new statement, the chrome line and the window title cannot drift into four wordings of one fact, which is this file's own rule at rdw::_buttons} \
+  [list [rw_ans ::rdw::_list_name annotation] [rw_ans ::rdw::_list_name summary] \
+        [rw_ans ::rdw::_list_name all] [rw_ans ::rdw::_list_name zznosuch] \
+        [rw_ans ::rdw::_list_gloss annotation] [rw_ans ::rdw::_list_gloss summary] \
+        [rw_ans ::rdw::_list_phrase annotation] [rw_ans ::rdw::_list_phrase summary] \
+        [rw_ans ::rdw::_list_phrase all] [rw_ans ::rdw::_list_phrase zznosuch]] \
+  [list {the annotation list} {the summary list} {everything this run published} {} \
+        {drawn on the sheet} {computed, not drawn} \
+        {the annotation list (drawn on the sheet)} \
+        {the summary list (computed, not drawn)} \
+        {everything this run published (live from the simulator)} {}]
+
+check {LX2 THE LIST AN EDIT WILL ACTUALLY WRITE IS NOT ALWAYS THE LIST THE USER IS STANDING ON - spec 4.2 B7's Add cell says a summary-list Add writes the ANNOTATION list, MEASURED on the user's own M18 as `Add: gm is already in the mos annotation list` after a press made on the summary list - so the answer has ONE proc and the dialog can name it} \
+  [list [rw_ans ::rdw::_edit_list delete annotation] \
+        [rw_ans ::rdw::_edit_list delete summary] \
+        [rw_ans ::rdw::_edit_list up summary] \
+        [rw_ans ::rdw::_edit_list down annotation] \
+        [rw_ans ::rdw::_edit_list add summary] \
+        [rw_ans ::rdw::_edit_list add all] \
+        [rw_ans ::rdw::_edit_list delete all]] \
+  [list annotation summary summary annotation annotation annotation annotation]
+
+check {LX3 THE SCOPE DIALOG'S STATEMENT: lists 1 and 2 get a STATEMENT in the slot where list 3 already asks its QUESTION, so the dialog names a list in all three states instead of one - and the Add-from-summary case names the annotation list AND says where to choose, because naming the identity in force would have been the wrong list} \
+  [list [rw_ans ::rdw::_scope_statement delete annotation] \
+        [rw_ans ::rdw::_scope_statement delete summary] \
+        [rw_ans ::rdw::_scope_statement add summary] \
+        [rw_ans ::rdw::_scope_statement add all] \
+        [rw_ans ::rdw::_scope_statement delete all]] \
+  [list {This changes the annotation list (drawn on the sheet).} \
+        {This changes the summary list (computed, not drawn).} \
+        {This changes the annotation list (drawn on the sheet). Add writes there even from the summary list - press 3 first to choose the list.} \
+        {} {}]
+
+check {LX4 THE CHROME LINE IS PRESENT TENSE AND IS ABOUT THE BUTTONS, not about the pane: it names the identity the keys chose and says the buttons act on THAT list rather than on the block being read - and it does NOT say the pane is wider than the list, because issue 1353's narrowing landed first and a sentence that outlived its fact is the defect this batch keeps paying for} \
+  [list [rw_ans ::rdw::_chrome_line annotation] \
+        [rw_ans ::rdw::_chrome_line summary] \
+        [rw_ans ::rdw::_chrome_line all] \
+        [rw_ans ::rdw::_chrome_line zznosuch] \
+        [rw_count [rw_ans ::rdw::_chrome_line summary] {every row this run published}] \
+        [rw_count [rw_ans ::rdw::_chrome_line annotation] {every row this run published}]] \
+  [list {Keys 1/2/3: the annotation list (drawn on the sheet) - the buttons edit this list, not the block you are reading.} \
+        {Keys 1/2/3: the summary list (computed, not drawn) - the buttons edit this list, not the block you are reading.} \
+        {Keys 1/2/3: everything this run published (live from the simulator) - press 1 or 2 to edit a list; only Add works here.} \
+        {} 0 0]
+
+check {LX5 STRUCTURAL ONE BUILDER, SEVERAL CONSUMERS: the button column, the dialog's default and the dialog's statement all ask rdw::_edit_list; the two radiobuttons, the statement and the chrome all ask rdw::_list_phrase; each gloss is a literal EXACTLY ONCE in the file; and rdw::set_list still calls exactly ONE refresher, so a key press cannot move the buttons without moving the words} \
+  [list [rw_has [rw_body ::rdw::button] {_edit_list}] \
+        [rw_has [rw_body ::rdw::scope_dialog] {_edit_list}] \
+        [rw_has [rw_body ::rdw::scope_dialog_build] {_scope_statement}] \
+        [rw_has [rw_body ::rdw::_scope_statement] {_edit_list}] \
+        [rw_has [rw_body ::rdw::scope_dialog_build] {_list_phrase}] \
+        [rw_has [rw_body ::rdw::_chrome_line] {_list_phrase}] \
+        [expr {$LX_F eq {NOFILE} ? {NOFILE} : [rw_count $LX_F {drawn on the sheet}]}] \
+        [expr {$LX_F eq {NOFILE} ? {NOFILE} : [rw_count $LX_F {computed, not drawn}]}] \
+        [rw_count [rw_body ::rdw::set_list] {rdw::apply_list_state}] \
+        [rw_has [rw_body ::rdw::apply_list_state] {_chrome_line}] \
+        [rw_has [rw_body ::rdw::apply_list_state] {_title}] \
+        [rw_has [rw_body ::rdw::build] {rdw::apply_list_state}]] \
+  [list 1 1 1 1 1 1 1 1 1 1 1 1]
+
+check {LX6 THE TITLE NAMES THE LIST TOO, and it is the SECOND surface rather than the first: a window manager may truncate it and it is the furthest thing on screen from the pane, but it survives the window being small and it is what the taskbar shows - and an identity the window cannot name falls back to the spec's plain title rather than to a half-written one} \
+  [list [rw_ans ::rdw::_title annotation] [rw_ans ::rdw::_title summary] \
+        [rw_ans ::rdw::_title all] [rw_ans ::rdw::_title zznosuch]] \
+  [list {Results Display Window - the annotation list} \
+        {Results Display Window - the summary list} \
+        {Results Display Window - everything this run published} \
+        {Results Display Window}]
+
+check {LX10 THE CHROME DOES NOT TRAVEL WITH THE PASTE, which is row NW10's other half: the block is the RECORD and says which list narrowed it in the past tense, the chrome is the STATE and says which list the buttons act on now - so block_text carries the narrowing sentence and carries neither the chrome line nor the title, and a dump pasted into a design review is not stamped with an identity the user has since changed} \
+  [list [rw_has [rw_ans ::rdw::block_text [rw_block $NW_ANS [nw_ctx annotation]]] $NW_NARROW1] \
+        [rw_has [rw_ans ::rdw::block_text [rw_block $NW_ANS [nw_ctx annotation]]] {Keys 1/2/3}] \
+        [rw_has [rw_ans ::rdw::block_text [rw_block $NW_ANS [nw_ctx summary]]] {Keys 1/2/3}] \
+        [rw_has [rw_ans ::rdw::block_text [rw_block $NW_ANS [nw_ctx all]]] {Keys 1/2/3}] \
+        [rw_has [rw_ans ::rdw::block_text [rw_block $NW_ANS [nw_ctx annotation]]] {Results Display Window}]] \
+  [list 1 0 0 0 0]
+
+check {LX11 ISSUE 1356: SELECTING LINES IS NOT SELECTING THEM FOR EDITING, and the window says so exactly when it matters - the note is one sentence, it fires only on a selection covering two lines or more, and with no Tk at all it is silent, so the --nogui arm and a window with no selection are never told about a gesture nobody made} \
+  [list [rw_ans ::rdw::_selection_note] \
+        [rw_ans ::rdw::_selection_lines] \
+        [expr {[llength [info commands ::rdw::_selection_note]] ? 1 : 0}] \
+        [expr {[llength [info commands ::rdw::_selection_lines]] ? 1 : 0}] \
+        [rw_has [rw_body ::rdw::_selection_note] {_selection_lines}] \
+        [rw_has [rw_body ::rdw::button] {_selection_note}]] \
+  [list {} 0 1 1 1 1]
+
+if {$live_tk} {
+  rw_ans ::rdw::open
+  catch {update idletasks}
+  set LX7_KEEP $::rdw::listkind
+  proc lx_hdr {} {
+    if {![winfo exists .rdw.hdr]} { return NO-WIDGET }
+    return [rw_w .rdw.hdr cget -text]
+  }
+  catch {rw_ans ::rdw::set_list annotation} ; catch {update idletasks}
+  set LX7_A [lx_hdr] ; set LX8_A [rw_w wm title .rdw]
+  catch {rw_ans ::rdw::set_list summary} ; catch {update idletasks}
+  set LX7_S [lx_hdr] ; set LX8_S [rw_w wm title .rdw]
+  catch {rw_ans ::rdw::set_list all} ; catch {update idletasks}
+  set LX7_W [lx_hdr] ; set LX8_W [rw_w wm title .rdw]
+  ## A CLOSE AND A REOPEN, because rdw::build retitles and rebuilds the chrome
+  ## from scratch and `::rdw::listkind` outlives the window.  MEASURED at HEAD:
+  ## build DECLARES `variable listkind` and never reads it, so a window rebuilt
+  ## while the summary list was in force came back titled for no list at all.
+  catch {rw_ans ::rdw::close} ; catch {update idletasks}
+  catch {rw_ans ::rdw::open} ; catch {update idletasks}
+  set LX7_R [lx_hdr] ; set LX8_R [rw_w wm title .rdw]
+  set LX7_CLASS [rw_w winfo class .rdw.hdr]
+  set LX7_TAKE [rw_w .rdw.hdr cget -takefocus]
+  set LX7_SIDE [rw_ans dict get [rw_w pack info .rdw.hdr] -side]
+  set LX7_ORDER 0
+  set LX7_SLAVES [rw_w pack slaves .rdw]
+  if {![rw_bad $LX7_SLAVES]} {
+    set _h [lsearch -exact $LX7_SLAVES .rdw.hdr]
+    set _p [lsearch -exact $LX7_SLAVES .rdw.p]
+    set LX7_ORDER [expr {$_h >= 0 && $_p >= 0 && $_h < $_p ? 1 : 0}]
+  }
+  check {LX7 THE LIVE CHROME: a ::label above the pane whose text follows rdw::set_list for all three identities and comes back correct after a close and a reopen - a LABEL because no widget in this window may take the keyboard (issue 1308) and because a label can never own PRIMARY, so it cannot join a copy} \
+    [list $LX7_A $LX7_S $LX7_W $LX7_R $LX7_CLASS $LX7_TAKE $LX7_SIDE $LX7_ORDER] \
+    [list [rw_ans ::rdw::_chrome_line annotation] [rw_ans ::rdw::_chrome_line summary] \
+          [rw_ans ::rdw::_chrome_line all] [rw_ans ::rdw::_chrome_line all] \
+          Label 0 top 1]
+
+  check {LX8 THE LIVE TITLE follows the same setter and the same rebuild - so the identity is on screen even when the pane is scrolled away, the window is small or the user is looking at the taskbar} \
+    [list $LX8_A $LX8_S $LX8_W $LX8_R] \
+    [list [rw_ans ::rdw::_title annotation] [rw_ans ::rdw::_title summary] \
+          [rw_ans ::rdw::_title all] [rw_ans ::rdw::_title all]]
+
+  ## THE REAL DIALOG, THROUGH ITS REAL BUILDER.  `rdw::scope_dialog` is stubbed
+  ## in this section of the suite (the b5_dlg rename above), but
+  ## `rdw::scope_dialog_build` is NOT, so the widgets a real Delete would raise
+  ## can be read without a modal and without a grab -- the cheapest way to gold
+  ## a dialog and the one row 0803 cannot hang.
+  set LX9_SUBJ [dict create instname M18 class mos cellname sky130_fd_pr/nfet_01v8_lvt type nmos]
+  proc lx_dlg {op ln} {
+    catch {destroy .rdw.scope}
+    set r [rw_ans ::rdw::scope_dialog_build $op $::LX9_SUBJ $ln]
+    if {[rw_bad $r]} { return [list $r $r $r $r] }
+    set out {}
+    foreach w {.rdw.scope.q2 .rdw.scope.li.annotation .rdw.scope.li.summary} {
+      lappend out [expr {[winfo exists $w] ? [rw_w $w cget -text] : {ABSENT}}]
+    }
+    lappend out [rw_w wm title .rdw.scope]
+    catch {destroy .rdw.scope}
+    return $out
+  }
+  set LX9_A [lx_dlg delete annotation]
+  set LX9_S [lx_dlg delete summary]
+  set LX9_ADD [lx_dlg add summary]
+  set LX9_W [lx_dlg add all]
+  check {LX9 THE USER'S OWN SENTENCE, ANSWERED: the pop-up now says which list it is about on lists 1 and 2 - a STATEMENT in the exact slot where list 3 asks its QUESTION - list 3 is untouched and still asks, an Add made from the summary list names the ANNOTATION list it will really write, and the two radiobutton glosses are the shared phrase rather than two more literals} \
+    [list $LX9_A $LX9_S $LX9_ADD $LX9_W] \
+    [list [list [rw_ans ::rdw::_scope_statement delete annotation] ABSENT ABSENT {Which devices?}] \
+          [list [rw_ans ::rdw::_scope_statement delete summary] ABSENT ABSENT {Which devices?}] \
+          [list [rw_ans ::rdw::_scope_statement add summary] ABSENT ABSENT {Which devices?}] \
+          [list {And which list should it go into?} \
+                [rw_ans ::rdw::_list_phrase annotation] \
+                [rw_ans ::rdw::_list_phrase summary] {Which devices?}]]
+  catch {rw_ans ::rdw::set_list $LX7_KEEP}
+  ## THE SECTION LEAVES THE WINDOW AS IT FOUND IT.  Row S2 asserts no toplevel
+  ## of the suite's own is still standing when the file ends, and the file's
+  ## own clean-up runs AFTER S2 - so a section that reopens `.rdw` has to shut
+  ## it itself.  MEASURED: without this line S2 reds.
+  catch {destroy .rdw.scope}
+  catch {rw_ans ::rdw::close}
+  catch {update idletasks}
+}
+
 set S1_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
 check {S1 STRUCTURAL the forbidden doors: rdw.tcl reaches the seam ONLY through ase::backend_hook, never by the backend proc's name, and names none of `xschem raw value` / ase::sim_capabilities / blanket_op_save / ase::theme (op_param_lists:: moved to row BT22 when item B5 wired the store)} \
   [list [expr {$S1_F eq {NOFILE} ? {NOFILE} : [rw_has $S1_F {ase::backend_hook}]}] \
@@ -5866,7 +6146,19 @@ else { set ::ev_precision $RW_EVP_SAVE }
 ## behavioural rows are KN1 and KN2 of test_rdw_keys_1245.tcl, which need the
 ## cadence bind and a real canvas.  A floor is raised when rows are added and
 ## NEVER lowered to make a run pass.
-set RW_FLOOR 144
+## ⚠ AND RAISED 144 -> 152 BY THE REPAIR OF ISSUES 1355 AND 1356, IN THE SAME
+## COMMIT AS THE EIGHT ROWS OF THIS SECTION THAT RUN ON BOTH ARMS: LX1..LX6,
+## LX10 and LX11 - the one builder for the list's name and gloss, the list an
+## edit really writes, the dialog's statement, the chrome sentence, the
+## one-builder structural fence, the title, the fence that keeps the chrome OUT
+## of the paste and the multi-row selection note.  This section's other four
+## rows (LX7, LX8, LX9 and section BT's BT31) need a mapped window, a real
+## label, a real dialog and a real text selection, so they are `live_tk`-gated
+## and are deliberately NOT counted here - the floor is the arm that runs
+## FEWEST rows.  Issue 1355's behavioural rows are LK1 and LK2 of
+## test_rdw_keys_1245.tcl, which need the cadence bind and a real canvas.  A
+## floor is raised when rows are added and NEVER lowered to make a run pass.
+set RW_FLOOR 152
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\

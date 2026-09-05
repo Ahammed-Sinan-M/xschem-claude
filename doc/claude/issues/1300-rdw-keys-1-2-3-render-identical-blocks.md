@@ -176,3 +176,31 @@ the deck saves (ruling DD-4).
 **Also read issue 1354**, filed from the same diagnosis: the log line that says
 468 save cards were added to a deck that carries none is what sent this batch's
 brief at the wrong hypothesis about why the pane "was working OK before".
+
+---
+
+## UPDATE, 2026-09-05 (later) — the user's SECOND and THIRD complaints, which this issue's fix did NOT close
+
+The narrowing closed the first complaint and one half of the second: `sa`…`scc`
+are gone from the summary pane, so the user's exact gesture is no longer
+reachable, and a Delete of a row the list really holds now disappears from the
+next dump. **Two things it did not close, both measured at HEAD `d81b4b24`
+AFTER this fix landed, on the user's own `M18:/x1/x1`:**
+
+* **The WINDOW still never said which list was in force.** The title was
+  `Results Display Window` on all three identities, the status line was empty on
+  the whole dump path, `.rdw` had three children and none named a list, and the
+  scope dialog was **byte-identical on annotation and on summary**. The block's
+  own narrowing sentence is a different fact — PAST tense, about the BLOCK —
+  and press `2` without re-dumping leaves it saying `annotation` over buttons
+  acting on `summary`. **Issue 1355**, fixed: a chrome label above the pane, the
+  list in the title, and a statement in the dialog, all from one builder and one
+  setter.
+* **The buttons act on the CURSOR row, and a six-row drag is not a six-row
+  edit.** **Issue 1356**: the silence is fixed, the feature is a ruling.
+
+Both were filed with their own numbers rather than folded in here, for the
+reason recorded above: `owed.sh add rule` is deduped by id and would have
+overwritten the `[1300]` row's other two standing ratifications. **Read
+alongside issue 1357**, which is the surprise those measurements turned up — an
+Add pressed on the summary list writes the *annotation* list, per spec 4.2 B7.

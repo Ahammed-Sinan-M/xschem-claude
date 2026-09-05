@@ -985,6 +985,159 @@ proc rdw::_button_label {id} {
 }
 
 # ---------------------------------------------------------------------------
+# THE LIST IDENTITY, IN WORDS, ONCE -- ISSUE 1355
+# ---------------------------------------------------------------------------
+# THE USER'S SECOND COMPLAINT, VERBATIM: "When I use 2 key, the RDW doesn't say
+# 'summary' view, so it's not clear.  The fact that the Delete button is NOT
+# greyed out is a clue."
+#
+# It was a true reading of the only signal on offer.  MEASURED at HEAD
+# d81b4b24 on the user's own M18:/x1/x1 -- the title was `Results Display
+# Window` on all three identities, the status line was EMPTY on the whole dump
+# path, and `.rdw` had three children, none of which named a list.  The entire
+# on-screen encoding of a three-valued identity was `rdw::button_state`'s two
+# booleans over five buttons, wordlessly -- and lists 1 and 2 differ by exactly
+# ONE of them, the Add button.  The Delete grey the user reached for separates
+# list 3 from the other two and says nothing about 1 versus 2, so their clue
+# was evidence for "not list 3" and no evidence at all for "I am on summary".
+#
+# ⚠ THE GREYING IS NOT THE DEFECT AND IS NOT TOUCHED.  It is DERIVED state and
+# it is correct: spec 4.2 B7 says Delete removes from the summary list, and a
+# real Delete on summary really does move the store (measured).  What was
+# missing is the state it is derived FROM, never stated anywhere.
+#
+# ⚠ AND THIS IS NOT A SECOND ANNOUNCEMENT BESIDE THE BLOCK'S.  Issue 1353's
+# `rdw::_narrow_line` already names a list, in the PAST tense, about THE BLOCK
+# -- "as it stood at this dump" -- because a block is a RECORD that travels
+# with the paste.  What follows is PRESENT tense and about THE BUTTONS: the
+# identity `::rdw::listkind` holds NOW, which is what Up, Down, Delete and Add
+# will act on whatever dump the user happens to be reading.  Two facts, two
+# tenses, one builder each and no third: press 2 without re-dumping and the
+# block still says `annotation` over buttons acting on `summary`, which is the
+# gap the user fell into.  Rows LX5 and LX10 of the window suite are the
+# fences.
+#
+# One table for the NAME, one for the GLOSS, and a phrase that composes them,
+# for the same reason `rdw::_buttons` exists: four surfaces read these strings
+# -- the scope dialog's two radiobuttons, the scope dialog's new statement, the
+# chrome line and the window title -- and four literals would drift the moment
+# one of them is reworded.  This file's own rule, at rdw::_edit's store tail:
+# "no second wording for a fact the store already words".
+
+proc rdw::_list_name {ln} {
+    switch -exact -- $ln {
+        annotation { return {the annotation list} }
+        summary    { return {the summary list} }
+        all        { return {everything this run published} }
+    }
+    return {}
+}
+
+proc rdw::_list_gloss {ln} {
+    switch -exact -- $ln {
+        annotation { return {drawn on the sheet} }
+        summary    { return {computed, not drawn} }
+        all        { return {live from the simulator} }
+    }
+    return {}
+}
+
+proc rdw::_list_phrase {ln} {
+    set n [rdw::_list_name $ln]
+    if {$n eq {}} { return {} }
+    return "$n ([rdw::_list_gloss $ln])"
+}
+
+# THE LIST AN EDIT FROM THIS BUTTON WILL ACTUALLY WRITE, WHICH IS NOT ALWAYS
+# THE LIST THE USER IS STANDING ON.
+#
+# ⚠ SPEC 4.2 B7's Add CELL: "annotation list (1): -- | summary list (2): add to
+# annotation | all (3): add to annotation or summary (the dialog asks which)".
+# So an Add pressed on the SUMMARY list writes the ANNOTATION list.  MEASURED
+# on the user's own M18, standing on summary with the dialog naming no list at
+# all: `Add: gm is already in the mos annotation list` -- a verdict about a
+# list the window had given them no reason to think they were editing.  That is
+# the same failure as the Delete complaint, one button along.
+#
+# The behaviour is the spec's and is not changed here; what changes is that
+# there is now ONE proc that answers "which list", so `rdw::button`'s default,
+# `rdw::scope_dialog`'s pre-set choice and the dialog's own statement cannot
+# give three answers.  Whether Add SHOULD write the annotation list from list 2
+# is a question for the user: issue 1357, rule debt 1357.
+proc rdw::_edit_list {op kind} {
+    if {$op eq {add} || $kind eq {all}} { return annotation }
+    return $kind
+}
+
+# THE SCOPE DIALOG'S STATEMENT, OR {} ON LIST 3 WHERE THE QUESTION ALREADY ASKS.
+#
+# THE USER'S OWN WORDS: "I ... press Delete and get the pop up dialog asking
+# where to apply, but it doesn't say 'summary list' - which would be good for
+# the user to know."  MEASURED: on annotation and on summary the dialog is
+# BYTE-IDENTICAL and names no list; only on list 3 does it name one, because
+# only there does it have to ASK.  So the answer is a STATEMENT in the exact
+# slot list 3 uses for its QUESTION -- same widget path, same padding -- and
+# the dialog names a list in all three states instead of one.
+#
+# ⚠ IT NAMES THE TARGET, NOT THE IDENTITY.  Naming `::rdw::listkind` would have
+# printed "the summary list" over an Add that writes the annotation one, which
+# is worse than the silence it replaces.
+proc rdw::_scope_statement {op listname} {
+    if {$listname eq {all}} { return {} }
+    set t [rdw::_edit_list $op $listname]
+    set s "This changes [rdw::_list_phrase $t]."
+    if {$t ne $listname} {
+        append s " Add writes there even from [rdw::_list_name $listname] -\
+ press 3 first to choose the list."
+    }
+    return $s
+}
+
+# THE CHROME LINE ABOVE THE PANE.
+#
+# ⚠ PRESENT TENSE, AND ABOUT THE BUTTONS RATHER THAN ABOUT THE PANE.  The
+# clause that matters is "not the block you are reading": the user pressed
+# Delete while looking at a block, and the buttons obey `::rdw::listkind`,
+# which a key press moves without re-rendering anything.
+#
+# ⚠ AND IT DOES NOT SAY THE PANE IS WIDER THAN THE LIST.  The diagnosis that
+# proposed this line also proposed a second sentence -- "The pane shows every
+# row this run published" -- and said in the same breath that it must be
+# DELETED when the narrowing landed.  It landed FIRST (issue 1353), so the
+# sentence is never written.  A window that went on telling the user the pane
+# is wider than the list after it stopped being true would be the defect this
+# file already carries a scar from: a status line citing a fixed issue 1312 as
+# its reason.  Row LX4 is the fence.
+#
+# ⚠ LIST 3's SENTENCE NAMES THE ONE BUTTON THAT WORKS THERE.  Add is enabled on
+# list 3 and its dialog asks which list; Delete is greyed and Up/Down refuse
+# with "list 3 is live from the simulator and has no stored order to change".
+# And on lists 1 and 2 the pane now shows only rows the list already declares
+# (issue 1353), so an Add from a narrowed pane can only ever answer "already in
+# the list" -- press 3, click the row, press Add is the working path, and
+# nothing on screen said so before this line.
+proc rdw::_chrome_line {kind} {
+    set p [rdw::_list_phrase $kind]
+    if {$p eq {}} { return {} }
+    if {$kind eq {all}} {
+        return "Keys 1/2/3: $p - press 1 or 2 to edit a list; only Add works here."
+    }
+    return "Keys 1/2/3: $p - the buttons edit this list, not the block you are reading."
+}
+
+# THE WINDOW TITLE.  The SECOND surface, not the first: a window manager may
+# truncate it and it is the furthest thing on screen from the pane.  It is
+# taken anyway because it is the one surface that survives the window being
+# small or the pane being scrolled, and it is what an alt-tab shows.  An
+# identity this window cannot name falls back to the spec's plain title rather
+# than to a half-written one.
+proc rdw::_title {kind} {
+    set n [rdw::_list_name $kind]
+    if {$n eq {}} { return {Results Display Window} }
+    return "Results Display Window - $n"
+}
+
+# ---------------------------------------------------------------------------
 # TWO ONE-LINE ACCESSORS THAT NAME A CHOICE THE WHOLE WINDOW RESTS ON.
 # They exist so the choice has ONE place, and so a reviewer can flip either
 # and watch the suite say which promise broke.
@@ -1652,7 +1805,13 @@ proc rdw::close {} {
 proc rdw::build {} {
     variable listkind
     toplevel .rdw
-    wm title .rdw {Results Display Window}
+    ## ⚠ THE TITLE IS BUILT FROM `listkind`, NOT FROM A LITERAL (issue 1355).
+    ## This proc has DECLARED `variable listkind` since item B4 and never read
+    ## it, and the consequence was measurable: `::rdw::listkind` outlives the
+    ## window (the dumps do too -- rdw::close touches neither), so a window
+    ## closed on the summary list and reopened came back titled for no list at
+    ## all.  Row LX7/LX8's close-and-reopen leg is the fence.
+    wm title .rdw [rdw::_title $listkind]
     wm protocol .rdw WM_DELETE_WINDOW rdw::close
     wm minsize .rdw 520 260
     ## The window manager grants keyboard focus to a newly mapped toplevel
@@ -1760,6 +1919,30 @@ proc rdw::build {} {
     # dialog nobody clicks, and the whole suite HUNG instead of failing (issue
     # 0803's shape, arriving through a name collision rather than a dialog).
     # Every widget command below is qualified for the same reason.
+    # ITEM (b), ISSUE 1355 -- THE CHROME LINE, AND WHY IT IS A LABEL.
+    #
+    # ⚠ NO WIDGET IN THIS WINDOW MAY TAKE THE KEYBOARD (issue 1308), which is
+    # the same reason the button column below is buttons and the scope dialog
+    # is a separate toplevel.  A `label` does not take focus on X, and -- the
+    # second reason, which an `entry` would have broken -- a label can never
+    # own PRIMARY, so this line can never join a selection and can never be
+    # dragged into the clipboard beside a dump (item R3, ruling DD-5).
+    #
+    # ⚠ IT SPANS THE WHOLE WIDTH, ABOVE BOTH THE PANE AND THE BUTTONS, because
+    # what it says is true of the WINDOW and not of the pane: the buttons obey
+    # `::rdw::listkind`, and the pane may be showing a dump taken on a
+    # different one.
+    #
+    # ⚠ AND IT DOES NOT TRAVEL WITH A PASTE, WHICH IS DELIBERATE.  Row NW10
+    # put the narrowing sentence IN the block for exactly the opposite reason
+    # -- the block is what the user pastes into a design review.  Chrome is
+    # STATE and would be stamped onto a record it does not describe; row LX10
+    # is that fence.
+    ::label .rdw.hdr -anchor w -justify left \
+        -background [rdw::color panel] \
+        -text [rdw::_chrome_line $listkind]
+    pack .rdw.hdr -side top -fill x -padx 4 -pady {3 1}
+
     frame .rdw.b -background [rdw::color panel]
     foreach {id label} [rdw::_buttons] {
         ::button .rdw.b.$id -text $label -width 8 -command [list rdw::button $id]
@@ -1872,7 +2055,7 @@ proc rdw::build {} {
     pack .rdw.p.t -side left -fill both -expand 1
     pack .rdw.p -side left -fill both -expand 1
 
-    rdw::apply_button_states
+    rdw::apply_list_state
     rdw::render_pane
     return .rdw
 }
@@ -2190,6 +2373,53 @@ proc rdw::_selection_span {} {
     return $selspan
 }
 
+# ---------------------------------------------------------------------------
+# HOW MANY PANE LINES THE SELECTION COVERS -- ISSUE 1356
+# ---------------------------------------------------------------------------
+# THE USER'S WORDS: "I select a bunch of lines - sa, sb, up to scc - and press
+# Delete ... The delete did not have an effect."
+#
+# MEASURED on their own design: `tag ranges sel` answered `8.4 13.4` -- SIX
+# rows highlighted -- while `::rdw::targetrow` was 8, and the one press
+# produced one verdict about one parameter.  A MULTI-ROW DELETE IS NOT A THING
+# THIS WINDOW DOES: `rdw::button` reads `rdw::_target_line`, whose only setter
+# is `rdw::set_row` from the <Button-1> click, while every reader of the text
+# selection in this file (`copy`, `select_all`, `_selection_changed`,
+# `_selection_span`, `_sibling_selection`, `_arm_extend`, `pane_drag`,
+# `popup_menu`) is on the CLIPBOARD path.  The two gestures look identical and
+# the window said nothing about the difference.
+#
+# ⚠ SAYING SO IS THE FIX HERE; BUILDING THE FEATURE IS A RULING, NOT A PATCH.
+# One dialog would have to answer for N rows, one status sentence would have to
+# report N outcomes rather than one, and ruling DD-10's last-row rule would
+# have to be evaluated over the BATCH -- or the user deletes five and is
+# refused on the sixth with five already gone.  Filed as issue 1356, rule debt
+# 1356, with the one-row answer proposed.
+#
+# ⚠ AND THE CLAUSE IS CONDITIONAL, WHICH IS WHY IT IS AN ANSWER AND NOT NOISE.
+# It fires only when a selection is actually standing across two or more lines
+# -- i.e. only when the user made the gesture it is about.  Row BT31 asserts
+# both halves.
+proc rdw::_selection_lines {} {
+    set sp [rdw::_selection_span]
+    if {[llength $sp] != 2} { return 0 }
+    set a [lindex [split [lindex $sp 0] .] 0]
+    set b [lindex [split [lindex $sp 1] .] 0]
+    set c [lindex [split [lindex $sp 1] .] 1]
+    if {![string is integer -strict $a]} { return 0 }
+    if {![string is integer -strict $b]} { return 0 }
+    ## A span ending at column 0 stops at the START of that line, so the line
+    ## itself is not covered.  `tag add sel 5.0 11.0` is six lines, not seven.
+    if {[string is integer -strict $c] && $c == 0} { incr b -1 }
+    if {$b < $a} { return 0 }
+    return [expr {$b - $a + 1}]
+}
+
+proc rdw::_selection_note {} {
+    if {[rdw::_selection_lines] < 2} { return {} }
+    return {Selecting lines does not choose them for editing - the buttons act on the shaded row alone.}
+}
+
 # THE SELECTION STANDING IN SOME OTHER WIDGET OF THIS WINDOW: {widget text},
 # or {} when no widget of .rdw except the pane holds one.
 #
@@ -2501,13 +2731,25 @@ proc rdw::set_list {kind} {
             "rdw::set_list: unknown list '$kind' (annotation, summary or all)"
     }
     set listkind $kind
-    rdw::apply_button_states
+    rdw::apply_list_state
     return $kind
 }
 
-proc rdw::apply_button_states {} {
+# ⚠ IT WAS `rdw::apply_button_states` AND IT DOES MORE THAN BUTTONS NOW (issue
+# 1355).  The name is the point: `rdw::set_list` calls exactly ONE refresher,
+# so a key press cannot move the buttons without moving the words -- invariant
+# I1, one setter.  A second proc called from `set_list` beside this one would
+# be the two-builders drift this file keeps paying for, and a chrome line
+# refreshed from anywhere else could disagree with the greying it stands over.
+# Row LX5 golds that `set_list` names this proc once and that this proc reaches
+# both `rdw::_chrome_line` and `rdw::_title`.
+proc rdw::apply_list_state {} {
     variable listkind
     if {![rdw::have_tk]} { return {} }
+    if {[winfo exists .rdw]} { catch {wm title .rdw [rdw::_title $listkind]} }
+    if {[winfo exists .rdw.hdr]} {
+        catch {.rdw.hdr configure -text [rdw::_chrome_line $listkind]}
+    }
     foreach id {up down delete add save} {
         if {![winfo exists .rdw.b.$id]} { continue }
         .rdw.b.$id configure -state [rdw::button_state $id $listkind]
@@ -2562,15 +2804,24 @@ proc rdw::apply_button_states {} {
 # That is the second half of the user's sentence landing in the window rather
 # than the CIW, and it is this item's E question: see the ledger row.
 #
-# WHAT THE KEYS DELIBERATELY DO NOT DO.  Keys 1, 2 and 3 select a list
-# IDENTITY through rdw::set_list -- B3's ONE setter -- and narrow no CONTENT.
-# The narrowing has exactly one definition in this tree (the list store's
-# `effective`, plus ruling DD-6's display key that item B2b built), and row S1
-# of this file's own suite forbids naming op_param_lists:: here at all.  A
-# second definition of "the annotation list" living in this file is precisely
-# the two-builders drift invariant I1 exists to prevent, and a block LABELLED
-# with a list whose content is identical for all three would imply a narrowing
-# that did not happen -- the DD-1 failure shape.  Filed as issue 1300.
+# WHAT THE KEYS DO.  Keys 1, 2 and 3 select a list IDENTITY through
+# rdw::set_list -- B3's ONE setter -- and, SINCE ISSUE 1300 WAS FIXED (issue
+# 1353), keys 1 and 2 also narrow the block's CONTENT to that list through
+# `rdw::_narrow_spec` -> `rdw::_list_params` -> `::op_param_lists::effective`,
+# which is the tree's one definition of a list.  Key 3 is untouched: it is
+# ruling D-5's escape hatch and prints everything the run published.
+#
+# ⚠ THE PARAGRAPH THAT USED TO STAND HERE SAID THE KEYS "narrow no CONTENT"
+# AND THAT ROW S1 FORBIDS NAMING `op_param_lists::` IN THIS FILE.  Both were
+# true when B4 wrote them and both are false now -- the fence moved to row BT22
+# when item B5 wired the store, and this file names the store's published verbs
+# throughout.  A comment that says the opposite of the code beneath it is the
+# same defect as a status line citing a fixed issue, one layer down.
+#
+# ⚠ AND SINCE ISSUE 1355 THE WINDOW SAYS WHICH IDENTITY THE KEYS CHOSE, in
+# chrome above the pane and in the title, both refreshed by the ONE proc
+# `rdw::set_list` calls.  That is a different fact from the block's own
+# past-tense narrowing sentence and it is worded as one; see rdw::_list_name.
 #
 # Suite: tests/headless/test_rdw_window_1245.tcl section K (both arms) and
 # tests/headless/test_rdw_keys_1245.tcl (the binds, the mode, the pick and the
@@ -4164,20 +4415,44 @@ proc rdw::scope_dialog_build {op subject listname} {
         -text "every device of class $cls"
     pack $w.sc.narrow $w.sc.broad -side top -fill x
     pack $w.sc -side top -fill x -padx 16
-    # THE SECOND QUESTION, AND ONLY WHERE THE SPEC ASKS FOR IT.  List 3 is
-    # everything this run's raw holds, so an Add from it has no list of its own
-    # to land in and the dialog must ask which.  Lists 1 and 2 already name it.
-    if {$listname eq {all}} {
-        ::label $w.q2 -anchor w -background [rdw::color panel] \
-            -text {And which list should it go into?}
+    # THE SECOND LINE, AND IT IS NOW PRESENT IN ALL THREE STATES -- ISSUE 1355.
+    #
+    # ⚠ THE COMMENT THAT USED TO STAND HERE SAID "Lists 1 and 2 already name
+    # it", AND THAT WAS THE DEFECT.  Nothing named it.  MEASURED on the user's
+    # own M18: on annotation and on summary this dialog is BYTE-IDENTICAL and
+    # the word `summary` appears nowhere in it -- which is their own sentence,
+    # "it doesn't say 'summary list' - which would be good for the user to
+    # know".  List 3 was the only state that named a list, and only because it
+    # had to ASK.
+    #
+    # So list 3 keeps its QUESTION and lists 1 and 2 gain a STATEMENT in the
+    # same slot, at the same widget path, with the same padding: the dialog
+    # names a list in every state, and a reader who learns where to look on one
+    # list finds it on the others.
+    #
+    # ⚠ THE STATEMENT NAMES THE LIST THE EDIT WILL WRITE, WHICH ON AN Add FROM
+    # LIST 2 IS NOT THE LIST IN FORCE (spec 4.2 B7; see rdw::_edit_list).
+    # Naming the identity would have printed "the summary list" over a write
+    # into the annotation one.
+    #
+    # ⚠ AND BOTH GLOSSES COME FROM `rdw::_list_phrase`, THE SAME ACCESSOR THE
+    # STATEMENT, THE CHROME LINE AND THE TITLE READ.  They were two literals
+    # here; two wordings for one fact teach the reader to distrust both.
+    set q2 [rdw::_scope_statement $op $listname]
+    if {$listname eq {all}} { set q2 {And which list should it go into?} }
+    if {$q2 ne {}} {
+        ::label $w.q2 -anchor w -justify left -background [rdw::color panel] \
+            -wraplength 520 -text $q2
         pack $w.q2 -side top -fill x -padx 8 -pady {8 4}
+    }
+    if {$listname eq {all}} {
         ::frame $w.li -background [rdw::color panel]
         ::radiobutton $w.li.annotation -anchor w -variable ::rdw::list_choice \
             -value annotation -background [rdw::color panel] \
-            -text {the annotation list (drawn on the sheet)}
+            -text [rdw::_list_phrase annotation]
         ::radiobutton $w.li.summary -anchor w -variable ::rdw::list_choice \
             -value summary -background [rdw::color panel] \
-            -text {the summary list (computed, not drawn)}
+            -text [rdw::_list_phrase summary]
         pack $w.li.annotation $w.li.summary -side top -fill x
         pack $w.li -side top -fill x -padx 16
     }
@@ -4221,7 +4496,13 @@ proc rdw::scope_dialog {op subject listname} {
     # result would then be read as an answer the user never gave.
     set scope_result {}
     set scope_choice broad
-    set list_choice [expr {$listname eq {all} ? {annotation} : $listname}]
+    ## ⚠ THROUGH THE ONE ACCESSOR (issue 1355).  This line used to read
+    ## `[expr {$listname eq {all} ? {annotation} : $listname}]`, which answers
+    ## `summary` for an Add made on the summary list -- a value that
+    ## contradicts what `rdw::button` then writes, and which was inert only
+    ## because the radio group exists on list 3 alone.  An inert wrong answer
+    ## is one refactor away from a live one.
+    set list_choice [rdw::_edit_list $op $listname]
     if {![rdw::have_tk]} { return {} }
     if {![winfo exists .rdw]} { return {} }
     set prevfocus {}
@@ -4321,6 +4602,15 @@ proc rdw::_do_save {label} {
 # FROM.  That is rdw::inert's obligation surviving the wiring: the status line
 # is shared by all five buttons, so a message that does not identify itself is
 # the same failure as a silent one, one step further in.
+## THE BUTTON COLUMN'S OWN REPORTER (issue 1356).  It exists so the clause
+## about the selection is appended at ONE place per verdict rather than being
+## re-typed at each of the seven returns that carry one, and so a reviewer can
+## neutralise the whole clause in one line and watch row BT31 say so.
+proc rdw::_bstatus {msg note} {
+    if {$note eq {}} { return [rdw::status $msg] }
+    return [rdw::status "$msg $note"]
+}
+
 proc rdw::button {id} {
     variable listkind
     variable blocks
@@ -4342,6 +4632,13 @@ proc rdw::button {id} {
         return [rdw::status "$label: nothing has been dumped into this window yet - press 1, 2 or 3 over a device first."]
     }
     set line [rdw::_target_line]
+    ## ⚠ TAKEN HERE, BEFORE ANYTHING CAN REPAINT (issue 1356).  Every success
+    ## arm below ends in `rdw::render_pane`, and a repaint deletes the pane's
+    ## text and with it the `sel` tag -- so a note computed after the edit
+    ## would be silent in exactly the case it exists for.  See
+    ## rdw::_selection_note for what was measured and why the clause is
+    ## conditional.
+    set snote [rdw::_selection_note]
     set loc [rdw::_locate $line]
     set param {}
     if {$loc ne {}} {
@@ -4359,7 +4656,7 @@ proc rdw::button {id} {
         return [rdw::status "$label: no row is marked in this window - click a parameter row, which shades to show it is the target, then press $label again."]
     }
     if {$param eq {}} {
-        return [rdw::status "$label: line $line is not a parameter row - click a parameter row in the pane, then press $label again."]
+        return [rdw::_bstatus "$label: line $line is not a parameter row - click a parameter row in the pane, then press $label again." $snote]
     }
     set subj [rdw::_subject [lindex $loc 0]]
     if {$subj eq {} || [dict get $subj type] eq {} || [dict get $subj class] eq {}} {
@@ -4378,7 +4675,7 @@ proc rdw::button {id} {
         # `governing`, not narrow-or-broad: Up and Down raise no dialog, so
         # rdw::_edit resolves the key itself through op_param_lists::governs.
         lassign [rdw::_edit $id $subj $ln governing $param] verdict sentence
-        if {$verdict ne {ok}} { return [rdw::status "$label: $sentence"] }
+        if {$verdict ne {ok}} { return [rdw::_bstatus "$label: $sentence" $snote] }
         # ⚠ AND IT APPLIES, LIKE DELETE AND ADD (item B5-2).  The preserved
         # patch deferred the redraw here and SAID SO on screen -- "The drawn
         # order follows on the next Add, Delete or reload (issue 1312)" --
@@ -4423,10 +4720,14 @@ proc rdw::button {id} {
         rdw::set_row $line
         rdw::render_pane
         set why [rdw::_apply_now $subj]
-        if {$why ne {}} { return [rdw::status "$label: $sentence $why"] }
-        return [rdw::status "$label: $sentence"]
+        if {$why ne {}} { return [rdw::_bstatus "$label: $sentence $why" $snote] }
+        return [rdw::_bstatus "$label: $sentence" $snote]
     }
-    set deflist [expr {$id eq {add} ? {annotation} : $listkind}]
+    ## ⚠ THROUGH THE ONE ACCESSOR (issue 1355), so the dialog's statement, the
+    ## dialog's pre-set choice and this write cannot give three answers to
+    ## "which list".  Spec 4.2 B7: an Add from list 2 writes the ANNOTATION
+    ## list, which the dialog now says out loud.
+    set deflist [rdw::_edit_list $id $listkind]
     set ans [rdw::scope_dialog $id $subj $listkind]
     if {$ans eq {}} {
         return [rdw::status "$label: cancelled - nothing was changed."]
@@ -4438,7 +4739,7 @@ proc rdw::button {id} {
     if {$listkind eq {all}} { catch {set ln [dict get $ans list]} }
     if {$ln ne {annotation} && $ln ne {summary}} { set ln $deflist }
     lassign [rdw::_edit $id $subj $ln $scope $param] verdict sentence
-    if {$verdict ne {ok}} { return [rdw::status "$label: $sentence"] }
+    if {$verdict ne {ok}} { return [rdw::_bstatus "$label: $sentence" $snote] }
     ## ISSUE 1330 REACHES THIS DOOR TOO.  Delete and Add have always relied on
     ## `_apply_now` to put the change on the sheet, so a swallowed failure was
     ## just as false here; it was only never fenced because no row asked.
@@ -4472,6 +4773,6 @@ proc rdw::button {id} {
     rdw::set_row $line
     rdw::render_pane
     set why [rdw::_apply_now $subj]
-    if {$why ne {}} { return [rdw::status "$label: $sentence $why"] }
-    return [rdw::status "$label: $sentence"]
+    if {$why ne {}} { return [rdw::_bstatus "$label: $sentence $why" $snote] }
+    return [rdw::_bstatus "$label: $sentence" $snote]
 }

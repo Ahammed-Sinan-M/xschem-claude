@@ -1810,4 +1810,45 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   what sent the RDW list batch's brief at the wrong hypothesis. **FILED, NOT
   FIXED.**
 
-**The next free number is 1355.**
+- **1355** — the Results window never says which list is in force, and the scope
+  dialog names no list on lists 1 and 2. The user's SECOND complaint. MEASURED
+  at HEAD `d81b4b24`, after the narrowing: the title was `Results Display
+  Window` on all three identities, the status line was empty on the whole dump
+  path, `.rdw` had three children and none named a list, and the real scope
+  dialog was BYTE-IDENTICAL on annotation and on summary with no `.q2` at all.
+  So the only on-screen difference between lists 1 and 2 was the Add button's
+  grey — the user's own clue, and true evidence for "not list 3" and none at all
+  for "I am on summary". **FIXED**: one name/gloss builder read by four
+  surfaces, a chrome `::label` `.rdw.hdr` above the pane, the list in the `wm
+  title`, and `.rdw.scope.q2` as a STATEMENT on lists 1 and 2 in the slot list 3
+  uses for its question — all refreshed by the ONE proc `rdw::set_list` calls
+  (`rdw::apply_button_states` renamed `rdw::apply_list_state`). Fenced by
+  section **LX** and row **BT31** of `test_rdw_window_1245.tcl` (`RW_FLOOR`
+  144 -> 152) and section **LK** of `test_rdw_keys_1245.tcl` (`KX_FLOOR`
+  83 -> 85), every row proved by a sabotage. Carries **four decisions taken on
+  the user's behalf** — the wording of five sentences, the title as a second
+  surface, "Keys 1/2/3 chose" as a claim about identity, and naming the TARGET
+  list rather than the identity in force. Rule debt **1355**.
+
+- **1356** — the Results window's buttons act on the CURSOR row, and a mouse
+  selection of six rows is not a six-row edit. MEASURED on the user's own
+  gesture: `tag ranges sel` = `8.4 13.4` (six rows) with `::rdw::targetrow` = 8,
+  and one press produced one verdict about one parameter. Every reader of the
+  text selection in `src/rdw.tcl` is on the CLIPBOARD path; none is on the edit
+  path. **The SILENCE is FIXED** — `rdw::_selection_note` appends one clause to
+  every verdict, and only when a selection really spans two or more lines (rows
+  BT31 and LX11). **The FEATURE is a ruling and is NOT built**: one dialog for N
+  rows, one status line for N outcomes, and ruling DD-10's last-row rule
+  evaluated over a batch rather than per row. Proposed answer: keep it one row
+  and keep saying so. Rule debt **1356**.
+
+- **1357** — Add pressed on the SUMMARY list writes the ANNOTATION list.
+  MEASURED on the user's own M18: `Add: gm is already in the mos annotation
+  list`, from a press made on the summary list with a dialog that named no list.
+  **It is spec §4.2 B7's own Add cell and the behaviour is UNCHANGED**; issue
+  1355 gave the answer one builder (`rdw::_edit_list`, read by three consumers)
+  and made the dialog say it out loud. **FILED, NOT FIXED** — whether a
+  summary-list Add should target the summary list is the user's call, since it
+  is their spec and their expectation that disagree. Rule debt **1357**.
+
+**The next free number is 1358.**
