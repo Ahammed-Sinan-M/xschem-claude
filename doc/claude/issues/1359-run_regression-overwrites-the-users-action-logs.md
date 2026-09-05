@@ -68,3 +68,16 @@ log's default placement, and changing the harness under it needs its own
 verification pass rather than a drive-by. Whoever takes it should check the
 display-arm list against `test_action_log.sh` and `test_ciw_actionlog_output`
 first.
+
+## A WORKAROUND THAT WORKS TODAY, MEASURED 2026-09-05 (issues 1360/1361 pass)
+
+`src/util.c:370-373` defaults the action log to `$TMPDIR`, else `/tmp`, so
+`TMPDIR=<somewhere private> tclsh run_regression.tcl` moves every display-arm
+log out of `/tmp` without touching `tests/run_regression.tcl` at all: the
+children inherit the environment, and `devdisplay.sh exec` passes it through.
+MEASURED over one full solo run (rc=0, 57 cases, zero counted failures): all
+nine `/tmp/Xschem.log.*` byte-identical by md5 before and after, and
+`Xschem.log` .. `Xschem.log.5` created inside the private `TMPDIR` instead.
+This is a caller-side mitigation, not the fix -- it protects whoever remembers
+it, which is exactly the thing a `--logdir` argument in the harness would stop
+depending on.

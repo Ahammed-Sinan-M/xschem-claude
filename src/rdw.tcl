@@ -324,16 +324,55 @@ proc rdw::_cols_are {n} {
 # still withheld (the alternative is a pane whose length depends on how badly
 # the circuit failed), and it is COUNTED, so the fact survives the narrowing
 # even when the row does not.  DECISION, unratified, on rule debt 1300.
-proc rdw::_narrow_line {cls listname total withheld wnf norder} {
+#
+# ⚠ AND THE WITHHELD-NON-CONVERGENCE CLAUSE IS BUILT BEFORE THE BRANCH, NOT
+# INSIDE ONE OF THEM.  The first revision appended it after the `norder == 0`
+# arm had already returned, so the ONE case in which every row is withheld was
+# the ONE case that never mentioned a withheld row failing to converge -- the
+# exact fact the paragraph above says must survive the narrowing, lost in the
+# case where nothing else survives it.  MEASURED: the same answer under a
+# non-empty list said "1 of the withheld did not converge" and under an empty
+# one said nothing, and an empty list is reachable from a shared settings file
+# (`list class mos annotation` with no `param` rows under it sets owned=1 with
+# an empty list).  Row NW12 is the fence and NW4's own golden used to spell the
+# omission.
+proc rdw::_narrow_line {name total withheld wnf norder} {
+    set nf {}
+    if {$wnf > 0} { set nf " $wnf of the withheld did not converge." }
     if {$norder == 0} {
-        return "The $cls $listname list was empty at this dump, so nothing this run published for this device is shown. Press 3 for everything this run published."
+        return "The $name was empty at this dump, so nothing this run published for this device is shown.$nf Press 3 for everything this run published."
     }
     if {$withheld == 0} {
-        return "Narrowed to the $cls $listname list as it stood at this dump. Every column this run published for this device is in that list."
+        return "Narrowed to the $name as it stood at this dump. Every column this run published for this device is in that list."
     }
-    set s "Narrowed to the $cls $listname list as it stood at this dump. [rdw::_cols_are $withheld] not in that list and not shown; this run published $total for this device."
-    if {$wnf > 0} { append s " $wnf of the withheld did not converge." }
-    return "$s Press 3 for everything this run published."
+    return "Narrowed to the $name as it stood at this dump. [rdw::_cols_are $withheld] not in that list and not shown; this run published $total for this device.$nf Press 3 for everything this run published."
+}
+
+# THE NAME OF THE LIST THAT REALLY NARROWED THIS BLOCK, IN THE STORE'S OWN
+# WORDS.  No leading article: both sentences above supply their own.
+#
+# ⚠ IT IS THE ENTRY THAT ANSWERED, NOT THE CLASS THAT WAS ASKED, AND THE FIRST
+# REVISION GOT THAT WRONG ON THE USER'S OWN DEVICE.  `rdw::_narrow_spec`
+# resolves the rows through `rdw::_list_params $cls $ln $cell`, which is
+# flavor-aware -- `op_param_lists::governs` lets a DEVICE-FLAVOR entry win --
+# and then handed `rdw::_narrow_line` the CLASS.  MEASURED by two adversaries
+# on tb_bandgap /x1/x1 M18 after the shipped Delete -> "this cell only"
+# gesture: the pane showed the flavor entry's rows under "Narrowed to the mos
+# annotation list", while `effective mos annotation` held a different set.  The
+# NAME came from one entry and the COUNT from the other, in the one block this
+# window exists to have pasted into a design review.
+#
+# ⚠ AND THE WORDING IS `rdw::_edit`'s, NOT A SECOND ONE.  Its `governing` arm
+# already says "for cells matching <glob> of class <cls>" about the same store
+# key; a fresh phrasing here would be the two-wordings drift this file keeps
+# paying for.  Row NW11 is the fence, and it also fences the flavor path
+# itself: before it, passing `{}` for the cell -- silently ignoring every
+# per-cell list -- left window, keys and store all green.
+proc rdw::_narrowed_list {cls listname scope} {
+    if {[llength $scope] == 2 && [lindex $scope 0] eq {flavor}} {
+        return "$listname list for cells matching [lindex [lindex $scope 1] 1] of class $cls"
+    }
+    return "$cls $listname list"
 }
 
 # Keep only the rows `order` declares, in ALL THREE BUCKETS, and count what was
@@ -348,9 +387,28 @@ proc rdw::_narrow_line {cls listname total withheld wnf norder} {
 # footnote, `_incomplete_line`) sees a well-formed narrowed answer rather than
 # a special case.
 #
-# ⚠ `total` COUNTS ROWS, NOT PARAMETERS, and it counts them across every
-# primitive of the union.  One XR1 resolves to several primitives (ruling D-3)
-# and the sentence is about what the BLOCK would have shown.
+# ⚠ `total`, `kept` AND `wnf` COUNT DISTINCT COLUMNS, NOT ROWS, and that is
+# what makes the word in the sentence true.  One XR1 resolves to SEVERAL
+# primitives (ruling D-3) and each of them publishes its own copy of the same
+# column; the first revision counted every copy, so a five-primitive XR1
+# publishing two distinct columns was told "2 columns are not in that list ...
+# this run published 5 for this device" -- both numbers row counts, printed one
+# line under the DD-1 line that uses "columns" in the correct per-vector sense.
+# A single block used the word with two meanings one line apart.
+#
+# ⚠ THE REMEDY IS THE COUNT AND NOT THE WORD, because DD-1's line has the prior
+# claim on "column" and the narrowing is a decision about NAMES: a list
+# declares `id`, not `id on rend1`.  So the three buckets contribute their
+# distinct param names to ONE set, and a name is withheld exactly when no list
+# declares it.  `wnf` is then the withheld names that came back non-finite,
+# which keeps it comparable with the withheld count it is quoted beside -- a
+# row count there could read "5 of the withheld did not converge" under "3
+# columns are not in that list".
+#
+# THE FILTER ITSELF IS STILL PER ROW: a column the list declares keeps every
+# primitive's copy, so ruling D-3's attribution of a number to the primitive
+# that published it is untouched.  Rows NW13 (the count) and F7/Q4 (the
+# attribution) are the two fences.
 proc rdw::_narrow_answer {ans order} {
     set pairs [dict create]
     catch {set pairs [dict get $ans devices]}
@@ -358,43 +416,51 @@ proc rdw::_narrow_answer {ans order} {
     catch {set abs [dict get $ans absent]}
     set nf {}
     catch {set nf [dict get $ans nonfinite]}
-    set total 0 ; set kept 0 ; set wnf 0
+    set seen {}     ;# every distinct column this run published for this device
+    set nfseen {}   ;# ... and which of those came back non-finite
     set np [dict create]
     foreach d [dict keys $pairs] {
         set keep {}
         foreach pv [dict get $pairs $d] {
-            incr total
-            if {[lsearch -exact $order [lindex $pv 0]] >= 0} {
-                lappend keep $pv ; incr kept
-            }
+            set p [lindex $pv 0]
+            if {[lsearch -exact $seen $p] < 0} { lappend seen $p }
+            if {[lsearch -exact $order $p] >= 0} { lappend keep $pv }
         }
         if {[llength $keep]} { dict set np $d $keep }
     }
     set na {}
     foreach e $abs {
-        incr total
-        if {[lsearch -exact $order [lindex $e 1]] >= 0} {
-            lappend na $e ; incr kept
-        }
+        set p [lindex $e 1]
+        if {[lsearch -exact $seen $p] < 0} { lappend seen $p }
+        if {[lsearch -exact $order $p] >= 0} { lappend na $e }
     }
     set nn {}
     foreach e $nf {
-        incr total
-        if {[lsearch -exact $order [lindex $e 1]] >= 0} {
-            lappend nn $e ; incr kept
-        } else {
-            incr wnf
-        }
+        set p [lindex $e 1]
+        if {[lsearch -exact $seen $p] < 0} { lappend seen $p }
+        if {[lsearch -exact $nfseen $p] < 0} { lappend nfseen $p }
+        if {[lsearch -exact $order $p] >= 0} { lappend nn $e }
+    }
+    set kept 0 ; set wnf 0
+    foreach p $seen {
+        if {[lsearch -exact $order $p] >= 0} { incr kept ; continue }
+        if {[lsearch -exact $nfseen $p] >= 0} { incr wnf }
     }
     set out $ans
     catch {dict set out devices   $np}
     catch {dict set out absent    $na}
     catch {dict set out nonfinite $nn}
-    return [list $out $total $kept $wnf]
+    return [list $out [llength $seen] $kept $wnf]
 }
 
 # WHAT NARROWS THIS BLOCK, OR {} FOR "NOTHING DOES".  Answers
-# {listname class ordered-raw-param-names}.
+# {listname class ordered-raw-param-names governing-scope}.
+#
+# ⚠ THE FOURTH ELEMENT IS WHICH ENTRY ANSWERED, AND IT IS TAKEN FROM THE ONE
+# SCANNER.  `rdw::_scope_for` is the single reader of `op_param_lists::governs`
+# in this file (issue 1348 split it out for exactly this reason), so the
+# caption cannot name one entry while the rows come from another -- which is
+# what shipped, and what row NW11 now fences.
 #
 # ⚠ {} IS THE ANSWER FOR A CALLER THAT CANNOT NAME A LIST, AND IT IS NOT THE
 # SAME AS AN EMPTY LIST.  A ctx with no `list` key (every hand-built context in
@@ -419,7 +485,8 @@ proc rdw::_narrow_spec {ctx} {
     if {$cls eq {}} { return {} }
     set cell {}
     catch {set cell [dict get $ctx cellname]}
-    return [list $ln $cls [rdw::_list_params $cls $ln $cell]]
+    return [list $ln $cls [rdw::_list_params $cls $ln $cell] \
+                 [rdw::_scope_for $cls $ln $cell]]
 }
 
 # ISSUE 1284.  THE ANSWER DICT IS NOT TRUSTED INPUT.  It is whatever a backend
@@ -858,7 +925,9 @@ proc rdw::format_answer {ans ctx} {
         set norder [lindex $nspec 2]
         lassign [rdw::_narrow_answer $ans $norder] ans ntot nkept nwnf
         lappend out [rdw::_line note \
-            [rdw::_narrow_line [lindex $nspec 1] [lindex $nspec 0] \
+            [rdw::_narrow_line \
+                [rdw::_narrowed_list [lindex $nspec 1] [lindex $nspec 0] \
+                                     [lindex $nspec 3]] \
                 $ntot [expr {$ntot - $nkept}] $nwnf [llength $norder]]]
         set devs [rdw::_rowdevs $ans]
     }
@@ -982,6 +1051,46 @@ proc rdw::_buttons {} { return {up Up down Down delete Delete add Add save Save}
 proc rdw::_button_label {id} {
     foreach {i l} [rdw::_buttons] { if {$i eq $id} { return $l } }
     return {}
+}
+
+# WHICH BUTTONS ACTUALLY DO SOMETHING ON THIS LIST IDENTITY, ONCE.
+#
+# ⚠ IT EXISTS BECAUSE THE CHROME LINE SPELLED THE ANSWER BESIDE THE CODE THAT
+# DECIDES IT AND THE TWO PARTED COMPANY.  List 3's sentence said "only Add
+# works here"; `rdw::button_state` returns `normal` for `save` on EVERY kind,
+# and an adversary pressed Save on list 3 and got a 1627-byte
+# op_param_lists.conf written to disk.  Nothing in the tree tested Save's
+# success arm at all, so one row golded the false literal and no row could
+# contradict it.  Deriving the sentence from this proc is what makes the two
+# move together; row LX12 is the fence.
+#
+# TWO REASONS A BUTTON DOES NOTHING, AND BOTH ARE `rdw::button`'s OWN ARMS:
+#   * it is GREYED -- `rdw::button_state`, which the command path consults too;
+#   * it is enabled and REFUSES ON IDENTITY GROUNDS.  Up and Down on list 3
+#     answer "list 3 is live from the simulator and has no stored order to
+#     change", which is a property of the identity and not of the cursor, so it
+#     can be answered here.  Every other refusal in that proc is about the
+#     STATE of the moment -- no dump yet, no row marked, a pick running -- and
+#     is deliberately NOT modelled: a chrome line that changed as the user
+#     clicked would be describing the moment rather than the list.
+proc rdw::_active_buttons {kind} {
+    set out {}
+    foreach {id label} [rdw::_buttons] {
+        if {[rdw::button_state $id $kind] ne {normal}} { continue }
+        if {$kind eq {all} && ($id eq {up} || $id eq {down})} { continue }
+        lappend out $id
+    }
+    return $out
+}
+
+# The same answer as a clause, in the button column's OWN labels
+# (`rdw::_buttons`), so the sentence names what the user is looking at.
+proc rdw::_active_phrase {kind} {
+    set names {}
+    foreach id [rdw::_active_buttons $kind] { lappend names [rdw::_button_label $id] }
+    if {[llength $names] == 0} { return {no button does anything} }
+    if {[llength $names] == 1} { return "only [lindex $names 0] does anything" }
+    return "only [join [lrange $names 0 end-1] {, }] and [lindex $names end] do anything"
 }
 
 # ---------------------------------------------------------------------------
@@ -1109,20 +1218,77 @@ proc rdw::_scope_statement {op listname} {
 # file already carries a scar from: a status line citing a fixed issue 1312 as
 # its reason.  Row LX4 is the fence.
 #
-# ⚠ LIST 3's SENTENCE NAMES THE ONE BUTTON THAT WORKS THERE.  Add is enabled on
-# list 3 and its dialog asks which list; Delete is greyed and Up/Down refuse
-# with "list 3 is live from the simulator and has no stored order to change".
-# And on lists 1 and 2 the pane now shows only rows the list already declares
-# (issue 1353), so an Add from a narrowed pane can only ever answer "already in
-# the list" -- press 3, click the row, press Add is the working path, and
-# nothing on screen said so before this line.
-proc rdw::_chrome_line {kind} {
+# ⚠ LIST 3's SENTENCE NAMES THE BUTTONS THAT WORK THERE, AND IT ASKS RATHER
+# THAN SPELLS.  It used to read "only Add works here", which was FALSE: Save is
+# not greyed on any list and a real press on list 3 wrote a 1627-byte
+# op_param_lists.conf to disk.  `rdw::_active_phrase` is now the one answer and
+# this line quotes it; row LX12 is the fence.  On lists 1 and 2 the pane shows
+# only rows the list already declares (issue 1353), so an Add from a narrowed
+# pane can only ever answer "already in the list" -- press 3, click the row,
+# press Add is the working path, and nothing on screen said so before this
+# line.
+#
+# ⚠ AND THE `Keys 1/2/3:` PREFIX IS CONDITIONAL, BECAUSE THE KEYS ARE.  Ruling
+# D-2 puts the bare digits in the CADENCE PROFILE ONLY (src/cadence_style_rc),
+# while src/xschem.tcl adds Tools > Results Display Window UNCONDITIONALLY.
+# MEASURED with no cadence rc sourced: `bind .drw <Key-1>` is the empty string,
+# real Key-1/2/3 events on the canvas leave `::rdw::listkind` where it stood,
+# and the label named them anyway -- false on every open of this window outside
+# that profile, on a surface written to answer a user's confusion.  The advice
+# "press 1 or 2 to edit a list" goes with it for the same reason.  Rows LX14
+# (both values, pure) and LK3 (off the real binds of the real canvas) fence it.
+#
+# ⚠ AND THE SUMMARY LINE CARRIES THE Add EXCEPTION, because "the buttons edit
+# this list" was FALSE THERE.  Spec 4.2 B7 sends an Add made from list 2 to the
+# ANNOTATION list -- `rdw::_edit_list` is that answer, the scope dialog already
+# says it out loud (`rdw::_scope_statement`), and this line said the opposite
+# three rows away in the suite.  The exception is DERIVED from the same proc,
+# so if issue 1357 ever rules that Add should write the summary list the
+# sentence follows.  Row LX13 asserts the claim against the code.
+proc rdw::_chrome_add_note {kind} {
+    if {$kind eq {all}} { return {} }
+    if {[rdw::button_state add $kind] ne {normal}} { return {} }
+    set t [rdw::_edit_list add $kind]
+    if {$t eq $kind} { return {} }
+    return " Add writes [rdw::_list_name $t]."
+}
+
+# DO THE BARE 1/2/3 DIGITS THIS LINE NAMES ACTUALLY REACH THIS WINDOW?
+#
+# It asks the CANVAS's own bindings rather than a profile flag, because the
+# binds are what the user's fingers meet: an rc that rebinds them, a profile
+# that does not source cadence_style_rc, and a future menu route all give the
+# same honest answer.  `rdw::key` is the one thing those binds call and has no
+# other caller, so its name in the script is the test.
+proc rdw::_keys_bound {} {
+    if {![rdw::have_tk]} { return 0 }
+    if {[catch {winfo exists .drw} ok] || !$ok} { return 0 }
+    foreach k {<Key-1> <Key-2> <Key-3>} {
+        set b {}
+        if {[catch {bind .drw $k} b]} { return 0 }
+        if {![string match {*rdw::key*} $b]} { return 0 }
+    }
+    return 1
+}
+
+# THE TEXT, PURE, SO BOTH VALUES OF `keyed` ARE ASSERTED ON THE ARM WITH NO
+# DISPLAY AT ALL (row LX14).  `rdw::_chrome_line` is the one caller and is the
+# only thing here that touches the live keyboard.
+proc rdw::_chrome_text {kind keyed} {
     set p [rdw::_list_phrase $kind]
     if {$p eq {}} { return {} }
+    set head [expr {$keyed ? "Keys 1/2/3: $p" : "Showing $p"}]
     if {$kind eq {all}} {
-        return "Keys 1/2/3: $p - press 1 or 2 to edit a list; only Add works here."
+        set s "$head -"
+        if {$keyed} { append s " press 1 or 2 to edit a list;" }
+        return "$s [rdw::_active_phrase $kind] here."
     }
-    return "Keys 1/2/3: $p - the buttons edit this list, not the block you are reading."
+    return "$head - the buttons edit this list, not the block you are\
+ reading.[rdw::_chrome_add_note $kind]"
+}
+
+proc rdw::_chrome_line {kind} {
+    return [rdw::_chrome_text $kind [rdw::_keys_bound]]
 }
 
 # THE WINDOW TITLE.  The SECOND surface, not the first: a window manager may
@@ -1803,15 +1969,18 @@ proc rdw::close {} {
 }
 
 proc rdw::build {} {
-    variable listkind
     toplevel .rdw
-    ## ⚠ THE TITLE IS BUILT FROM `listkind`, NOT FROM A LITERAL (issue 1355).
-    ## This proc has DECLARED `variable listkind` since item B4 and never read
-    ## it, and the consequence was measurable: `::rdw::listkind` outlives the
-    ## window (the dumps do too -- rdw::close touches neither), so a window
-    ## closed on the summary list and reopened came back titled for no list at
-    ## all.  Row LX7/LX8's close-and-reopen leg is the fence.
-    wm title .rdw [rdw::_title $listkind]
+    ## ⚠ THE TITLE AND THE CHROME ARE NOT SET HERE.  `rdw::apply_list_state` --
+    ## the ONE refresher `rdw::set_list` calls (invariant I1) -- is the last
+    ## thing this proc does, and it sets both from `listkind`.  An earlier
+    ## revision ALSO set them here and left a comment claiming row LX7/LX8's
+    ## close-and-reopen leg as the fence for that read; it is not, and an
+    ## adversary proved it by gutting both lines and watching every suite stay
+    ## green -- because the leg was really fencing `apply_list_state`.  Two
+    ## setters for one fact is this file's own two-builders drift, and a
+    ## comment naming a fence that does not fence is row LX4's defect one layer
+    ## down.  Row LX16 asserts there is exactly one setter and that build does
+    ## not read `listkind` at all.
     wm protocol .rdw WM_DELETE_WINDOW rdw::close
     wm minsize .rdw 520 260
     ## The window manager grants keyboard focus to a newly mapped toplevel
@@ -1990,9 +2159,13 @@ proc rdw::build {} {
     # -- the block is what the user pastes into a design review.  Chrome is
     # STATE and would be stamped onto a record it does not describe; row LX10
     # is that fence.
+    ##
+    ## ⚠ AND IT IS CREATED WITHOUT ITS TEXT.  `rdw::apply_list_state` at the
+    ## foot of this proc fills it, and nothing between here and there pumps the
+    ## event loop, so the label is never painted empty.  See the note at the
+    ## head of `build` for why a second setter was removed rather than kept.
     ::label .rdw.hdr -anchor w -justify left \
-        -background [rdw::color panel] \
-        -text [rdw::_chrome_line $listkind]
+        -background [rdw::color panel]
     pack .rdw.hdr -side top -fill x -padx 4 -pady {3 1}
 
     frame .rdw.b -background [rdw::color panel]
@@ -2467,8 +2640,20 @@ proc rdw::_selection_lines {} {
     return [expr {$b - $a + 1}]
 }
 
+# ⚠ THE BOUNDARY IS SPLIT OUT SO IT CAN BE DRIVEN AT ITS OWN VALUES.  The
+# clause's whole claim is that it fires at two lines and NOT at one -- one line
+# is the select-a-value-to-copy-it gesture this window exists for -- and with
+# the test only reachable through a live `sel` tag, the two rows that asserted
+# it drove 0 lines and "two or more".  MEASURED: changing `< 2` to `< 1` kept
+# test_rdw_window_1245 and test_rdw_keys_1245 fully green while appending the
+# whole lecture to every ordinary one-row copy.  Row LX15 drives 0, 1, 2 and 16
+# on both arms.
 proc rdw::_selection_note {} {
-    if {[rdw::_selection_lines] < 2} { return {} }
+    return [rdw::_selection_note_for [rdw::_selection_lines]]
+}
+
+proc rdw::_selection_note_for {n} {
+    if {$n < 2} { return {} }
     return {Selecting lines does not choose them for editing - the buttons act on the shaded row alone.}
 }
 

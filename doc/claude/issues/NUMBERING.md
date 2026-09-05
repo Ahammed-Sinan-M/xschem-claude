@@ -1886,4 +1886,47 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   display-arm list may contain a suite whose own subject is the log's default
   placement, so it needs its own verification pass rather than a drive-by.
 
-**The next free number is 1360.**
+- **1360** — the RDW's narrowing sentence (issue 1353) said three things that
+  were not true about the user's own data, and the store's device-flavor scope
+  had no coverage at all. (a) A block narrowed by a device-FLAVOR entry was
+  captioned with the CLASS list's name, self-mixing a name from one entry with a
+  count from the other — driven to a false sentence on their own M18 in two
+  gestures from their reported workflow. (b) `rdw::_narrow_line`'s empty-list
+  arm returned before the withheld-non-convergence clause was built, so the one
+  case where every row is withheld was the one case that never said a withheld
+  row failed to converge — and row NW4 golded the omission. (c) The number was a
+  ROW count across ruling D-3's primitives printed as "columns", one line under
+  the DD-1 line that uses the word correctly. (d) Passing `{}` for the cellname
+  — silently disabling every per-cell list — left window 155, keys 83 and store
+  130 all green. **FIXED**: `rdw::_narrowed_list` names the entry that answered
+  in `rdw::_edit`'s own words, `rdw::_narrow_spec` carries `rdw::_scope_for`'s
+  answer, the clause is built before the branch, and the three counts are over
+  DISTINCT columns (the filter is still per row, so D-3's attribution is
+  untouched). Fenced by **NW11 NW12 NW13** of `test_rdw_window_1245.tcl`
+  (`RW_FLOOR` 154 -> 162, with 1361), each proved by a sabotage that reds
+  exactly it.
+
+- **1361** — the RDW's chrome line (issue 1355) said three things that were not
+  true, and two of its own stated properties were fenced by nothing. (a) "Keys
+  1/2/3:" — `src/xschem.tcl:17638` adds the Tools entry UNCONDITIONALLY while
+  the binds live in `src/cadence_style_rc` alone, so the line was false on every
+  open outside the cadence profile. (b) "only Add works here" — `button_state`
+  returns `normal` for `save` on every kind and a real press wrote a 1627-byte
+  `op_param_lists.conf`; nothing in the tree tested Save's success arm at all.
+  (c) "the buttons edit this list" on summary — `_edit_list add summary` answers
+  `annotation`, which LX2 and LX3 gold three rows from the literal LX4 golded.
+  (d) `_selection_note`'s `< 2` boundary: `< 1` kept both suites green while
+  lecturing every one-row select-to-copy. (e) `rdw::build`'s two `listkind`
+  reads were dead code whose comment named a fence that does not fence.
+  **FIXED**: `rdw::_keys_bound` asks the canvas's own binds and
+  `rdw::_chrome_text` takes the answer as an argument; `rdw::_active_buttons` /
+  `rdw::_active_phrase` are the one answer to "which buttons work here";
+  `rdw::_chrome_add_note` derives the Add exception from `_edit_list`;
+  `rdw::_selection_note_for` is the pure boundary; build's two setters are
+  deleted. Fenced by **LX12..LX16** of `test_rdw_window_1245.tcl` and **LK3** of
+  `test_rdw_keys_1245.tcl` (`KX_FLOOR` 87 -> 88). Carries **one decision left to
+  the user**: the longer summary sentence grows the window 893 -> 971 px on list
+  2 only, so it resizes as the identity changes — look debt
+  `rdw_1361_chrome_width_measured`.
+
+**The next free number is 1362.**

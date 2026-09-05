@@ -4261,6 +4261,37 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
           [expr {[winfo exists .rdw.scope] ? 1 : 0}] [grab current]] \
     [list 1 [kx_ans ::rdw::_scope_statement delete summary] {Which devices?} summary 0 {}]
   kx_ans ::rdw::set_list summary
+
+  ## LK3 — THE PREFIX NAMES A KEYBOARD, SO THE KEYBOARD IS WHAT IS ASKED.
+  ##
+  ## The chrome line opened "Keys 1/2/3:" on every open of this window, and
+  ## src/xschem.tcl adds the Tools entry that opens it UNCONDITIONALLY while
+  ## the four digit binds live in src/cadence_style_rc alone (ruling D-2).
+  ## MEASURED with no cadence rc sourced: `bind .drw <Key-1>` is the empty
+  ## string, real Key-1/2/3 events on the canvas leave `::rdw::listkind` where
+  ## it stood, and the label named them anyway.  This row is the other end of
+  ## test_rdw_window_1245.tcl's LX14: that one drives the pure text builder at
+  ## both values, this one takes the value off the REAL binds of the REAL
+  ## canvas and puts the binds back.
+  set LK3_B {}
+  foreach _k {1 2 3} { lappend LK3_B [bind .drw <Key-$_k>] }
+  set LK3_ON [list [kx_ans ::rdw::_keys_bound] \
+                   [string match {Keys 1/2/3:*} [lk_hdr]]]
+  foreach _k {1 2 3} { bind .drw <Key-$_k> {} }
+  kx_ans ::rdw::apply_list_state ; update idletasks
+  set LK3_OFF [list [kx_ans ::rdw::_keys_bound] \
+                    [string match {Keys 1/2/3:*} [lk_hdr]] \
+                    [string match {Showing *} [lk_hdr]]]
+  foreach _k {1 2 3} { bind .drw <Key-$_k> [lindex $LK3_B [expr {$_k - 1}]] }
+  kx_ans ::rdw::apply_list_state ; update idletasks
+  set LK3_BACK [list [kx_ans ::rdw::_keys_bound] \
+                     [expr {[bind .drw <Key-1>] eq [lindex $LK3_B 0] ? 1 : 0}] \
+                     [expr {[bind .drw <Key-3>] eq [lindex $LK3_B 2] ? 1 : 0}] \
+                     [lk_hdr]]
+  check {LK3 THE CHROME NAMES THE 1/2/3 KEYS ONLY WHEN THE 1/2/3 KEYS ARE REALLY BOUND, taken off the real canvas rather than assumed: under the cadence profile the prefix is there, with the three binds removed the same label drops the prefix and says `Showing` instead, and putting the binds back puts the prefix back - so the one sentence in this window that promises the user a keyboard cannot outlive the keyboard} \
+    [list $LK3_ON $LK3_OFF $LK3_BACK] \
+    [list {1 1} {0 0 1} \
+          [list 1 1 1 [kx_ans ::rdw::_chrome_line [kx_listkind]]]]
 }
 
 
@@ -4565,7 +4596,18 @@ catch {xschem raw clear}
 ## drops both silently, which is exactly what a floor is for.  Issue 1358's
 ## pure decisions are section KB of test_rdw_window_1245.tcl.  A floor is
 ## raised when rows are added and NEVER lowered to make a run pass.
-set KX_FLOOR 87
+## ⚠ AND RAISED 87 -> 88 IN THE SAME COMMIT AS LK3, the row that takes the
+## chrome line's `Keys 1/2/3:` prefix off the REAL binds of the REAL canvas -
+## removing them, watching the label drop the prefix, and putting them back -
+## because src/xschem.tcl offers this window from the Tools menu in every
+## profile while the four digit binds live in src/cadence_style_rc alone
+## (ruling D-2), so the sentence was false on every open outside that profile.
+## LK3 is inside this file's `[kx_ans ::rdw::have_tk] eq {1}` guard - a display
+## that fails to come up drops it silently, which is exactly what a floor is
+## for.  The pure half is row LX14 of test_rdw_window_1245.tcl, which drives
+## the text builder at both values with no display at all.  A floor is raised
+## when rows are added and NEVER lowered to make a run pass.
+set KX_FLOOR 88
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\

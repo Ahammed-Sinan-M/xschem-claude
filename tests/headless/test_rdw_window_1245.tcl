@@ -5724,12 +5724,17 @@ check {NW3 KEYS 1 AND 2 STOP RENDERING IDENTICAL BLOCKS, which is issue 1300's h
 ## a header followed by nothing, which reads as a broken window.
 set NW_ONE   [rw_ansd [dict create {@m.nw1} {{nid 1.11e-05} {zzz 42}}] {} {} 0 ok]
 set NW_ALLIN [rw_ansd [dict create {@m.nw1} {{nid 1.11e-05} {ngm 0.001}}] {} {} 0 ok]
-check {NW4 THE EMPTY LIST IS A SENTENCE, NOT A BLANK BLOCK, and the counts agree with themselves: one withheld row reads `1 column is`, three read `3 columns are`, and a run every one of whose columns IS in the list says so instead of counting to zero} \
+## ⚠ AND ITS EMPTY-LIST GOLDEN USED TO SPELL A DEFECT.  `rdw::_narrow_line`
+## returned from its `norder == 0` arm before the withheld-non-convergence
+## clause was built, so this golden carried the omission and made the suite
+## defend it.  `$NW_ANS` holds one non-finite row and the sentence now says so;
+## row NW12 is the fence that would have caught it.
+check {NW4 THE EMPTY LIST IS A SENTENCE, NOT A BLANK BLOCK, and the counts agree with themselves: one withheld column reads `1 column is`, three read `3 columns are`, a run every one of whose columns IS in the list says so instead of counting to zero, and the empty list still names its withheld non-convergence} \
   [list [rw_text $NW_ANS   [nw_ctx annotation nwzcls]] \
         [rw_text $NW_ONE   [nw_ctx annotation]] \
         [rw_text $NW_ALLIN [nw_ctx annotation]]] \
   [list [rw_lines {NW1:/} {@m.nw1} $RW_INC \
-           {The nwzcls annotation list was empty at this dump, so nothing this run published for this device is shown. Press 3 for everything this run published.} {}] \
+           {The nwzcls annotation list was empty at this dump, so nothing this run published for this device is shown. 1 of the withheld did not converge. Press 3 for everything this run published.} {}] \
         [rw_lines {NW1:/} {@m.nw1} $RW_INC \
            {Narrowed to the nwcls annotation list as it stood at this dump. 1 column is not in that list and not shown; this run published 2 for this device. Press 3 for everything this run published.} \
            {    nid : 11.1u} {}] \
@@ -5835,6 +5840,123 @@ check {NW10 THE LIST NAME TRAVELS WITH THE PASTE: the narrowing sentence is a li
         [rw_ans ::rdw::_row_param [lindex [rw_block $NW_ANS [nw_ctx annotation]] 3]]] \
   {1 1 0 note {}}
 
+## ---------------------------------------------------------------------------
+## NW11..NW13 — THE THREE THINGS THE SENTENCE ABOVE SAID THAT WERE NOT TRUE.
+## ---------------------------------------------------------------------------
+## Four adversaries drove issue 1353's narrowing sentence and landed three
+## refutations against it; nothing in this section fenced any of them, and all
+## three survived into a block the user is asked to paste into a design review.
+## This file's own standard for that is LX4's: "a sentence that outlives its
+## fact is this file's own 1312 scar".  A sentence that was never true is
+## worse, and a golden that spells one is the suite defending the defect.
+##
+##   NW11  THE CAPTION NAMED THE WRONG LIST.  `rdw::_narrow_spec` resolved the
+##         rows through `rdw::_list_params $cls $ln $cell` -- flavor-aware, so a
+##         DEVICE-FLAVOR entry legitimately answered -- and then handed
+##         `rdw::_narrow_line` the CLASS.  MEASURED by two adversaries on the
+##         user's own M18 after the shipped Delete -> "this device flavor only"
+##         gesture: the pane showed the flavor entry's five rows under
+##         "Narrowed to the mos annotation list", while `effective mos
+##         annotation` held six.  The name came from one entry and the count
+##         from the other.  AND THE WHOLE FLAVOR PATH WAS FENCED BY NOTHING:
+##         passing `{}` for the cell left window, keys and store all green.
+##   NW12  THE EMPTY-LIST ARM DROPPED THE NON-CONVERGENCE CLAUSE.
+##         `rdw::_narrow_line` returned from its `$norder == 0` branch before
+##         `$wnf` was read, so the one case in which EVERY row is withheld was
+##         the one case that never said a withheld row failed to converge --
+##         contradicting the decision recorded beside it, which row NW6 asserts
+##         from the other side.  NW4's own empty-list golden spelled the
+##         omission, so the row defended it.
+##   NW13  THE NUMBER WAS A ROW COUNT WEARING THE WORD "columns".  One XR1
+##         resolves to several primitives (ruling D-3) and `rdw::_narrow_answer`
+##         counted every primitive's copy of a column separately, so a
+##         multi-primitive device was told "2 columns are not in that list ...
+##         this run published 5" about a run that published TWO distinct
+##         columns of which ONE is missing -- one line under the DD-1 line that
+##         uses "columns" in the correct per-vector sense.  The remedy is the
+##         count, not the word: distinct columns is what both sentences then
+##         mean.
+
+## THE NOTE ITSELF, not the whole block, so a row whose subject is the SENTENCE
+## reds on the sentence rather than on a layout change three lines away.
+proc nw_note {ans ctx} {
+  set b [rw_block $ans $ctx]
+  if {[rw_bad $b]} { return $b }
+  foreach e $b {
+    if {[lindex $e 0] ne {note}} { continue }
+    set t [lindex $e 1]
+    if {[string match {Narrowed to*} $t]} { return $t }
+    if {[string match {The *was empty at this dump*} $t]} { return $t }
+  }
+  return NO-NOTE
+}
+## A ctx that names a CELL, which `nw_ctx` deliberately does not: every one of
+## NW1..NW10's fixtures is `cellname {}`, which is why the flavor half of the
+## store had no coverage at all.
+proc nwf_ctx {lst cls cell} {
+  set c [rw_ctx {NW1:/} {@m.nw1} op NW1]
+  dict set c list $lst
+  dict set c class $cls
+  dict set c cellname $cell
+  return $c
+}
+
+## A CLASS ENTRY AND A DEVICE-FLAVOR ENTRY OVER THE SAME CLASS -- the store's
+## two resolution scopes (`op_param_lists::governs` answers `class` or
+## `flavor`), and the flavor one is the scope this window newly made visible.
+rw_ans ::op_param_lists::set_list class nwfcls annotation {{nid nid 0} {ngm ngm 1}}
+rw_ans ::op_param_lists::set_list flavor {nwfcls nwf.sym} annotation {{nvth nvth 2}}
+set NW11_FL [nwf_ctx annotation nwfcls nwf.sym]
+set NW11_CL [nwf_ctx annotation nwfcls other.sym]
+check {NW11 THE CAPTION NAMES THE ENTRY THAT REALLY NARROWED THE BLOCK: a device-flavor entry answers for the cell it matches, so the sentence names THAT entry in the store's own words rather than the class list - which did not narrow it and whose rows are different - and a cell no flavor entry matches still falls through to the class entry and is still captioned with the class} \
+  [list [nw_note $NW_ANS $NW11_FL] \
+        [nw_note $NW_ANS $NW11_CL] \
+        [rw_text $NW_ANS $NW11_FL] \
+        [rw_has [nw_note $NW_ANS $NW11_FL] {the nwfcls annotation list}] \
+        [rw_ans ::op_param_lists::governs nwfcls annotation nwf.sym] \
+        [rw_ans ::op_param_lists::governs nwfcls annotation other.sym]] \
+  [list {Narrowed to the annotation list for cells matching nwf.sym of class nwfcls as it stood at this dump. 5 columns are not in that list and not shown; this run published 6 for this device. 1 of the withheld did not converge. Press 3 for everything this run published.} \
+        {Narrowed to the nwfcls annotation list as it stood at this dump. 4 columns are not in that list and not shown; this run published 6 for this device. 1 of the withheld did not converge. Press 3 for everything this run published.} \
+        [rw_lines {NW1:/} {@m.nw1} $RW_INC \
+           {Narrowed to the annotation list for cells matching nwf.sym of class nwfcls as it stood at this dump. 5 columns are not in that list and not shown; this run published 6 for this device. 1 of the withheld did not converge. Press 3 for everything this run published.} \
+           {    nvth : 0.75} {}] \
+        0 {flavor {nwfcls nwf.sym}} {class nwfcls}]
+
+set NW12_TWO [rw_ansd [dict create {@m.nw1} {{nid 1.11e-05}}] {} \
+                      {{@m.nw1 znf nan} {@m.nw1 znf2 inf}} 0 ok]
+set NW12_FIN [rw_ansd [dict create {@m.nw1} {{nid 1.11e-05} {zzz 42}}] {} {} 0 ok]
+check {NW12 THE EMPTY LIST STILL SAYS A WITHHELD ROW DID NOT CONVERGE, which is the one case where EVERY row is withheld and therefore the one case where the fact is most easily lost: the clause counts the same way it does under a non-empty list, it scales with the number of non-converged columns, and a run with none of them says nothing - so the clause stays an answer rather than becoming noise} \
+  [list [nw_note $NW_ANS   [nw_ctx annotation nwzcls]] \
+        [nw_note $NW12_TWO [nw_ctx annotation nwzcls]] \
+        [nw_note $NW12_FIN [nw_ctx annotation nwzcls]] \
+        [rw_has [rw_text $NW12_TWO [nw_ctx annotation nwzcls]] {(did not converge)}]] \
+  [list {The nwzcls annotation list was empty at this dump, so nothing this run published for this device is shown. 1 of the withheld did not converge. Press 3 for everything this run published.} \
+        {The nwzcls annotation list was empty at this dump, so nothing this run published for this device is shown. 2 of the withheld did not converge. Press 3 for everything this run published.} \
+        {The nwzcls annotation list was empty at this dump, so nothing this run published for this device is shown. Press 3 for everything this run published.} \
+        0]
+
+## RULING D-3's OWN FIXTURE, row F7's five primitives from one XR1, re-used so
+## the multi-primitive case is the shipped one rather than a shape invented for
+## this row.  Two distinct columns are published, `i` and `c`; the list declares
+## `i`; three primitives keep a row and two lose theirs entirely.
+rw_ans ::op_param_lists::set_list class nwmcls annotation {{i i 0}}
+proc nw13_ctx {} {
+  set c [rw_ctx {XR1:/} {@r.xr1} op XR1]
+  dict set c list annotation ; dict set c class nwmcls ; dict set c cellname {}
+  return $c
+}
+check {NW13 THE SENTENCE COUNTS DISTINCT COLUMNS, NOT ROWS ACROSS PRIMITIVES: ruling D-3's one XR1 resolves to five primitives publishing two distinct columns, so a list declaring one of them withheld ONE column of TWO - and the block says so, in the same per-vector sense the DD-1 line one line above it already uses, instead of counting the same column once per primitive and printing a number no reader can reconcile} \
+  [list [nw_note $F7_ANS [nw13_ctx]] \
+        [rw_text $F7_ANS [nw13_ctx]] \
+        [rw_count [rw_text $F7_ANS [nw13_ctx]] {c : }]] \
+  [list {Narrowed to the nwmcls annotation list as it stood at this dump. 1 column is not in that list and not shown; this run published 2 for this device. Press 3 for everything this run published.} \
+        [rw_lines {XR1:/} {@r.xr1} $RW_INC \
+           {Narrowed to the nwmcls annotation list as it stood at this dump. 1 column is not in that list and not shown; this run published 2 for this device. Press 3 for everything this run published.} \
+           {  @r.xr1.x0.rend1} {    i : 1u} \
+           {  @r.xr1.x0.rend2} {    i : 2u} \
+           {  @b.xr1.x0.brbody} {    i : 4u} {}] \
+        0]
+
 
 # ============================================================================
 # SECTION LX — ISSUE 1355: THE WINDOW SAYS WHICH LIST IS IN FORCE, AND THE
@@ -5916,17 +6038,27 @@ check {LX3 THE SCOPE DIALOG'S STATEMENT: lists 1 and 2 get a STATEMENT in the sl
         {This changes the annotation list (drawn on the sheet). Add writes there even from the summary list - press 3 first to choose the list.} \
         {} {}]
 
-check {LX4 THE CHROME LINE IS PRESENT TENSE AND IS ABOUT THE BUTTONS, not about the pane: it names the identity the keys chose and says the buttons act on THAT list rather than on the block being read - and it does NOT say the pane is wider than the list, because issue 1353's narrowing landed first and a sentence that outlived its fact is the defect this batch keeps paying for} \
-  [list [rw_ans ::rdw::_chrome_line annotation] \
-        [rw_ans ::rdw::_chrome_line summary] \
-        [rw_ans ::rdw::_chrome_line all] \
-        [rw_ans ::rdw::_chrome_line zznosuch] \
-        [rw_count [rw_ans ::rdw::_chrome_line summary] {every row this run published}] \
-        [rw_count [rw_ans ::rdw::_chrome_line annotation] {every row this run published}]] \
+## ⚠ THIS ROW GOLDS LITERALS AND THAT IS EXACTLY HOW IT WENT WRONG.  Its first
+## revision spelled "only Add works here" and "the buttons edit this list" for
+## the summary list; both were measured FALSE against the code three rows away
+## in this same section (LX2 golds `_edit_list add summary` -> annotation), and
+## making them TRUE turned the suite RED, one row, this one.  A golden is not a
+## fence for a sentence: LX12, LX13 and LX14 assert each clause AGAINST THE
+## CODE IT DESCRIBES, and this row now only pins the exact words they leave
+## room for.  It reads the PURE builder at `keyed 1`, the shipped cadence
+## profile's value, so it says the same thing on a machine with no display.
+check {LX4 THE CHROME LINE IS PRESENT TENSE AND IS ABOUT THE BUTTONS, not about the pane: it names the identity the keys chose and says the buttons act on THAT list rather than on the block being read, with the one exception spec 4.2 B7 makes for Add - and it does NOT say the pane is wider than the list, because issue 1353's narrowing landed first and a sentence that outlived its fact is the defect this batch keeps paying for} \
+  [list [rw_ans ::rdw::_chrome_text annotation 1] \
+        [rw_ans ::rdw::_chrome_text summary 1] \
+        [rw_ans ::rdw::_chrome_text all 1] \
+        [rw_ans ::rdw::_chrome_text zznosuch 1] \
+        [rw_ans ::rdw::_chrome_text zznosuch 0] \
+        [rw_count [rw_ans ::rdw::_chrome_text summary 1] {every row this run published}] \
+        [rw_count [rw_ans ::rdw::_chrome_text annotation 1] {every row this run published}]] \
   [list {Keys 1/2/3: the annotation list (drawn on the sheet) - the buttons edit this list, not the block you are reading.} \
-        {Keys 1/2/3: the summary list (computed, not drawn) - the buttons edit this list, not the block you are reading.} \
-        {Keys 1/2/3: everything this run published (live from the simulator) - press 1 or 2 to edit a list; only Add works here.} \
-        {} 0 0]
+        {Keys 1/2/3: the summary list (computed, not drawn) - the buttons edit this list, not the block you are reading. Add writes the annotation list.} \
+        {Keys 1/2/3: everything this run published (live from the simulator) - press 1 or 2 to edit a list; only Add and Save do anything here.} \
+        {} {} 0 0]
 
 check {LX5 STRUCTURAL ONE BUILDER, SEVERAL CONSUMERS: the button column, the dialog's default and the dialog's statement all ask rdw::_edit_list; the two radiobuttons, the statement and the chrome all ask rdw::_list_phrase; each gloss is a literal EXACTLY ONCE in the file; and rdw::set_list still calls exactly ONE refresher, so a key press cannot move the buttons without moving the words} \
   [list [rw_has [rw_body ::rdw::button] {_edit_list}] \
@@ -5934,7 +6066,7 @@ check {LX5 STRUCTURAL ONE BUILDER, SEVERAL CONSUMERS: the button column, the dia
         [rw_has [rw_body ::rdw::scope_dialog_build] {_scope_statement}] \
         [rw_has [rw_body ::rdw::_scope_statement] {_edit_list}] \
         [rw_has [rw_body ::rdw::scope_dialog_build] {_list_phrase}] \
-        [rw_has [rw_body ::rdw::_chrome_line] {_list_phrase}] \
+        [rw_has [rw_body ::rdw::_chrome_text] {_list_phrase}] \
         [expr {$LX_F eq {NOFILE} ? {NOFILE} : [rw_count $LX_F {drawn on the sheet}]}] \
         [expr {$LX_F eq {NOFILE} ? {NOFILE} : [rw_count $LX_F {computed, not drawn}]}] \
         [rw_count [rw_body ::rdw::set_list] {rdw::apply_list_state}] \
@@ -5967,6 +6099,114 @@ check {LX11 ISSUE 1356: SELECTING LINES IS NOT SELECTING THEM FOR EDITING, and t
         [rw_has [rw_body ::rdw::_selection_note] {_selection_lines}] \
         [rw_has [rw_body ::rdw::button] {_selection_note}]] \
   [list {} 0 1 1 1 1]
+
+## ---------------------------------------------------------------------------
+## LX12..LX16 — THE THREE CHROME SENTENCES THAT WERE MEASURED FALSE, AND THE
+## TWO FENCES THAT WERE NOT THERE.
+## ---------------------------------------------------------------------------
+## Every row above golds a chrome sentence as a LITERAL, and an adversary then
+## measured three of them against the code they describe and found them untrue.
+## LX4 golding "only Add works here" is the anti-pattern this section now
+## carries a scar from: making the sentence TRUE turned the suite RED, one row,
+## and nothing else in either suite had an opinion.  The five rows below assert
+## the sentences AGREE WITH THE CODE THEY DESCRIBE, so a sentence and its fact
+## can no longer part company without a row saying so.
+##
+##   LX12  "only Add works here" WAS FALSE.  `rdw::button_state` returns
+##         `normal` for `save` on every kind; an adversary pressed Save on list
+##         3 and got a 1627-byte settings file written to disk.  Nothing in the
+##         tree tested Save's success arm at all -- `grep -rn '_do_save' over
+##         tests/headless/*.tcl returned NOTHING -- which is why one row could
+##         gold the false literal with no row able to contradict it.  Two of
+##         this row's legs are that grep's answer: `rdw::_do_save` exists and
+##         `rdw::button` really routes Save to it rather than to a refusal.
+##   LX13  "the buttons edit this list" WAS FALSE ON SUMMARY.  `rdw::_edit_list
+##         add summary` answers `annotation` -- LX2 golds exactly that, and LX3
+##         golds the dialog sentence that says so -- three rows from a chrome
+##         literal asserting the opposite.
+##   LX14  "Keys 1/2/3:" WAS FALSE OUTSIDE THE CADENCE PROFILE.
+##         src/xschem.tcl adds Tools > Results Display Window UNCONDITIONALLY
+##         while the four digit binds live in src/cadence_style_rc alone;
+##         measured with no cadence rc sourced, `bind .drw <Key-1>` is the empty
+##         string and real 1/2/3 events move nothing, under a label naming them.
+##   LX15  THE NOTE'S OWN STATED BOUNDARY WAS FENCED BY NOTHING.  `< 2` changed
+##         to `< 1` kept window and keys fully green while appending the whole
+##         lecture to every ordinary one-row select-to-copy gesture, which is
+##         this window's stated reason for existing.  BT31 and LX11 only ever
+##         drove 0 lines and "two or more".
+##   LX16  `rdw::build`'s OWN TWO `listkind` READS WERE DEAD CODE, and the
+##         source comment beside them named this section's close-and-reopen leg
+##         as their fence.  It is not: build ends in `rdw::apply_list_state`,
+##         which sets both, so the leg passes with the reads gutted.  A comment
+##         claiming a fence that does not fence is LX4's defect one layer down.
+
+check {LX12 THE LIST-3 SENTENCE NAMES EXACTLY THE BUTTONS THAT DO SOMETHING THERE, and it is DERIVED from the greying table rather than spelled beside it: Save is not greyed on any list and rdw::button really routes it to rdw::_do_save rather than to a refusal, so a sentence excluding it was false about a button the user can see and press} \
+  [list [rw_ans ::rdw::_active_buttons all] \
+        [rw_ans ::rdw::_active_buttons annotation] \
+        [rw_ans ::rdw::_active_buttons summary] \
+        [rw_ans ::rdw::button_state save all] \
+        [expr {[llength [info commands ::rdw::_do_save]] ? 1 : 0}] \
+        [rw_has [rw_body ::rdw::button] {rdw::_do_save}] \
+        [rw_has [rw_ans ::rdw::_chrome_line all] {Add}] \
+        [rw_has [rw_ans ::rdw::_chrome_line all] {Save}] \
+        [rw_has [rw_ans ::rdw::_chrome_line all] {Up}] \
+        [rw_has [rw_ans ::rdw::_chrome_line all] {Down}] \
+        [rw_has [rw_ans ::rdw::_chrome_line all] {Delete}] \
+        [rw_has [rw_body ::rdw::_chrome_text] {_active_phrase}] \
+        [expr {$LX_F eq {NOFILE} ? {NOFILE} : [rw_count $LX_F {only Add works here}]}]] \
+  [list {add save} {up down delete save} {up down delete add save} normal 1 1 \
+        1 1 0 0 0 1 0]
+
+## THE CLAIM AND THE CODE, COMPUTED SEPARATELY AND ASSERTED EQUAL.  The left
+## half is what the chrome SAYS; the right half is what `rdw::_edit_list` and
+## `rdw::button_state` DO.  Issue 1357 may yet rule that an Add from list 2
+## writes the summary list; on that day the right half moves and this row makes
+## the sentence move with it.
+proc lx13 {kind} {
+  return [list [rw_has [rw_ans ::rdw::_chrome_line $kind] {Add writes the annotation list}] \
+               [expr {$kind ne {all}
+                      && [rw_ans ::rdw::_edit_list add $kind] ne $kind
+                      && [rw_ans ::rdw::button_state add $kind] eq {normal} ? 1 : 0}]]
+}
+check {LX13 THE CHROME'S ADD EXCEPTION AGREES WITH THE LIST AN ADD REALLY WRITES: on summary the button column does NOT all edit the list in force - spec 4.2 B7 sends Add to the annotation list - so the chrome says so, and on annotation, where Add is greyed, there is no exception to state and none is stated} \
+  [list [lx13 annotation] [lx13 summary] [lx13 all]] \
+  [list {0 0} {1 1} {0 0}]
+
+check {LX14 THE KEYS ARE NAMED ONLY WHERE THEY EXIST: the bare 1/2/3 digits are cadence-profile only (ruling D-2) and the Tools entry that opens this window is not, so the chrome's prefix and its `press 1 or 2` advice are a function of whether the binds are really live - and the pure text builder takes that as an argument, so both halves are asserted on the arm with no display at all} \
+  [list [rw_ans ::rdw::_chrome_text annotation 1] \
+        [rw_ans ::rdw::_chrome_text annotation 0] \
+        [rw_ans ::rdw::_chrome_text all 1] \
+        [rw_ans ::rdw::_chrome_text all 0] \
+        [rw_count [rw_ans ::rdw::_chrome_text summary 0] {Keys 1/2/3}] \
+        [rw_count [rw_ans ::rdw::_chrome_text all 0] {press 1 or 2}] \
+        [rw_has [rw_body ::rdw::_chrome_line] {_keys_bound}] \
+        [rw_ans ::rdw::_keys_bound]] \
+  [list {Keys 1/2/3: the annotation list (drawn on the sheet) - the buttons edit this list, not the block you are reading.} \
+        {Showing the annotation list (drawn on the sheet) - the buttons edit this list, not the block you are reading.} \
+        {Keys 1/2/3: everything this run published (live from the simulator) - press 1 or 2 to edit a list; only Add and Save do anything here.} \
+        {Showing everything this run published (live from the simulator) - only Add and Save do anything here.} \
+        0 0 1 0]
+
+check {LX15 THE SELECTION NOTE'S BOUNDARY IS AT EXACTLY ONE LINE, and it is driven at the boundary rather than around it: a one-line drag is the select-a-value-to-copy-it gesture this window exists for and it stays silent, two lines is the gesture the sentence answers and it fires - an off-by-one here passed both suites while lecturing every ordinary copy} \
+  [list [rw_ans ::rdw::_selection_note_for 0] \
+        [rw_ans ::rdw::_selection_note_for 1] \
+        [rw_ans ::rdw::_selection_note_for 2] \
+        [rw_ans ::rdw::_selection_note_for 16] \
+        [rw_has [rw_body ::rdw::_selection_note] {_selection_note_for}] \
+        [rw_has [rw_body ::rdw::_selection_note] {_selection_lines}]] \
+  [list {} {} \
+        {Selecting lines does not choose them for editing - the buttons act on the shaded row alone.} \
+        {Selecting lines does not choose them for editing - the buttons act on the shaded row alone.} \
+        1 1]
+
+check {LX16 ONE SETTER FOR THE LIST STATE AND NO SECOND COPY IN `build`: the chrome and the title are set by rdw::apply_list_state alone, which build calls on its way out, so build's own reads of `listkind` - dead code whose comment named LX7/LX8's close-and-reopen leg as their fence, a leg that passes with them gutted - are gone rather than left standing as a fence that does not fence} \
+  [list [rw_count [rw_body ::rdw::build] {_title}] \
+        [rw_count [rw_body ::rdw::build] {_chrome_line}] \
+        [rw_count [rw_body ::rdw::build] {$listkind}] \
+        [rw_count [rw_body ::rdw::build] {rdw::apply_list_state}] \
+        [rw_has [rw_body ::rdw::apply_list_state] {_title}] \
+        [rw_has [rw_body ::rdw::apply_list_state] {_chrome_line}]] \
+  [list 0 0 0 1 1 1]
 
 if {$live_tk} {
   rw_ans ::rdw::open
@@ -6298,7 +6538,24 @@ else { set ::ev_precision $RW_EVP_SAVE }
 ## which need the cadence bind, a real canvas, a real pane click, a real modal
 ## and a real drag.  A floor is raised when rows are added and NEVER lowered to
 ## make a run pass.
-set RW_FLOOR 154
+## ⚠ AND RAISED 154 -> 162 BY THE REPAIR OF THE SEVEN FALSE SENTENCES AND THE
+## TWO FENCE GAPS (issues 1360 and 1361), IN THE SAME COMMIT AS THE EIGHT ROWS
+## IT COVERS: NW11 (the caption names the entry that really narrowed the block,
+## which is also the ONLY coverage the store's device-flavor scope has in this
+## window), NW12 (the empty list still names its withheld non-convergence),
+## NW13 (the sentence counts distinct columns, not rows across ruling D-3's
+## primitives), LX12 (the list-3 sentence names the buttons that really work
+## there, Save included), LX13 (the chrome's Add exception asserted against
+## `rdw::_edit_list` rather than golded as a literal), LX14 (the `Keys 1/2/3:`
+## prefix at both values of a keyboard that exists only in the cadence
+## profile), LX15 (the selection note's boundary driven at 0, 1, 2 and 16
+## lines) and LX16 (one setter for the list state, and `build` no longer
+## carrying a second copy behind a comment naming a fence that does not fence).
+## All eight run on BOTH arms - every one of them is a pure function of an
+## answer, a context or a list identity.  The behavioural row is LK3 of
+## test_rdw_keys_1245.tcl, which needs the real canvas and its real binds.  A
+## floor is raised when rows are added and NEVER lowered to make a run pass.
+set RW_FLOOR 162
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\
