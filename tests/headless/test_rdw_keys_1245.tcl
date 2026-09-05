@@ -1945,6 +1945,306 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
     {0 0 {} 0 1 0}
 }
 
+# ============================================================================
+# SECTION CU — ITEM R1, ISSUE 1337: THE LINE CURSOR, CLICKED FOR REAL
+# ============================================================================
+# The user's words: "clicking on any line makes the entire line a shade darker
+# (noticeably)."  Driver decisions DD-1 (one cursor; a new block clears it) and
+# DD-2 (the shade is DERIVED from the palette, never hard-coded).  The palette
+# half and DD-1's headless half are section CU of
+# tests/headless/test_rdw_window_1245.tcl; everything here needs a MAPPED pane,
+# a real <Button-1> and real pixel coordinates, so it lives on the display arm.
+#
+# ⚠ THE CURSOR THIS ITEM MAKES VISIBLE ALREADY EXISTS.  `rdw::set_row` /
+# `rdw::_target_line` (src/rdw.tcl:1940, :1954) are item B5's target row, and
+# `rdw::_subject`'s own comment already calls it "the block the CURSOR is in":
+# Delete, Add, Up and Down act on it today and the user cannot see it.  R1
+# must SHADE THAT ROW.  A `cursor` tag that tracked its own private variable
+# would give the window TWO cursors — a visible one and the one the buttons
+# obey — and every row in section BT of the other suite would still pass while
+# Delete deleted a line the user was not looking at.  Rows CU9, CU12 and CU14
+# are that fence, and `cu_agree` is the predicate they share.
+#
+# ⚠ AND IT MUST NOT COST THE SELECTION.  A `<Button-1>` binding on the pane
+# that ends in `break` shadows Tk's Text class binding, which is what sets the
+# anchor a drag extends from — and the selection is the entire reason this
+# window is a Text and not a CIW dump (item R3, issue 1339, is already about a
+# selection the user cannot make reliably).  Row CU10 drives a real
+# press-drag-release and is GREEN TODAY on its first three legs: it is the
+# fence, not the feature.  Its fourth leg — the `cursor` tag must sit BELOW
+# `sel` in priority — is red, and is why: a tag created after `sel` outranks
+# it, and a full-width background above `sel` hides the selection completely.
+# Measured on this binary: `tag names` answers `sel hdr dim dev note`, so `sel`
+# is already the LOWEST-priority tag in the pane and a new one lands above it.
+#
+# THE THREE OTHER INPUTS MOST LIKELY TO BREAK THIS CHANGE, EACH WITH A ROW:
+#   * a WRAPPED line.  The pane is `-wrap word` and the incompleteness sentence
+#     really does wrap — measured, `count -displaylines` over line 3 of the
+#     fixture is 1, i.e. two display rows.  A cursor computed in display rows
+#     shades half a line, or the wrong one.                            -> CU11
+#   * a click BELOW THE TEXT.  `index @x,y` CLAMPS: measured, a click in the
+#     pane's empty lower half answers line 13 of a 12-line render — the
+#     widget's own trailing artifact, a line no block owns.  `rdw::_locate`
+#     already answers {} for exactly those lines and is the fence.      -> CU12
+#   * a cursor that OUTLIVES ITS LINE.  Key 4 (`rdw::keep_latest`) throws older
+#     blocks away and repaints; a cursor left pointing into a discarded block
+#     is item R2's Up/Down aimed at nothing.                            -> CU14
+#
+# RED BEFORE R1, MEASURED 2026-09-05 AT HEAD 077bdfe4: `.rdw.p.t tag names`
+# answers `sel hdr dim dev note` — there is no `cursor` tag; `bind .rdw.p.t
+# <Button-1>` is the EMPTY STRING; and a real click moves the pane's `insert`
+# mark (measured: 3.15 after a drag) and paints nothing at all.  CU6..CU14 red.
+
+if {[kx_ans ::rdw::have_tk] eq {1}} {
+  ## A widget expression that must not abort the suite (kx_ans's twin).
+  proc cu_w {args} {
+    set rc [catch {uplevel #0 $args} r]
+    if {$rc} { return "ERR:$r" }
+    return $r
+  }
+  ## THE WHOLE LINE, INCLUDING ITS NEWLINE.  A tag that stops at `lineend`
+  ## stops at the last character, and the user's words are "the ENTIRE line" —
+  ## on a 96-column pane holding a 12-character parameter row that is a stub of
+  ## colour, not a line.  n.0 -> n+1.0 is what paints to the right edge.
+  proc cu_span {n} { return [list $n.0 [expr {$n + 1}].0] }
+  proc cu_ranges {} {
+    set r {}
+    if {[catch {.rdw.p.t tag ranges cursor} r]} { return ERR }
+    return $r
+  }
+  ## A real mouse click, delivered the way the user's hand delivers it.
+  proc cu_click {x y} {
+    catch {event generate .rdw.p.t <Motion>          -x $x -y $y -when now}
+    catch {update}
+    catch {event generate .rdw.p.t <ButtonPress-1>   -x $x -y $y -when now}
+    catch {event generate .rdw.p.t <ButtonRelease-1> -x $x -y $y -when now}
+    catch {update}
+  }
+  ## Click the first character cell of pane line n. The coordinates are READ
+  ## FROM THE WIDGET, never transcribed - the fixture's line heights are the
+  ## display's, not this file's.
+  proc cu_click_line {n} {
+    set bb {}
+    if {[catch {.rdw.p.t bbox $n.0} bb]} { return NOBBOX }
+    if {[llength $bb] != 4} { return NOBBOX }
+    cu_click [expr {[lindex $bb 0] + 2}] [expr {[lindex $bb 1] + 2}]
+    return OK
+  }
+  ## THE ONE-CURSOR PREDICATE.  1 when the shading and the row the buttons act
+  ## on say the same thing - including when they agree there is NO row.
+  proc cu_agree {} {
+    set t [kx_ans ::rdw::_target_line]
+    set r [cu_ranges]
+    if {[kx_bad $t]} { return BADTARGET }
+    if {$r eq {ERR}} { return NOTAG }
+    if {![string is integer -strict $t] || $t <= 0} {
+      return [expr {[llength $r] == 0 ? 1 : 0}]
+    }
+    return [expr {$r eq [cu_span $t] ? 1 : 0}]
+  }
+  ## TWO DUMPS, SIX LINES EACH: hdr / devpath / the incompleteness sentence /
+  ## two parameter rows / the separator.  Lines 1-6 are the newest block and
+  ## 7-12 the older one, which is what row CU14 needs.
+  proc cu_block {} {
+    set ans [dict create devices [dict create {@m.x1.mcu} {{id 1.234} {vth 0.5}}] \
+                         absent {} nonfinite {} complete 0 state ok]
+    set ctx [dict create header {MCU:/} devpath {@m.x1.mcu} simtype op \
+                         instname MCU sim ngspice]
+    return [kx_ans ::rdw::format_answer $ans $ctx]
+  }
+  proc cu_fixture {} {
+    set ::rdw::blocks {}
+    kx_ans ::rdw::set_row 0
+    kx_ans ::rdw::push [cu_block]
+    kx_ans ::rdw::push [cu_block]
+    kx_ans ::rdw::render_pane
+    catch {update idletasks}
+    catch {focus -force .rdw.p.t}
+    catch {update}
+    return {}
+  }
+
+  kx_ans ::rdw::open
+  catch {update idletasks}
+  cu_fixture
+
+  # --- CU6  the tag exists, is the palette's shade, and is BELOW sel ---------
+  ## ⚠ `tag names` IS READ FIRST AND STORED.  `tag cget` on an unknown tag
+  ## CREATES it in some Tk builds, which would make the very first leg true by
+  ## the act of measuring the third.
+  set CU6_NAMES [cu_w .rdw.p.t tag names]
+  set CU6_BG    [cu_w .rdw.p.t tag cget cursor -background]
+  set CU6_PANE  [cu_w .rdw.p.t cget -background]
+  set CU6_IC [lsearch -exact $CU6_NAMES cursor]
+  set CU6_IS [lsearch -exact $CU6_NAMES sel]
+  check {CU6 the pane really carries a `cursor` tag, its background is the palette's derived shade and not the pane's own colour, and it sits BELOW `sel` in priority so a selection drawn over a cursored line is still visible - a full-width background above sel would hide the selection the whole window exists to produce} \
+    [list [expr {$CU6_IC >= 0 ? 1 : 0}] \
+          [expr {$CU6_IC >= 0 && $CU6_IS >= 0 && $CU6_IC < $CU6_IS ? 1 : 0}] \
+          [expr {$CU6_BG eq [kx_ans ::rdw::color cursor] ? 1 : 0}] \
+          [expr {$CU6_BG ne $CU6_PANE && ![string match {ERR:*} $CU6_BG] ? 1 : 0}]] \
+    {1 1 1 1}
+
+  # --- CU7  a click shades the WHOLE line, and changes nothing else ---------
+  cu_fixture
+  set CU7_TXT0 [cu_w .rdw.p.t get 1.0 end]
+  set CU7_CLK  [cu_click_line 4]
+  set CU7_R    [cu_ranges]
+  set CU7_TXT1 [cu_w .rdw.p.t get 1.0 end]
+  check {CU7 clicking a line shades THAT WHOLE LINE - the tag runs from its start to the start of the next, so the colour reaches the right edge past the last character - and nothing else moves: exactly one range, the pane still -state disabled, not one byte of the buffer changed, and the keyboard still in the pane (issue 1308)} \
+    [list $CU7_CLK $CU7_R [llength $CU7_R] \
+          [cu_w .rdw.p.t cget -state] \
+          [expr {$CU7_TXT1 eq $CU7_TXT0 ? 1 : 0}] \
+          [focus]] \
+    [list OK [cu_span 4] 2 disabled 1 .rdw.p.t]
+
+  # --- CU8  ONE cursor: a second click MOVES it (DD-1) ----------------------
+  cu_fixture
+  cu_click_line 2
+  set CU8_A [cu_ranges]
+  cu_click_line 5
+  set CU8_B [cu_ranges]
+  check {CU8 DD-1 there is ONE cursor: clicking a second line MOVES the shading rather than adding to it, so exactly one range is ever painted} \
+    [list $CU8_A $CU8_B [llength $CU8_B]] \
+    [list [cu_span 2] [cu_span 5] 2]
+
+  # --- CU9  the shaded line IS the row the buttons act on -------------------
+  ## Both directions, because either one alone permits two cursors: a click
+  ## must move the TARGET, and rdw::set_row must move the SHADING.
+  cu_fixture
+  cu_click_line 4
+  set CU9_T1 [kx_ans ::rdw::_target_line]
+  set CU9_A1 [cu_agree]
+  kx_ans ::rdw::set_row 9
+  catch {update idletasks}
+  set CU9_R2 [cu_ranges]
+  set CU9_T2 [kx_ans ::rdw::_target_line]
+  set CU9_A2 [cu_agree]
+  check {CU9 the shaded line and the row Delete/Add/Up/Down act on are ONE row: a click moves the target the buttons read, and rdw::set_row moves the shading the user sees - two cursors would let a button edit a line nobody is looking at, and every row in section BT would still pass} \
+    [list $CU9_T1 $CU9_A1 $CU9_R2 $CU9_T2 $CU9_A2] \
+    [list 4 1 [cu_span 9] 9 1]
+
+  # --- CU10  THE FENCE: the selection still works, and still SHOWS ----------
+  ## GREEN TODAY on legs 1-3 and it must stay green. A <Button-1> binding that
+  ## ends in `break` shadows the Text class binding that sets the drag anchor,
+  ## and this window exists to be selected and pasted into a design-review
+  ## document (item R3, issue 1339).
+  cu_fixture
+  cu_click_line 3
+  set CU10_BB [cu_w .rdw.p.t bbox 3.0]
+  set CU10_Y  [expr {[lindex $CU10_BB 1] + 2}]
+  cu_w .rdw.p.t tag remove sel 1.0 end
+  catch {event generate .rdw.p.t <ButtonPress-1>   -x 4   -y $CU10_Y -when now}
+  catch {update}
+  catch {event generate .rdw.p.t <B1-Motion>       -x 124 -y $CU10_Y -when now}
+  catch {update}
+  catch {event generate .rdw.p.t <ButtonRelease-1> -x 124 -y $CU10_Y -when now}
+  catch {update}
+  set CU10_SEL {}
+  catch {set CU10_SEL [.rdw.p.t get sel.first sel.last]}
+  set CU10_RNG   [cu_w .rdw.p.t tag ranges sel]
+  set CU10_LINE  [cu_w .rdw.p.t get 3.0 {3.0 lineend}]
+  set CU10_NAMES [cu_w .rdw.p.t tag names]
+  set CU10_IC [lsearch -exact $CU10_NAMES cursor]
+  set CU10_IS [lsearch -exact $CU10_NAMES sel]
+  check {CU10 FENCE a real press-drag-release on the cursored line still makes a selection - the cursor binding must not `break` the Text class binding the drag anchor comes from - and the `cursor` tag stays BELOW `sel`, so the selection is still visible on the line the cursor shades} \
+    [list [expr {[string length $CU10_SEL] >= 8 ? 1 : 0}] \
+          [expr {[llength $CU10_RNG] == 2 ? 1 : 0}] \
+          [expr {$CU10_SEL ne {} && [string first $CU10_SEL $CU10_LINE] >= 0 ? 1 : 0}] \
+          [expr {$CU10_IC >= 0 && $CU10_IS >= 0 && $CU10_IC < $CU10_IS ? 1 : 0}]] \
+    {1 1 1 1}
+
+  # --- CU11  a WRAPPED line is shaded whole ---------------------------------
+  ## The pane is -wrap word and the incompleteness sentence really wraps. The
+  ## second display row is FOUND from the widget's own bbox, never transcribed.
+  cu_fixture
+  set CU11_DL [cu_w .rdw.p.t count -displaylines 3.0 {3.0 lineend}]
+  set CU11_B0 [cu_w .rdw.p.t bbox 3.0]
+  set CU11_B1 [cu_w .rdw.p.t bbox {3.0 lineend -2c}]
+  set CU11_PRE [expr {[string is integer -strict $CU11_DL] && $CU11_DL >= 1
+                      && [llength $CU11_B0] == 4 && [llength $CU11_B1] == 4
+                      && [lindex $CU11_B1 1] > [lindex $CU11_B0 1] ? 1 : 0}]
+  cu_click [expr {[lindex $CU11_B1 0] + 2}] [expr {[lindex $CU11_B1 1] + 2}]
+  check {CU11 a line that WRAPS is one line: clicking its second display row shades the whole logical line and cursors that row, not the next one - the pane is -wrap word and a cursor computed in display rows would shade half a line} \
+    [list $CU11_PRE [cu_ranges] [kx_ans ::rdw::_target_line] [cu_agree]] \
+    [list 1 [cu_span 3] 3 1]
+
+  # --- CU12  a click where there is NO line changes nothing -----------------
+  ## `index @x,y` CLAMPS to the last line, which after a 12-line render is line
+  ## 13 - the widget's own trailing artifact, owned by no block. rdw::_locate
+  ## already answers {} for it. An empty pane is the same question with no
+  ## lines at all.
+  cu_fixture
+  cu_click_line 3
+  set CU12_R0 [cu_ranges]
+  set CU12_B  [cu_w .rdw.p.t bbox 12.0]
+  set CU12_Y  [expr {[llength $CU12_B] == 4
+                     ? [lindex $CU12_B 1] + [lindex $CU12_B 3] + 6 : -1}]
+  set CU12_PRE [expr {$CU12_Y > 0 && $CU12_Y < [winfo height .rdw.p.t] - 2 ? 1 : 0}]
+  cu_click 10 $CU12_Y
+  set CU12_R1 [cu_ranges]
+  set CU12_T1 [kx_ans ::rdw::_target_line]
+  set ::rdw::blocks {}
+  kx_ans ::rdw::set_row 0
+  kx_ans ::rdw::render_pane
+  catch {update idletasks}
+  cu_click 10 10
+  set CU12_R2 [cu_ranges]
+  set CU12_T2 [kx_ans ::rdw::_target_line]
+  check {CU12 a click in the pane's empty space below the text hits no line and changes nothing - the cursor stays where the user put it - and a click in an EMPTY pane cursors nothing at all: the shading never lands on a line no block owns} \
+    [list $CU12_PRE $CU12_R0 $CU12_R1 $CU12_T1 $CU12_R2 $CU12_T2] \
+    [list 1 [cu_span 3] [cu_span 3] 3 {} 0]
+
+  # --- CU13  DD-1 on screen: a new dump clears the shading ------------------
+  cu_fixture
+  cu_click_line 8
+  set CU13_R0 [cu_ranges]
+  set CU13_T0 [kx_ans ::rdw::_target_line]
+  kx_ans ::rdw::push [cu_block]
+  catch {update idletasks}
+  check {CU13 DD-1 on screen: a new dump CLEARS the cursor - no shading anywhere and no target row - because push PREPENDS and the line the user clicked now holds a different block's text} \
+    [list $CU13_R0 $CU13_T0 [cu_ranges] [kx_ans ::rdw::_target_line] [cu_agree] \
+          [llength $::rdw::blocks]] \
+    [list [cu_span 8] 8 {} 0 1 3]
+
+  # --- CU14  the cursor never outlives the line it points at ----------------
+  cu_fixture
+  cu_click_line 8
+  set CU14_R0 [cu_ranges]
+  kx_ans ::rdw::keep_latest
+  catch {update idletasks}
+  set CU14_R1 [cu_ranges]
+  set CU14_T1 [kx_ans ::rdw::_target_line]
+  set CU14_A1 [cu_agree]
+  set CU14_NB [llength $::rdw::blocks]
+  cu_fixture
+  cu_click_line 4
+  set CU14_A2 [cu_agree]
+  kx_ans ::rdw::close
+  catch {update idletasks}
+  kx_ans ::rdw::open
+  catch {update idletasks}
+  set CU14_A3 [cu_agree]
+  check {CU14 the cursor never outlives the line it points at: key 4 throws the older dumps away and the cursor that pointed into one goes with them, and a close-and-reopen leaves the shading and the target still saying the same thing - a target with no shading is the invisible cursor this item exists to abolish} \
+    [list $CU14_R0 $CU14_R1 $CU14_T1 $CU14_A1 $CU14_NB $CU14_A2 $CU14_A3] \
+    [list [cu_span 8] {} 0 1 1 1 1]
+
+  ## HYGIENE for this section: no dumps, no cursor, no window, no status.
+  set ::rdw::blocks {}
+  kx_ans ::rdw::set_row 0
+  kx_ans ::rdw::set_list annotation
+  kx_ans ::rdw::status {}
+  kx_ans ::rdw::close
+  catch {update idletasks}
+  check {CU15 HYGIENE section CU leaves nothing behind: no window, no stored dumps, no cursored row and no untitled* anywhere} \
+    [list [expr {[winfo exists .rdw] ? 1 : 0}] \
+          [llength $::rdw::blocks] \
+          [kx_ans ::rdw::_target_line] \
+          [expr {[lsort [glob -nocomplain -directory $repo -tails untitled*]] eq $S1_ROOT0 ? 1 : 0}] \
+          [llength [glob -nocomplain -directory $scratch -tails untitled*]]] \
+    {0 0 0 1 0}
+}
+
+
 if {[llength [info commands kx_ciw_echo_real]]} { rename kx_ciw_echo_real ciw_echo }
 catch {xschem raw clear}
 
@@ -1980,7 +2280,12 @@ catch {xschem raw clear}
 ## COVERS: section SD's SD1, SD2, SD3, SD3b and SD4. The whole section is
 ## guarded by `if {[kx_ans ::rdw::have_tk] eq {1}}`, so a display that fails to
 ## come up drops all five silently - which is exactly what a floor is for.
-set KX_FLOOR 41
+## ⚠ AND RAISED 41 -> 51 BY ITEM R1 (issue 1337), IN THE SAME COMMIT AS THE
+## TEN ROWS IT COVERS: section CU's CU6..CU15, the line cursor driven with real
+## clicks on a mapped pane. The whole section is guarded by
+## `[kx_ans ::rdw::have_tk] eq 1`, so a display that fails to come up drops all
+## ten silently - which is exactly what a floor is for.
+set KX_FLOOR 51
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\

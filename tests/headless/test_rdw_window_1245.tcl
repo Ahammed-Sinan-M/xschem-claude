@@ -3813,6 +3813,281 @@ rw_ans ::rdw::status {}
 catch {xschem raw clear}
 
 # ============================================================================
+# SECTION CU — ITEM R1, ISSUE 1337: THE LINE CURSOR. THE HALF THAT NEEDS NO Tk.
+# ============================================================================
+# The user's words: "clicking on any line makes the entire line a shade darker
+# (noticeably)."  Driver decisions DD-1 (one cursor; a new block clears it) and
+# DD-2 (the shade is DERIVED from the palette, never hard-coded).
+#
+# ⚠ THE CURSOR THIS ITEM MAKES VISIBLE ALREADY EXISTS, AND THAT IS THE WHOLE
+# TRAP.  `rdw::set_row` / `rdw::_target_line` (src/rdw.tcl:1940, :1954) are
+# item B5's target row, and `rdw::_subject`'s own comment already calls it "the
+# block the CURSOR is in": Delete, Add, Up and Down act on it today and the
+# user cannot see it.  So R1 must SHADE THAT ROW, not mint a second one.  A
+# `cursor` tag that tracks its own variable would give the window two cursors —
+# a visible one and the one the buttons obey — and every row in section BT
+# would still pass while Delete deleted a line the user was not looking at.
+# Rows CU9, CU12 and CU14 (in test_rdw_keys_1245.tcl) are that fence; CU5 here
+# is its headless half.
+#
+# THE CONTRACT R1 ADDS TO src/rdw.tcl:
+#   rdw::color cursor        the shade.  A role in `rdw::color_sources` with
+#                            its own `rdw::_color_fallback` entry, DERIVED from
+#                            the pane background so it survives both themes.
+#   tag `cursor` on .rdw.p.t configured `-background [rdw::color cursor]`, and
+#                            LOWER than `sel` so a selection still shows.
+#   rdw::set_row {n}         also paints the shading (it already moves insert).
+#   rdw::_target_line {}     answers the SHADED line, 0 when there is none.
+#   a <Button-1> on .rdw.p.t that sets the row from `@%x,%y` and does NOT
+#                            `break` the Text class binding (the selection is
+#                            the reason this window exists — item R3).
+#   rdw::push                clears the cursor (DD-1).
+#
+# RED BEFORE R1, MEASURED 2026-09-05 ON THIS BINARY AT HEAD 077bdfe4:
+#   `rdw::color cursor` answers `black` — the generic `_color_fallback`
+#   fall-through — so the pane's own #000000 text would be invisible on it;
+#   `rdw::palette` carries no `cursor` role; and `rdw::push` leaves
+#   `rdw::_target_line` exactly where it was.  CU1 CU2 CU3 CU4 CU5 all red.
+#
+# ⚠ NO ROW BELOW ASSERTS A LITERAL COLOUR, and that is DD-2 stated as a test.
+# A row spelling `#d0d0d0` would lock in precisely the hard-coded grey the
+# decision rejects.  Every row compares LUMINANCES instead, so any derivation
+# that is actually visible passes and any that is not, fails.
+
+## Luminance, in pure Tcl, because these rows run on the --nogui arm where
+## `winfo rgb` does not exist.  Hex of 1/2/3/4 digits per channel; a colour
+## NAME is resolved through Tk when there is a Tk, and answers -1 otherwise so
+## the row REDS rather than passing on an unparseable value.
+proc cu_rgb {c} {
+  if {[regexp {^#([0-9a-fA-F]+)$} $c -> h]} {
+    set n [string length $h]
+    if {$n % 3 != 0} { return {} }
+    set w [expr {$n / 3}]
+    if {$w < 1 || $w > 4} { return {} }
+    set max [expr {(1 << (4 * $w)) - 1}]
+    set out {}
+    for {set i 0} {$i < 3} {incr i} {
+      set part [string range $h [expr {$i * $w}] [expr {$i * $w + $w - 1}]]
+      set v 0
+      if {[scan $part %x v] != 1} { return {} }
+      lappend out [expr {int(double($v) * 255.0 / $max + 0.5)}]
+    }
+    return $out
+  }
+  if {[llength [info commands winfo]]} {
+    set r {}
+    if {![catch {winfo rgb . $c} r] && [llength $r] == 3} {
+      set out {}
+      foreach v $r { lappend out [expr {int($v / 257.0 + 0.5)}] }
+      return $out
+    }
+  }
+  return {}
+}
+proc cu_lum {c} {
+  set p [cu_rgb $c]
+  if {[llength $p] != 3} { return -1 }
+  return [expr {0.30 * [lindex $p 0] + 0.59 * [lindex $p 1] + 0.11 * [lindex $p 2]}]
+}
+## "Noticeably" is the user's own word, so it gets a number: 20 of 255, about
+## 8%.  A #ffffff -> #e0e0e0 step is 31 and passes; a 12%-multiply darken of a
+## near-black pane is 4 and does not, which is the point of row CU3.
+proc cu_delta {a b} {
+  set la [cu_lum $a] ; set lb [cu_lum $b]
+  if {$la < 0 || $lb < 0} { return -1 }
+  return [expr {abs($la - $lb)}]
+}
+proc cu_noticeable {a b} { return [expr {[cu_delta $a $b] >= 20 ? 1 : 0}] }
+proc cu_readable   {a b} { return [expr {[cu_delta $a $b] >= 60 ? 1 : 0}] }
+proc cu_darker {a b} {
+  set la [cu_lum $a] ; set lb [cu_lum $b]
+  if {$la < 0 || $lb < 0} { return 0 }
+  return [expr {$lb - $la >= 20 ? 1 : 0}]
+}
+proc cu_dicthas {d k} {
+  set v 0
+  if {[catch {dict exists $d $k} v]} { return 0 }
+  return [expr {$v ? 1 : 0}]
+}
+
+## A THEME THAT IS NOT THIS ONE.  `ase::palette` is the window's only colour
+## source and today it answers one hard-coded LIGHT set, so a shade that is
+## wrong in the dark is invisible to every other row in this file.  The stub is
+## installed by rename and restored by rename, and every row that uses it
+## ASSERTS THE RESTORE as a leg — a suite that leaves a stubbed palette behind
+## would quietly re-colour every later row.
+set ::CU_STUB_TBL {}
+set ::CU_STUB_FG  {}
+proc cu_pal_install {tbl fg} {
+  set ::CU_STUB_TBL $tbl ; set ::CU_STUB_FG $fg
+  if {![llength [info commands ::cu_pal_real]]} {
+    if {![llength [info commands ::ase::palette]]} { return 0 }
+    rename ::ase::palette ::cu_pal_real
+  }
+  catch {rename ::ase::palette {}}
+  proc ::ase::palette {{name {}}} {
+    if {$::CU_STUB_TBL eq {RAISE}} { return -code error {this theme has no opinion} }
+    set pal [dict create panel $::CU_STUB_TBL table $::CU_STUB_TBL \
+                 header $::CU_STUB_TBL accent #8b0000 fieldfg $::CU_STUB_FG \
+                 selectbg #4a6984 selectfg #ffffff \
+                 disabledbg $::CU_STUB_TBL disabledfg $::CU_STUB_FG]
+    if {$name ne {}} { return [dict get $pal $name] }
+    return $pal
+  }
+  return 1
+}
+proc cu_pal_restore {} {
+  if {![llength [info commands ::cu_pal_real]]} { return 0 }
+  catch {rename ::ase::palette {}}
+  rename ::cu_pal_real ::ase::palette
+  return 1
+}
+
+# --- CU1  the shade is a ROLE, with its own fallback -------------------------
+set CU1_PAL [rw_ans ::rdw::palette]
+set CU1_SRC [rw_ans ::rdw::color_sources]
+check {CU1 the shade is a named role of the window's OWN palette - it appears in rdw::color_sources, rdw::palette answers for it, and rdw::_color_fallback has an entry of its own for it rather than dropping through to the generic `black` every unknown role gets} \
+  [list [cu_dicthas $CU1_PAL cursor] \
+        [expr {![rw_bad $CU1_SRC] && [lsearch -exact $CU1_SRC cursor] >= 0 ? 1 : 0}] \
+        [expr {[rw_ans ::rdw::_color_fallback cursor] ne
+               [rw_ans ::rdw::_color_fallback cu-no-such-role] ? 1 : 0}]] \
+  {1 1 1}
+
+# --- CU2  the user's own word: DARKER, and noticeably -----------------------
+set CU2_C  [rw_ans ::rdw::color cursor]
+set CU2_BG [rw_ans ::rdw::color field]
+set CU2_FG [rw_ans ::rdw::color fieldfg]
+check {CU2 in the shipped light theme the cursor shade is NOTICEABLY DARKER than the pane it sits on - at least 20 of 255 in luminance, the user's word `noticeably` given a number - and the pane's own text colour is still readable on it, which `black` (today's generic fall-through) is not} \
+  [list [cu_darker $CU2_C $CU2_BG] \
+        [cu_readable $CU2_C $CU2_FG] \
+        [expr {$CU2_C ne $CU2_BG ? 1 : 0}]] \
+  {1 1 1}
+
+# --- CU3  DD-2: DERIVED, and it tracks the pane background ------------------
+## THE ROW A HARD-CODED GREY FAILS, AND SO DOES A MULTIPLICATIVE DARKEN.
+## A literal #d0d0d0 does not move when the theme does (leg 2); a
+## "background * 0.88" derivation moves but is 4 of 255 away from a near-black
+## pane, which is not a shade anybody can see (leg 3).
+set CU3_LIGHT [rw_ans ::rdw::color cursor]
+cu_pal_install #202020 #e8e8e8
+set CU3_D1   [rw_ans ::rdw::color cursor]
+set CU3_D1BG [rw_ans ::rdw::color field]
+set CU3_D1FG [rw_ans ::rdw::color fieldfg]
+cu_pal_install #303030 #e8e8e8
+set CU3_D2   [rw_ans ::rdw::color cursor]
+set CU3_REST [cu_pal_restore]
+check {CU3 DD-2 the shade is DERIVED and not written down: against a DARK palette it is a different colour from the light one, still noticeably different from that pane background, still readable against that pane foreground, and it moves again when only the background moves - so it tracks the pane rather than a literal} \
+  [list $CU3_REST \
+        [expr {![rw_bad $CU3_D1] && $CU3_D1 ne $CU3_LIGHT ? 1 : 0}] \
+        [cu_noticeable $CU3_D1 $CU3_D1BG] \
+        [cu_readable   $CU3_D1 $CU3_D1FG] \
+        [expr {![rw_bad $CU3_D2] && $CU3_D2 ne $CU3_D1 ? 1 : 0}] \
+        [rw_ans ::rdw::color field]] \
+  {1 1 1 1 1 #ffffff}
+
+# --- CU4  a theme with NO opinion still gets a usable shade -----------------
+cu_pal_install RAISE {}
+set CU4_C  [rw_ans ::rdw::color cursor]
+set CU4_BG [rw_ans ::rdw::color field]
+set CU4_FG [rw_ans ::rdw::color fieldfg]
+set CU4_REST [cu_pal_restore]
+check {CU4 when the theme answers nothing at all the fallback table answers, and its cursor shade is a usable one: noticeably darker than the fallback pane and readable against the fallback text - a missing option-database entry must not be able to paint the pane black} \
+  [list $CU4_REST \
+        [cu_darker   $CU4_C $CU4_BG] \
+        [cu_readable $CU4_C $CU4_FG] \
+        [expr {$CU4_C eq [rw_ans ::rdw::_color_fallback cursor] ? 1 : 0}] \
+        [rw_ans ::rdw::color field]] \
+  {1 1 1 1 #ffffff}
+
+# --- CU5  DD-1: a new dump CLEARS the cursor, headless ----------------------
+## ⚠ NON-VACUOUS BY CONSTRUCTION: the row asserts the cursor was really SET
+## before it asserts it was cleared.  A `set_row` that did nothing at all would
+## otherwise satisfy "the cursor is 0 after a push" perfectly.
+## The reason is DD-1's own: rdw::push PREPENDS, so the line the user clicked
+## now holds a different block's text, and a cursor that slid onto it silently
+## would give item R2's Up/Down a subject the user never chose.
+set CU5_KEEP $::rdw::blocks
+set ::rdw::blocks {}
+set CU5_SET [rw_ans ::rdw::set_row 4]
+set CU5_HAD [rw_ans ::rdw::_target_line]
+rw_ans ::rdw::push [rw_block [rw_ansd [dict create {@m.x1.mcu} {{id 1.5}}] {} {} 0 ok] \
+                             [rw_ctx {MCU:/} {@m.x1.mcu} op MCU]]
+set CU5_NOW [rw_ans ::rdw::_target_line]
+set CU5_NB  [llength $::rdw::blocks]
+set ::rdw::blocks $CU5_KEEP
+rw_ans ::rdw::set_row 0
+check {CU5 DD-1 a new dump CLEARS the cursor: the row was really cursored first, the push really landed, and afterwards the window has no cursored row at all - because push PREPENDS and the line the user clicked now holds different text} \
+  [list $CU5_SET $CU5_HAD $CU5_NOW $CU5_NB] \
+  {4 4 0 1}
+
+# --- CU16  a theme that answers a NAME rather than a hex string -------------
+## ⚠ ADDED BY THE IMPLEMENTING PASS, NOT THE RED ONE, and it is here because
+## the crew brief asks for the input most likely to break the change and then
+## asks whether any row would SEE it.  This one no row above sees.
+## `ase::palette` spells its colours in hex today, so every row above feeds the
+## derivation a `#rrggbb` string -- but `table` is a Tk COLOUR, and Tk colours
+## have names.  A name cannot be read at all on the --nogui arm, where there is
+## no `winfo` to resolve it, so the derivation must DEGRADE to the fallback
+## rather than raise or drop through to the generic `black` that would paint
+## the pane's own text invisible.  With a display it resolves through
+## `winfo rgb` instead, and the two arms agree on this fixture because a white
+## pane is a white pane either way -- which is what lets the row run on BOTH.
+cu_pal_install white black
+set CU16_C    [rw_ans ::rdw::color cursor]
+set CU16_REST [cu_pal_restore]
+check {CU16 a theme that answers a Tk colour NAME rather than a hex string still gets a usable shade - the --nogui arm cannot read a name at all and must fall back rather than raise or answer the generic `black` - and the answer is still noticeably darker than a white pane and readable against black text} \
+  [list $CU16_REST \
+        [expr {![rw_bad $CU16_C] && $CU16_C ne {black} ? 1 : 0}] \
+        [cu_darker   $CU16_C #ffffff] \
+        [cu_readable $CU16_C #000000] \
+        [rw_ans ::rdw::color field]] \
+  {1 1 1 1 #ffffff}
+
+# --- CU17  the stale-target sweep is not a Tk feature -----------------------
+## ⚠ ALSO ADDED BY THE IMPLEMENTING PASS, and it fences a line of src/rdw.tcl
+## that only this arm can see.  Row CU14 of tests/headless/test_rdw_keys_1245.tcl
+## already proves that key 4 takes the cursor with the block it discards -- but
+## it runs on `:99` only, and the sweep that does it lives in rdw::render_pane,
+## which RETURNS EARLY when there is no Tk.  Put the sweep one line lower, below
+## that guard, and every displayed run stays green while the headless arm keeps
+## a target pointing at a line no block owns any more: the two arms would then
+## answer differently about the same store, and the store is the half that works
+## headless (rdw::push's own words).
+##
+## SECOND HALF, AND IT IS WHAT STOPS THE ROW PASSING VACUOUSLY: a sweep that
+## cleared the target on EVERY repaint would satisfy the first half perfectly.
+## So the row also cursors a line the surviving block still owns and asserts
+## that a second key 4 leaves it exactly where it is.
+set CU17_KEEP $::rdw::blocks
+set CU17_B [rw_block [rw_ansd [dict create {@m.x1.mcu} {{id 1.5}}] {} {} 0 ok] \
+                     [rw_ctx {MCU:/} {@m.x1.mcu} op MCU]]
+set ::rdw::blocks {}
+rw_ans ::rdw::push $CU17_B
+rw_ans ::rdw::push $CU17_B
+set CU17_N0  [llength $::rdw::blocks]
+## The LAST line of the two-block render, computed from the store rather than
+## transcribed: it is always in the OLDER block, which is the one key 4 throws
+## away.  The stamp adds no line (row BS6), so a block's length is its entries.
+set CU17_TGT [expr {2 * [llength [lindex $::rdw::blocks 0]]}]
+set CU17_PRE [expr {$CU17_TGT >= 2 ? 1 : 0}]
+set CU17_SET [rw_ans ::rdw::set_row $CU17_TGT]
+set CU17_HAD [rw_ans ::rdw::_target_line]
+rw_ans ::rdw::keep_latest
+set CU17_NOW [rw_ans ::rdw::_target_line]
+set CU17_N1  [llength $::rdw::blocks]
+rw_ans ::rdw::set_row 1
+set CU17_LIVE [rw_ans ::rdw::_target_line]
+rw_ans ::rdw::keep_latest
+set CU17_STILL [rw_ans ::rdw::_target_line]
+set ::rdw::blocks $CU17_KEEP
+rw_ans ::rdw::set_row 0
+rw_ans ::rdw::status {}
+check {CU17 the cursor is dropped when the line it points at is thrown away, WITH NO Tk AT ALL - key 4 discards the older dump and the target that pointed into it goes with it, on the arm that has no pane to repaint - and a target the surviving block still owns is left exactly where the user put it} \
+  [list $CU17_PRE $CU17_N0 $CU17_SET $CU17_HAD $CU17_NOW $CU17_N1 \
+        $CU17_LIVE $CU17_STILL] \
+  [list 1 2 $CU17_TGT $CU17_TGT 0 1 1 1]
+
+# ============================================================================
 # SECTION S — THE STRUCTURAL FENCES, AND HYGIENE
 # ============================================================================
 # S1 is the seam's whole point stated as a fence: "nothing above it changes
@@ -3891,7 +4166,14 @@ if {$live_tk} { rw_ans ::rdw::close ; catch {destroy .rdwctl} }
 #
 # 83 (HEAD 59ef24af, --nogui) + 24 (item B5's preserved section BT, of whose 25
 # rows one is `live_tk`-gated) + 2 (item B5-3's BT29 and BT30) = 109.
-set RW_FLOOR 109
+## ⚠ AND RAISED 109 -> 116 BY ITEM R1 (issue 1337), IN THE SAME COMMIT AS THE
+## SEVEN ROWS IT COVERS: section CU's CU1..CU5, the line cursor's palette half
+## and DD-1, plus CU16 and CU17, which the implementing pass added for the two
+## questions those five do not ask -- a theme that answers a colour NAME, and
+## the stale-target sweep on the arm with no Tk to repaint.  All seven run on
+## BOTH arms.  A floor is raised when rows are added and NEVER lowered to make a
+## run pass.
+set RW_FLOOR 116
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\

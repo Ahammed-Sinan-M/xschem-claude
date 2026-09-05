@@ -927,6 +927,16 @@ proc rdw::push {block} {
     } else {
         lappend blocks $block
     }
+    # ⚠ AND IT CLEARS THE CURSOR -- RULING DD-1 (item R1, issue 1337).  This
+    # proc PREPENDS, so the line the user clicked now holds a different
+    # block's text.  A cursor that stayed at the same line number would point
+    # at data the user never chose and the button column would edit it without
+    # a word; a cursor that tracked the row to its new number would be a
+    # cursor the user did not put there either, one screenful further down.
+    # Clearing costs one click after a new dump and is the only reading that
+    # cannot act on the wrong device.  Row CU5 (headless) and row CU13 (on
+    # screen) are the fence.
+    rdw::set_row 0
     rdw::render_pane
     return $block
 }
@@ -973,6 +983,7 @@ proc rdw::color_sources {} {
         accent     {ase::palette accent}
         disabledfg {option get . disabledForeground DisabledForeground}
         notefg     {rdw::_notefg}
+        cursor     {rdw::_cursor_shade}
     }
 }
 
@@ -980,6 +991,93 @@ proc rdw::color_sources {} {
 # an error" (ciw.tcl:453).  The incompleteness sentence and the five silences
 # are exactly that: not errors, and not to be skimmed past.
 proc rdw::_notefg {} { return {dark orange} }
+
+# ---------------------------------------------------------------------------
+# ITEM R1, ISSUE 1337 -- THE LINE CURSOR'S SHADE, DERIVED FROM THE PANE.
+# The user's words: "clicking on any line makes the entire line a shade darker
+# (noticeably)."  Ruling DD-2: the shade is DERIVED, never written down.  A
+# literal grey is the obvious thing and it is wrong in one of the two themes --
+# #d0d0d0 on a near-black pane is not a shade, it is a stripe.
+#
+# ⚠ `ase::palette table` DIRECTLY, AND NOT `rdw::color field`.  rdw::palette
+# iterates every role in rdw::color_sources and CALLS each source, so a source
+# that asked rdw::color for another role would re-enter rdw::palette and
+# recurse until the interpreter gave out.  The one thing this proc may read is
+# the theme itself; the fallback pane is `rdw::_color_fallback field`'s job,
+# below, and it derives from that field the same way.
+
+# A colour to {r g b}, each 0-255, or {} when it cannot be read.  Hex of 1, 2,
+# 3 or 4 digits per channel is parsed HERE, in pure Tcl, because half this
+# window's suite runs on the --nogui arm where there is no `winfo` at all; a
+# colour NAME is resolved through Tk when there is a Tk, and answers {} when
+# there is not -- which makes the shade fall back rather than raise.
+proc rdw::_rgb255 {c} {
+    if {[regexp {^#([0-9a-fA-F]+)$} $c -> h]} {
+        set n [string length $h]
+        if {$n % 3 != 0} { return {} }
+        set w [expr {$n / 3}]
+        if {$w < 1 || $w > 4} { return {} }
+        set max [expr {(1 << (4 * $w)) - 1}]
+        set out {}
+        for {set i 0} {$i < 3} {incr i} {
+            set part [string range $h [expr {$i * $w}] [expr {$i * $w + $w - 1}]]
+            set v 0
+            if {[scan $part %x v] != 1} { return {} }
+            lappend out [expr {int(double($v) * 255.0 / $max + 0.5)}]
+        }
+        return $out
+    }
+    if {[llength [info commands winfo]]} {
+        set r {}
+        if {![catch {winfo rgb . $c} r] && [llength $r] == 3} {
+            set out {}
+            foreach v $r { lappend out [expr {int($v / 257.0 + 0.5)}] }
+            return $out
+        }
+    }
+    return {}
+}
+
+# One step AWAY from `c`, as `#rrggbb`, or {} when `c` cannot be read.
+#
+# ⚠ AN ABSOLUTE STEP, NOT A MULTIPLY, AND THE DIRECTION FLIPS ON A DARK
+# BACKGROUND.  The obvious derivation is `background * 0.88`, and it is
+# invisible in exactly the theme this proc exists for: 0.88 of #202020 is
+# #1c1c1c, four parts in 255 -- a difference no eye finds and no screenshot
+# shows.  A fixed ±40 of 255 is a step the user can see on either ground
+# (#ffffff -> #d7d7d7, #202020 -> #484848), and on an already dark pane the
+# only direction with room left is LIGHTER.  "Noticeably" is the user's own
+# word, so the window suite's section CU gives it a number -- 20 of 255 -- and
+# fences both halves: a literal fails because it does not move with the theme,
+# a multiply fails because it does not move far enough.
+#
+# The 0.30/0.59/0.11 weights are the standard luminance mix; the threshold is
+# the midpoint of the range they produce, so `dark` means "darker than a mid
+# grey" and nothing subtler.
+proc rdw::_shade_step {c} {
+    set rgb [rdw::_rgb255 $c]
+    if {[llength $rgb] != 3} { return {} }
+    set r [lindex $rgb 0]
+    set g [lindex $rgb 1]
+    set b [lindex $rgb 2]
+    set lum [expr {0.30 * $r + 0.59 * $g + 0.11 * $b}]
+    set d [expr {$lum > 96 ? -40 : 40}]
+    set out {}
+    foreach v [list $r $g $b] {
+        set n [expr {$v + $d}]
+        if {$n < 0} { set n 0 }
+        if {$n > 255} { set n 255 }
+        lappend out $n
+    }
+    return [format {#%02x%02x%02x} [lindex $out 0] [lindex $out 1] [lindex $out 2]]
+}
+
+proc rdw::_cursor_shade {} {
+    set bg {}
+    catch {set bg [ase::palette table]}
+    if {$bg eq {}} { return {} }
+    return [rdw::_shade_step $bg]
+}
 
 proc rdw::_color_fallback {role} {
     switch -exact -- $role {
@@ -991,6 +1089,7 @@ proc rdw::_color_fallback {role} {
         accent     { return #8b0000 }
         disabledfg { return grey50 }
         notefg     { return {dark orange} }
+        cursor     { return [rdw::_shade_step [rdw::_color_fallback field]] }
     }
     return black
 }
@@ -1151,6 +1250,27 @@ proc rdw::build {} {
     .rdw.p.t tag configure dim  -foreground [rdw::color disabledfg]
     .rdw.p.t tag configure dev  -foreground [rdw::color accent]
     .rdw.p.t tag configure note -foreground [rdw::color notefg]
+    # ITEM R1, ISSUE 1337 -- THE LINE CURSOR.  The other four tags colour TEXT;
+    # this one colours the whole row, so that the row Delete / Add / Up / Down
+    # act on is a row the user can SEE.  It shades the target rdw::set_row
+    # already moved -- there is exactly one cursor here, and rdw::_paint_cursor
+    # is its only painter.
+    #
+    # ⚠ AND IT IS LOWERED BELOW `sel`.  MEASURED on this binary: `tag names`
+    # answers `sel hdr dim dev note`, so `sel` is the LOWEST-priority tag in
+    # the pane and a tag created now lands ABOVE it -- and a full-width
+    # background above `sel` hides the selection outright.  This window exists
+    # to be selected and pasted into a design-review document (item R3, issue
+    # 1339), so the cursor gives way to the selection and never the other way
+    # round.  Row CU10 of tests/headless/test_rdw_keys_1245.tcl is that fence.
+    .rdw.p.t tag configure cursor -background [rdw::color cursor]
+    .rdw.p.t tag lower cursor sel
+    # ⚠ NO `break`.  A <Button-1> binding that ends in `break` stops the Text
+    # CLASS binding, which is where the drag anchor a selection extends from is
+    # set -- so the cursor would cost the window the one thing it is for.  The
+    # widget binding runs BEFORE the class binding (bindtags are
+    # {.rdw.p.t Text . all}), so both happen, in that order.
+    bind .rdw.p.t <Button-1> {rdw::pane_click %x %y}
     pack .rdw.p.ys -side right -fill y
     pack .rdw.p.t -side left -fill both -expand 1
     pack .rdw.p -side left -fill both -expand 1
@@ -1164,9 +1284,29 @@ proc rdw::build {} {
 # are laid out in that order, so the newest dump is on top and older ones are
 # pushed below it.
 proc rdw::render_pane {} {
+    variable blocks
+    variable targetrow
+    # ⚠ A CURSOR MAY NOT OUTLIVE THE LINE IT POINTS AT (item R1, issue 1337),
+    # AND THE SWEEP RUNS ABOVE THE Tk GUARD ON PURPOSE.  Every repaint is a
+    # chance for the target's line to have gone: `4` (rdw::keep_latest) throws
+    # the older dumps away, and a later item's reorder rewrites the rows in
+    # place.  `rdw::_locate` is already the exact predicate for "a line some
+    # block still owns", so a target it can no longer resolve is cleared HERE,
+    # once, rather than at each of the callers that can strand one.
+    #
+    # The store works headless and the pane is only its projection (rdw::push's
+    # own words), so a sweep behind the Tk guard would leave the two ARMS
+    # disagreeing about the same store: with a display the buttons would say
+    # "no row is marked", without one they would still refuse a line that no
+    # longer exists BY ITS NUMBER.  This suite's majority runs --nogui and
+    # would never have seen it.
+    #
+    # Clearing is the least-destructive reading: the buttons say there is no
+    # row rather than editing whatever slid under the old line number.
+    if {[info exists targetrow] && $targetrow > 0 \
+        && [rdw::_locate $targetrow] eq {}} { set targetrow 0 }
     if {![rdw::have_tk]} { return {} }
     if {![winfo exists .rdw.p.t]} { return {} }
-    variable blocks
     .rdw.p.t configure -state normal
     .rdw.p.t delete 1.0 end
     foreach b $blocks {
@@ -1175,7 +1315,58 @@ proc rdw::render_pane {} {
         }
     }
     .rdw.p.t configure -state [rdw::_pane_state]
+    rdw::_paint_cursor
     catch {.rdw.p.t see [rdw::_insert_index]}
+    return {}
+}
+
+# THE CURSOR'S ONLY PAINTER (item R1, issue 1337).  It draws ::rdw::targetrow
+# and reads no other state, so the shading cannot disagree with the row the
+# button column acts on -- a second variable of its own would have given this
+# window TWO cursors, a visible one and the one Delete obeys.
+#
+# ⚠ `$n.0` TO `[expr {$n + 1}].0`, NOT `lineend`.  The user's words are "the
+# ENTIRE line"; a tag that stops at `lineend` stops at the last character, and
+# on a 96-column pane holding a 12-character parameter row that is a stub of
+# colour rather than a line.  Ending at the START of the next line is what
+# paints past the last character to the right edge.  A WRAPPED line (the pane
+# is -wrap word and the incompleteness sentence really does wrap) is one
+# logical line and is shaded whole by the same span.
+#
+# The `insert` mark follows, so anything that reads the widget agrees with the
+# variable -- issue 1324's measured disagreement (insert 9, targetrow 3) is
+# what a mark left to drift on its own looks like.
+proc rdw::_paint_cursor {} {
+    variable targetrow
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw.p.t]} { return {} }
+    catch {.rdw.p.t tag remove cursor 1.0 end}
+    if {![info exists targetrow]} { return {} }
+    if {![string is integer -strict $targetrow] || $targetrow <= 0} { return {} }
+    catch {.rdw.p.t mark set insert $targetrow.0}
+    catch {.rdw.p.t tag add cursor $targetrow.0 [expr {$targetrow + 1}].0}
+    return {}
+}
+
+# A click in the pane cursors the line under the pointer (item R1, issue 1337).
+#
+# ⚠ IT REFUSES A LINE NO BLOCK OWNS, AND `rdw::_locate` IS THE WHOLE GUARD.
+# MEASURED: `index @x,y` CLAMPS -- a click in the empty lower half of a pane
+# holding a 12-line render answers line 13, the widget's own trailing artifact.
+# Shading that would put the cursor on a row the user cannot see and the
+# buttons cannot use.  `_locate` already answers {} for exactly those lines
+# (and for every line of an empty pane), so the refusal needs no new
+# machinery.  A refused click leaves the cursor WHERE THE USER PUT IT: the
+# least-destructive reading, and the one that does not punish a missed click.
+proc rdw::pane_click {x y} {
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw.p.t]} { return {} }
+    set ix {}
+    if {[catch {.rdw.p.t index @$x,$y} ix]} { return {} }
+    set l [lindex [split $ix .] 0]
+    if {![string is integer -strict $l]} { return {} }
+    if {[rdw::_locate $l] eq {}} { return {} }
+    rdw::set_row $l
     return {}
 }
 
@@ -1842,8 +2033,13 @@ rdw::_register_cmdmode
 #    column is issue 1308's stuck state (Tk buttons do not take focus on X and
 #    that is the only reason the keyboard goes back to the canvas).  MEASURED
 #    on :99: a `-state disabled` text still moves `insert` on a real Button-1,
-#    so the pane's own insert mark is the target and `rdw::set_row` is the one
-#    setter that moves both it and the headless variable.
+#    so a plain click was enough to aim the buttons from the day they landed.
+#    ⚠ AND FOR THREE ITEMS IT AIMED THEM INVISIBLY.  A disabled text draws no
+#    insertion cursor, so the user clicked, watched a new dump arrive and was
+#    told the line they could plainly see was not a parameter row (issue
+#    1324).  ITEM R1 (issue 1337) SHADES THAT ROW: `::rdw::targetrow` is the
+#    cursor, `rdw::set_row` its one setter, `rdw::_paint_cursor` its one
+#    painter, and `rdw::pane_click` the binding that moves it.
 #
 # 2. A SUBJECT.  `rdw::push` RECORDS what a block was about at DUMP TIME
 #    (issue 1322, item B5-a) -- instance, `type=` token, cell and sheet -- and
@@ -1916,9 +2112,13 @@ rdw::_register_cmdmode
 # tests/headless/test_rdw_keys_1245.tcl section SD (the real modal, :99).
 
 namespace eval rdw {
-    # The target row, as a 1-BASED PANE LINE.  It is the headless half of the
-    # pane's `insert` mark; `rdw::set_row` moves both so the widget and the
-    # store can never disagree about which row is targeted.
+    # The target row, as a 1-BASED PANE LINE, and 0 for "no row".  IT IS THE
+    # CURSOR -- the one item R1 (issue 1337) made visible, not a headless
+    # shadow of a second one.  `rdw::set_row` is its only setter and moves the
+    # variable, the pane's `insert` mark and the `cursor` shading together;
+    # `rdw::_target_line` reads it back.  A cursor with a variable of its own
+    # would let Delete edit a line the user is not looking at while every row
+    # of this feature's suite still passed.
     variable targetrow
     if {![info exists targetrow]} { set targetrow 0 }
 
@@ -1936,30 +2136,34 @@ namespace eval rdw {
 # THE TARGET.  Pure enough to drive with no Tk at all, which is where the
 # majority of this feature's suite lives.
 
-# THE ONE TARGET SETTER.  `n` is a 1-based pane line.
+# THE ONE TARGET SETTER.  `n` is a 1-based pane line; 0 is "no row".
+# It moves the SHADING too (item R1, issue 1337), because the target and the
+# thing the user sees are one cursor -- see rdw::_paint_cursor.
 proc rdw::set_row {n} {
     variable targetrow
     if {![string is integer -strict $n]} { return $targetrow }
     if {$n < 0} { set n 0 }
     set targetrow $n
-    if {$n > 0 && [rdw::have_tk] && [winfo exists .rdw.p.t]} {
-        catch {.rdw.p.t mark set insert $n.0}
-    }
+    rdw::_paint_cursor
     return $n
 }
 
-# The pane's own insert line when there is a pane, the variable otherwise.
-# The pane WINS when it exists: a real click moves `insert` and nothing else,
-# so reading the variable there would answer about a row the user is not on.
+# The cursored line, or 0 when no row is cursored.
+#
+# ⚠ IT NO LONGER READS THE PANE'S `insert` MARK, AND THE COMMENT THAT USED TO
+# STAND HERE ARGUED THE OPPOSITE (item R1, issue 1337).  "The pane WINS when it
+# exists" was right while the target was INVISIBLE: a real click moved `insert`
+# and nothing else, so the widget was the only place the user's click was
+# recorded.  Now the click goes through `rdw::pane_click` -> `rdw::set_row`,
+# which moves the variable, the mark and the shading together, and reading the
+# mark back would be a second opinion about the same thing -- one that can
+# never say "no row", because an `insert` mark ALWAYS has a line.  That is the
+# whole difficulty: DD-1 requires the window to answer "there is no cursor"
+# after a new dump, and issue 1324 measured the mark drifting to line 9 on its
+# own while this variable still said 3.  The variable is the answer; the
+# widget follows it.
 proc rdw::_target_line {} {
     variable targetrow
-    if {[rdw::have_tk] && [winfo exists .rdw.p.t]} {
-        set ix {}
-        if {![catch {.rdw.p.t index insert} ix]} {
-            set l [lindex [split $ix .] 0]
-            if {[string is integer -strict $l]} { return $l }
-        }
-    }
     if {![info exists targetrow]} { return 0 }
     return $targetrow
 }
@@ -2682,6 +2886,16 @@ proc rdw::button {id} {
     if {$loc ne {}} {
         set param [rdw::_row_param \
             [lindex [lindex $blocks [lindex $loc 0]] [lindex $loc 1]]]
+    }
+    # ⚠ TWO SENTENCES, BECAUSE THERE ARE NOW TWO WAYS TO HAVE NO ROW (item R1,
+    # issue 1337).  Before the cursor was visible `_target_line` read the
+    # pane's `insert` mark, which always has a line, so "no row at all" could
+    # not be said and did not need saying.  It can now: ruling DD-1 clears the
+    # cursor on every new dump, and "line 0 is not a parameter row" would be a
+    # sentence about a line that does not exist, on a screen the user is
+    # reading.
+    if {$line <= 0} {
+        return [rdw::status "$label: no row is marked in this window - click a parameter row, which shades to show it is the target, then press $label again."]
     }
     if {$param eq {}} {
         return [rdw::status "$label: line $line is not a parameter row - click a parameter row in the pane, then press $label again."]

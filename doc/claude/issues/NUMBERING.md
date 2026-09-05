@@ -1476,7 +1476,12 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   `render_pane`'s `delete 1.0 end` collapses the right-gravity mark and the
   re-inserts carry it to the end. A confusing refusal rather than a wrong edit,
   and invisible because the pane is `-state disabled` and draws no cursor.
-  **FILED, NOT FIXED.**
+  **FIXED by issue 1337** (item R1, 2026-09-05): `_target_line` no longer reads
+  the mark, so the two answers cannot disagree — measured 0/0 where this entry
+  measured 9/3 — and the pane now SHOWS the targeted row, which is what this
+  entry's own recommended fix asked for. The mark still rides to the end on a
+  repaint (Tk's right gravity; nothing removes that) but has no readers left,
+  and the next `set_row` puts it back.
 
 * **1325** — **Save writes the USER-GLOBAL settings file while reporting a
   project write.** `rdw::_do_save` hardcodes `conf_path project`, and with cwd
@@ -1578,7 +1583,15 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
 
 ## Reserved: 1337–1341, the RDW batch (`doc/claude/rdw_batch/`)
 
-* **1337** — RDW line cursor: clicking a line shades the whole line.
+* **1337** — **the RDW's target row was invisible: the cursor the buttons obey
+  drew nothing.** `rdw::set_row` / `rdw::_target_line` have been Delete's,
+  Add's, Up's and Down's subject since item B5-3, but the pane is
+  `-state disabled` and draws no insertion cursor, so the row those buttons act
+  on had nothing on screen to mark it. Item **R1**: a `cursor` role DERIVED
+  from the pane background (ruling DD-2; measured #ffffff -> #d7d7d7 light,
+  #202020 -> #484848 dark, where a 0.88 multiply gives #1c1c1c and is
+  invisible), a full-width `cursor` tag lowered below `sel`, a `<Button-1>`
+  that does not `break`, and DD-1's clear on `rdw::push`. **FIXED.**
 * **1338** — Up/Down move the cursored row in the window AND re-render the
   schematic annotation when the edited list is the annotation or summary list.
 * **1339** — select + `Ctrl-C` does not copy (VcXsrv); double-click-then-drag
