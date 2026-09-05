@@ -1685,4 +1685,24 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   `_copy_report` that will not overwrite the widget it is reporting on, and the
   chord bound on the pane itself with a `break`. **FIXED.**
 
-**The next free number is 1345.**
+* **1345** — **the Results Display Window said "(did not converge)" when its
+  own formatter merely declined.** Found by item R5's adversary while all four
+  suites were green. `rdw::_value_text` inferred "non-finite" from an EMPTY
+  answer out of `op_annot::eng_or_blank`, which answers empty for two different
+  reasons — the value really is `nan`/`inf`, or `to_eng` could not format a
+  perfectly finite number. The second is reachable from a shipped menu:
+  `Simulation > Set netlist / graph / annotation precision` is a free-text
+  entry with no validation, and all eight of `-1 2.5 abc 4x +4 0x4 6. 6.0`
+  stick and make `format %.${pr}g` raise. From then on EVERY measured value in
+  the pane claimed a non-convergence — a false statement about the circuit on
+  the one surface built to be pasted into a design review — while the sheet
+  blanked the same row, so the two surfaces disagreed, which is what item R5
+  exists to stop. Fixed by asking `op_annot::_finite`, the predicate
+  `eng_or_blank` gates on itself, BEFORE choosing the words; a finite value the
+  formatter declined falls back to its raw text, unformatted but true. Rows
+  EN8/EN9/EN10 added, EN6 rewritten, and both `test_rdw_window_1245` and
+  `test_op_param_store_1245` now state the `ev_precision` they measure at
+  instead of inheriting the reader's (measured: eleven and six rows red
+  respectively under a non-default one). **FIXED.**
+
+**The next free number is 1346.**

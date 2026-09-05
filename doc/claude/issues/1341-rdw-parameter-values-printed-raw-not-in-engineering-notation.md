@@ -224,3 +224,57 @@ comment, and NUMBERING.md's 1338 entry claims it). Recorded here rather than
 edited, because 1331 and 1330 are not this item's files and a crew that quietly
 re-statuses another item's issue is how a batch loses track of what was
 actually measured.
+
+---
+
+## ⚠ ADDED 2026-09-05 BY THE REPAIR OF ISSUE 1345 — READ BEFORE RULING ON `1341_nonfinite_in_the_devices_bucket`
+
+Item R5's adversary **REFUTED** this item (verify #4 of run
+`wf_2a267b11-e28`). Two of its three findings change what the rule debt above
+is asking about.
+
+### The rule debt describes a DEAD arm
+
+The option set on `1341_nonfinite_in_the_devices_bucket` — (a) the window's
+words `(did not converge)`, (b) the raw `nan`/`inf`, (c) a blank — is about a
+non-finite value arriving in the **`devices`** bucket. **On the shipped seam
+that cannot happen**, and it is now measured rather than argued:
+
+`ase::backend::ngspice::op_param_set` is the **only** registrant
+(`ase::register_backend`, one call, `src/ase.tcl:9119`) and classifies every
+vector through `op_annot::raw_class`, which routes a non-finite to the
+**`nonfinite`** bucket before it can reach `devices`. Driven by stubbing
+`xschem raw value` and restoring it:
+
+```
+nan -nan NaN inf -inf Inf INF Infinity 1e400 1e309  ->  bucket `nonfinite`
+1.11e-05  0  -0.0                                   ->  bucket `value`
+```
+
+And `rdw::format_answer` renders the `nonfinite` bucket through
+`rdw::_nonfinite_text` **directly**, never through `rdw::_value_text`.
+
+Until 2026-09-05 there **was** one reachable way to fire that arm — and it was
+a bug: issue **1345**, in which a finite value the formatter merely declined
+was read as non-finite and printed `(did not converge)`. That is fixed. So the
+arm now has **no live producer at all**.
+
+**What this means for you.** The ruling is still worth giving, because the arm
+goes live the moment a second backend — or a text-parsing producer such as the
+blanket `set altshow` dump (issues 1333–1336) — fills `devices` from something
+other than `raw_class`. But it is **not** describing anything a run on this
+tree can put in front of you today, and you should not spend a look on trying
+to reproduce it. Row **EN4** of `test_rdw_window_1245` is what holds the arm's
+behaviour; overturning the choice moves that row and nothing else.
+
+### The item's own comment overstated one gate, and that is corrected in the code
+
+`src/rdw.tcl` said the `string is double -strict` gate was *"a SECOND lock ...
+so a value that reached it unguarded would EVALUATE at global scope"*. True
+only for **non-numeric** strings: `to_eng` is `uplevel #0 expr [join $args]`,
+so every string that **passes** the gate still reaches `expr` at global scope,
+and expr **rebases numeric literals** — measured, window and sheet alike,
+`010 -> 8`, `007 -> 7`, `0x10 -> 16`, `0b101 -> 5`. Not hardened, deliberately
+(hardening one side is the disagreement DD-7 forbids); the paragraph is
+corrected and row **EN9** pins the agreement. Full reasoning in
+`doc/claude/issues/1345-...md`.

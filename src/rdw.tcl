@@ -452,41 +452,95 @@ proc rdw::_line {tag text} { return [list $tag [rdw::_oneline $text]] }
 #              old pass-through was not the answer either.
 #
 # ⚠ THE `string is double -strict` GATE IS WHAT SPLITS THE LAST TWO, and it is
-# also a SECOND lock on the safety gate eng_or_blank already carries: to_eng is
-# `uplevel #0 expr [join $args]`, so a value that reached it unguarded would
-# EVALUATE at global scope -- and these values arrive from a raw file.  A
-# `devices` pair holding `[set ::whatever 1]` is not a double, so it never gets
-# near it.  This file therefore names eng_or_blank and never names to_eng; the
-# suite's row EN2 fences both halves by counting them in this file.
+# also a lock on the safety gate eng_or_blank already carries: to_eng is
+# `uplevel #0 expr [join $args]`, so a NON-NUMERIC string that reached it
+# unguarded would EVALUATE at global scope -- and these values arrive from a
+# raw file.  A `devices` pair holding `[set ::whatever 1]` is not a double, so
+# it never gets near it.  This file therefore names eng_or_blank and never
+# names to_eng; the suite's row EN2 fences both halves by counting them here.
+#
+# ⚠ AND THE GATE STOPS THE COMMAND SUBSTITUTION, NOT THE EVALUATION -- ISSUE
+# 1345 CORRECTED THE PARAGRAPH ABOVE, WHICH OVERSTATED IT.  Every string that
+# PASSES the gate still reaches `expr` at global scope, and expr REBASES
+# numeric literals.  MEASURED on this binary, window and sheet alike:
+#   010 -> 8   007 -> 7   00000000012 -> 10   0x10 -> 16   0b101 -> 5
+# (`08` and `09` are not doubles at all and take the verbatim arm.)  So a
+# leading-zero value prints as a DIFFERENT NUMBER, in both surfaces.  NOT
+# HARDENED HERE, deliberately: normalising the literal in this file would
+# print 10 where the sheet prints 8, which is the one disagreement ruling DD-7
+# forbids, and to_eng is the whole tree's formatter and not this window's to
+# redefine.  Latent as shipped -- the only registrant of the `devices` bucket
+# (ase.tcl:9098) fills it from `xschem raw value` through op_annot::raw_class,
+# i.e. C-formatted decimals that never carry a leading zero -- and the
+# plausible way in is a future TEXT-PARSING producer such as the blanket
+# `set altshow` dump (issues 1333-1336).  Row EN9 pins the agreement and the
+# measured values, so a one-sided hardening reds rather than drifts.
 #
 # ⚠ `1e400` IS THE INPUT THAT MADE THE NON-FINITE ARM WORTH ITS OWN BRANCH.
 # MEASURED on this binary: it passes `string is double -strict`, and `to_eng`
 # answers the string `infT` -- which reads like a measurement and would paste
-# into a design review as one.  eng_or_blank's `_finite` catches it (the
-# `$v*0.0 == 0.0` raise, op_annot.tcl:1179) and answers {}, which is how a
-# blank reaches the last arm below.
+# into a design review as one.  `_finite` catches it (the `$v*0.0 == 0.0`
+# raise, op_annot.tcl:1179), which is how it reaches the non-finite arm below.
+# Since issue 1345 this proc asks that predicate ITSELF rather than reading
+# eng_or_blank's blank as the answer -- see the next paragraph, which is the
+# whole reason the order of the two questions matters.
 #
-# ⚠ AND THE {} FROM A MISSING FORMATTER IS NOT THE {} FROM A NON-FINITE VALUE.
-# `catch` leaves the NOFMT sentinel in place only when the call RAISED -- an
-# op_annot that never loaded -- and that arm falls back to the raw text, which
-# is unformatted but true.  Answering `(did not converge)` there would invent a
-# non-convergence for a number the simulator computed perfectly well, which is
-# the plausible-wrong-number failure invariant I3 exists to prevent.  The cost
-# is that in THAT arm a `nan` prints raw again, exactly as it did before this
-# item; telling it apart without the sheet's proc would mean a second spelling
-# of "is this finite" in this file, which is the drift the item exists to
-# remove.  Unreachable as shipped -- xschem.tcl:16780 sources op_annot.tcl
-# before :16821 sources this file -- and MEASURED by renaming eng_or_blank
-# away: 1.11e-05 -> `1.11e-05`, nan -> `nan`, and both come straight back when
-# it is renamed home.
+# ⚠ AND THE {} FROM A DECLINING FORMATTER IS NOT THE {} FROM A NON-FINITE
+# VALUE -- ISSUE 1345, AND READING ONE AS THE OTHER IS THE WORST THING THIS
+# WINDOW CAN DO.  This proc used to decide "non-finite" by seeing an EMPTY
+# string come back from eng_or_blank.  That proc answers {} for TWO reasons a
+# caller cannot tell apart: the value really is nan/inf, or `to_eng` could not
+# format a perfectly finite number -- and the second is REACHABLE FROM A
+# SHIPPED MENU.  `Simulation > Set netlist / graph / annotation precision`
+# (xschem.tcl:17738-17740) is a bare `input_line` with no validation whose OK
+# button runs `eval set ev_precision [.dialog.f1.e get]`, so anything typed
+# sticks; MEASURED, all eight of `-1  2.5  abc  4x  +4  0x4  6.  6.0` stick and
+# all eight make `format %.${pr}g` raise inside to_eng (:1928/1930).  From that
+# moment EVERY correctly measured value in this pane read `(did not converge)`
+# -- a statement about the CIRCUIT, for a number the simulator computed
+# perfectly well, on the one surface this feature exists to have pasted into a
+# design review.  It also broke this item's own headline promise: the SHEET
+# blanks the row there (op_annot.tcl:2125 emits `id =`) while the window
+# asserted a non-convergence, so the two surfaces DID disagree.
+#
+# THE FIX IS TO ASK, NOT TO INFER.  `op_annot::_finite` (op_annot.tcl:1179) is
+# the discriminator eng_or_blank gates on itself, so consulting it adds no
+# second opinion about what non-finite means -- the drift item R5 exists to
+# remove -- and it also subsumes the old NOFMT sentinel: with the predicate
+# asked FIRST, an empty answer can only be the formatter declining, and the
+# fallback is the raw text, unformatted but TRUE.  Rows EN8 (behavioural, all
+# eight precisions) and EN10 (structural, the predicate is asked and asked
+# first) fence it.
+#
+# TWO COSTS, both recorded on rule debt 1345_window_prints_what_the_sheet_blanks.
+#   (1) In that state the window prints a number where the sheet prints a
+#       BLANK.  Every alternative is worse: `(did not converge)` is false,
+#       and a blank here means "the raw names the column but the simulator did
+#       not compute it" and its footnote would then lie about a measured value.
+#   (2) An op_annot that never loaded (unreachable as shipped -- xschem.tcl
+#       :16780 sources it before :16821 sources this file) makes _finite raise
+#       too, and the catch defaults to FINITE, so a `nan` prints raw again
+#       exactly as it did before item R5.  MEASURED by renaming both procs
+#       away: 1.11e-05 -> `1.11e-05`, nan -> `nan`, and both come straight back
+#       when they are renamed home.
 proc rdw::_value_text {v} {
     if {[string trim $v] eq {}} { return {(no value reported)} }
     if {![string is double -strict $v]} { return [rdw::_oneline $v] }
-    set e {NOFMT}
+    ## ISSUE 1345.  ASK, DO NOT INFER.  op_annot::_finite is the predicate
+    ## eng_or_blank itself gates on, so there is exactly one spelling of "is
+    ## this finite" between the two surfaces and they cannot disagree about a
+    ## non-convergence.  It is consulted BEFORE the words are chosen, which is
+    ## what stops an empty formatter answer being read as a verdict.
+    set fin 1
+    if {[catch {::op_annot::_finite $v} fin]
+        || ![string is boolean -strict $fin]} { set fin 1 }
+    if {!$fin} { return [rdw::_nonfinite_text $v] }
+    ## FINITE FROM HERE DOWN, so an empty answer is the FORMATTER declining and
+    ## nothing else, and the fallback is the raw text -- unformatted but TRUE.
+    set e {}
     catch {set e [::op_annot::eng_or_blank $v]}
-    if {$e eq {NOFMT}} { return [rdw::_oneline $v] }
     if {$e ne {}} { return [rdw::_oneline $e] }
-    return [rdw::_nonfinite_text $v]
+    return [rdw::_oneline $v]
 }
 
 # OBLIGATION 3.  The four non-`ok` states otherwise all arrive as the same

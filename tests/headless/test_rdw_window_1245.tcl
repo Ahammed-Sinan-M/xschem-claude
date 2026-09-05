@@ -233,6 +233,19 @@ set RW_FILE  [file join $repo src rdw.tcl]
 ## Anything this session might be tempted to write goes to the scratch dir.
 set ::netlist_dir $scratch
 
+## ⚠ THE SUITE STATES THE PRECISION IT MEASURES AT -- ISSUE 1345.  Sixteen
+## goldens in this file spell out engineered numbers (11.1u, 1m, 1f, 12u), and
+## `set_ne ev_precision 4` (src/xschem.tcl:18540) is only a DEFAULT: a
+## ~/.xschem/xschemrc carrying `set ev_precision 2` reds ELEVEN rows -- F1 F3
+## F8 F14 F15 F19 Q1 Q6 K8 EN1 EN2 -- with nothing whatever wrong in the tree
+## (MEASURED with `--preinit 'set ev_precision 2'`; at 6 it was EN6 alone).
+## Inheriting the reader's own preference to check goldens about a formatter
+## that HONOURS that preference is the fragility item R5's adversary found, so
+## the suite pins it and puts it back.  Row EN6, whose subject IS the
+## preference, drives 4 and 6 itself and asserts neither is the shipped value.
+set RW_EVP_SAVE [expr {[info exists ::ev_precision] ? $::ev_precision : {NOVAR}}]
+set ::ev_precision 4
+
 ## Taken BEFORE anything below can write a file (hygiene row S2).
 set S2_ROOT0 [lsort [glob -nocomplain -directory $repo -tails untitled*]]
 
@@ -5019,15 +5032,29 @@ check {EN5 engineering notation costs the window none of its vocabulary: the mea
 ## carrying a hard-coded %.4g would pass EN1 and EN5 and be wrong the first time
 ## the user changed it - and the window and the sheet would then print DIFFERENT
 ## numbers for the same value, which is the one thing this item exists to stop.
+##
+## ⚠ THE ROW DRIVES BOTH PRECISIONS AND ASSERTS NEITHER AS THE USER'S -- ISSUE
+## 1345.  It used to check `$EN6_SAVE` against the literal `4`, which made the
+## suite hard-depend on the very preference the row is about: `set_ne
+## ev_precision 4` (xschem.tcl:18540) is only a DEFAULT, so a
+## `~/.xschem/xschemrc` carrying `set ev_precision 6` reds EN6 with nothing
+## whatever wrong in the tree (MEASURED: `--preinit 'set ev_precision 6'`
+## reds EN6 and ONLY EN6 -- 1.11e-05 is 11.1u and 1.2e-05 is 12u at both).
+## The subject was never the default; it is that 4 and 6 print DIFFERENT
+## numbers, that the window reads the global LIVE rather than caching it, and
+## that it agrees with the sheet at whatever the user has set.
 set EN6_SAVE [expr {[info exists ::ev_precision] ? $::ev_precision : {NOVAR}}]
+set ::ev_precision 4
 set EN6_P4 [rw_ans ::rdw::_value_text 1.234567e-05]
 set ::ev_precision 6
 set EN6_P6 [rw_ans ::rdw::_value_text 1.234567e-05]
 if {$EN6_SAVE eq {NOVAR}} { catch {unset ::ev_precision} } else { set ::ev_precision $EN6_SAVE }
-set EN6_BACK [rw_ans ::rdw::_value_text 1.234567e-05]
-check {EN6 the window honours the user's ev_precision because it goes through the sheet's formatter and carries none of its own: the shipped default 4 prints 12.35u, 6 prints 12.3457u, and restoring the setting restores the number} \
-  [list $EN6_SAVE $EN6_P4 $EN6_P6 $EN6_BACK] \
-  [list 4 12.35u 12.3457u 12.35u]
+set EN6_BACK  [rw_ans ::rdw::_value_text 1.234567e-05]
+set EN6_SHEET [rw_ans ::op_annot::eng_or_blank 1.234567e-05]
+set EN6_REST  [expr {[info exists ::ev_precision] ? $::ev_precision : {NOVAR}}]
+check {EN6 the window honours the user's ev_precision because it goes through the sheet's formatter and carries none of its own: precision 4 prints 12.35u, 6 prints 12.3457u, and at whatever the user actually has set the window prints exactly what the sheet prints - the row drives both settings and depends on neither being the shipped default} \
+  [list $EN6_P4 $EN6_P6 $EN6_BACK $EN6_REST] \
+  [list 12.35u 12.3457u $EN6_SHEET $EN6_SAVE]
 
 # --- EN7  THE VALUES NOBODY WROTE A GOLDEN FOR, ADDED BY THE IMPLEMENTING PASS
 ## The implementing pass asked the brief's question - "write down the input most
@@ -5059,6 +5086,138 @@ foreach v $EN7_V {
 check {EN7 a finite value outside to_eng's SI ladder - a denormal, a number above tera, a hex and a binary literal - still prints EXACTLY what the sheet prints for it, and is never blanked and never called a non-convergence: the guarantee this item buys is agreement, and it holds for the values nobody wrote a golden for} \
   [list $EN7_GOT $EN7_BLANK $EN7_NF] \
   [list $EN7_WANT 0 0]
+
+# --- EN8  A NUMBER THE FORMATTER DECLINED IS NOT A NON-CONVERGENCE ----------
+## ISSUE 1345, AND IT IS THE WORST THING THIS WINDOW CAN DO.  `_value_text`
+## used to decide "this value is non-finite" by seeing an EMPTY string come
+## back from `op_annot::eng_or_blank` -- and that proc answers {} for TWO
+## different reasons the caller cannot tell apart: the value really is nan/inf,
+## OR `to_eng` could not format a perfectly finite number.
+##
+## THE SECOND REASON IS REACHABLE FROM A SHIPPED MENU.  `Simulation > Set
+## netlist / graph / annotation precision` (src/xschem.tcl:17738-17740) is a
+## bare `input_line` free-text entry with NO validation, and its OK button runs
+## `eval set ev_precision [.dialog.f1.e get]`, so anything typed STICKS.
+## MEASURED on this binary, all eight of the values below stick and all eight
+## make `format %.${pr}g` raise inside to_eng (xschem.tcl:1928/1930).  From
+## that moment EVERY finite, correctly measured value in the pane read
+## `(did not converge)` -- a claim about the CIRCUIT, printed for a number the
+## simulator computed perfectly well, on the one surface this feature exists to
+## have pasted into a design-review document.  Invariant I3 at its sharpest.
+##
+## IT ALSO BROKE R5'S OWN HEADLINE PROMISE: in that state the SHEET blanks the
+## row (op_annot.tcl:2125 emits `id =`) while the WINDOW asserted a
+## non-convergence, so the two surfaces DID disagree - the one thing ruling
+## DD-7 and this whole item exist to stop.
+##
+## THE REPAIR ASKS THE QUESTION INSTEAD OF INFERRING IT: `op_annot::_finite`,
+## the predicate `eng_or_blank` itself uses, so this file carries no second
+## opinion about what non-finite means (row EN10 fences that).  When the value
+## IS finite and the formatter merely declined, the window prints the RAW TEXT
+## -- unformatted but TRUE, which is exactly what the pre-existing missing-
+## formatter arm already did and what the file's comment already argued for.
+##
+## THE OTHER DIRECTION IS HALF THE ROW.  A repair that stopped saying
+## `(did not converge)` altogether would pass the first leg and silently undo
+## issue 1272, so a genuine nan and inf are driven at every broken precision
+## too and must STILL say the words.
+set EN8_SAVE [expr {[info exists ::ev_precision] ? $::ev_precision : {NOVAR}}]
+set EN8_BAD {-1 2.5 abc 4x +4 0x4 6. 6.0}
+set EN8_LIES {} ; set EN8_NF {} ; set EN8_WORDS 0 ; set EN8_BLANK 0
+foreach pr $EN8_BAD {
+  set ::ev_precision $pr
+  foreach v {1.11e-05 0.001 0.75 0 -1.11e-05} {
+    set g [rw_ans ::rdw::_value_text $v]
+    ## THE CONTRACT, STATED RELATIVE TO THE SHEET ON PURPOSE.  Where the
+    ## sheet's own proc still has an answer the window must print THAT ONE
+    ## (DD-7); where it has none the window prints the RAW TEXT, which is
+    ## unformatted but true.  Pinning literals here instead would fence
+    ## `to_eng`'s behaviour under a garbage precision, which this item does
+    ## not own -- MEASURED: at ev_precision `4x`, `to_eng 0` does not raise
+    ## at all, it answers the string `0000g`, and the SHEET prints that too.
+    ## ⚠ `if`, NOT `expr {... ? $v : $s}` -- caught by this very row on its
+    ## first green run: expr NUMIFIES the branch it takes, so the golden for
+    ## `1.11e-05` came out `1.11e-5` and the row reported a mismatch that was
+    ## its own doing.  A string comparison's expected value must never be
+    ## built by expr.
+    set s [rw_ans ::op_annot::eng_or_blank $v]
+    if {$s eq {}} { set want $v } else { set want $s }
+    if {$g eq $RW_NF} { incr EN8_WORDS }
+    if {$g eq {}} { incr EN8_BLANK }
+    if {$g ne $want} { lappend EN8_LIES "$pr:$v=>$g want $want" }
+  }
+  foreach v {nan inf} {
+    if {[rw_ans ::rdw::_value_text $v] ne $RW_NF} { lappend EN8_NF "$pr:$v" }
+  }
+}
+if {$EN8_SAVE eq {NOVAR}} { catch {unset ::ev_precision} } else { set ::ev_precision $EN8_SAVE }
+set EN8_BACK  [rw_ans ::rdw::_value_text 1.11e-05]
+set EN8_SHEET [rw_ans ::op_annot::eng_or_blank 1.11e-05]
+## The one HARD literal in the row: at the sharpest of the eight, the pane must
+## read the number the simulator computed.
+set ::ev_precision -1
+set EN8_M1 [rw_ans ::rdw::_value_text 1.11e-05]
+if {$EN8_SAVE eq {NOVAR}} { catch {unset ::ev_precision} } else { set ::ev_precision $EN8_SAVE }
+check {EN8 a FINITE value the formatter merely declined is never called a non-convergence: with ev_precision set to each of the eight things the shipped precision menu accepts without validation, every measured value still prints what the SHEET prints for it, or its own true raw text where the sheet has no answer at all - never blanked, never `(did not converge)` - while a genuine nan and inf still DO say it, and putting the setting back restores the engineered number} \
+  [list $EN8_LIES $EN8_NF $EN8_WORDS $EN8_BLANK \
+        [expr {$EN8_BACK eq $EN8_SHEET}] [rw_bad $EN8_BACK] $EN8_M1] \
+  [list {} {} 0 0 1 0 1.11e-05]
+
+# --- EN9  THE EVALUATING FORMATTER REBASES NUMERIC LITERALS, AND BOTH ------
+# --- SURFACES DO IT TOGETHER ------------------------------------------------
+## ISSUE 1345's second half, and it is a CORRECTION TO THIS FILE'S OWN COMMENT
+## rather than a behaviour change.  src/rdw.tcl said the `string is double
+## -strict` gate was "a SECOND lock ... so a value that reached it unguarded
+## would EVALUATE at global scope".  That is true only for NON-numeric strings.
+## `to_eng` is `uplevel #0 expr [join $args]`, so every string that PASSES the
+## gate still reaches `expr` at global scope, and expr REBASES numeric
+## literals.  MEASURED on this binary, window and sheet alike:
+##   010 -> 8    007 -> 7    00000000012 -> 10    0x10 -> 16    0b101 -> 5
+## and `08`/`09` are not doubles at all, so they take the verbatim arm.
+##
+## NOT HARDENED HERE, DELIBERATELY.  Normalising the literal in rdw.tcl would
+## print 10 in the window where the sheet prints 8 -- the exact disagreement
+## ruling DD-7 forbids -- so this row pins the AGREEMENT and the measured
+## values, which is what makes the corrected comment checkable.  Latent today:
+## the only registrant of the `devices` bucket fills it from `xschem raw value`
+## via op_annot::raw_class, i.e. C-formatted decimals that never carry a
+## leading zero.  A future text-parsing producer (the blanket `set altshow`
+## dump, issues 1333-1336) is the plausible way in, and it would red this row
+## the moment it disagreed with the sheet.
+set EN9_V {010 007 00000000012 0x10 0b101}
+set EN9_GOT {} ; set EN9_WANT {} ; set EN9_BLANK 0 ; set EN9_NF 0
+foreach v $EN9_V {
+  set g [rw_ans ::rdw::_value_text $v]
+  lappend EN9_GOT  $g
+  lappend EN9_WANT [rw_ans ::op_annot::eng_or_blank $v]
+  if {$g eq {}}     { incr EN9_BLANK }
+  if {$g eq $RW_NF} { incr EN9_NF }
+}
+check {EN9 a leading-zero, hex or binary numeric literal is REBASED by the evaluating formatter - 010 prints 8, not 10 - and the window does it in lockstep with the sheet: the gate in rdw.tcl stops a NON-numeric string reaching `uplevel #0 expr`, it does not stop a numeric one, and hardening only this side would be the disagreement DD-7 forbids} \
+  [list $EN9_GOT $EN9_BLANK $EN9_NF] \
+  [list [list 8 7 10 16 5] 0 0]
+
+# --- EN10 STRUCTURAL  THE WINDOW ASKS THE PREDICATE, IT DOES NOT INFER IT ---
+## Issue 1345's repair is one line of reasoning and it is invisible in the
+## numbers: EN8 goes green again the moment `_value_text` stops reading a blank
+## as a verdict, but so would a version that grew its OWN finiteness test -
+## `$v > -Inf`, a regexp on `nan|inf`, a `$v*0.0` of its own - and that is the
+## drift item R5 exists to remove.  DD-7's promise is that the window and the
+## sheet CANNOT disagree, which needs them to share the predicate, not merely
+## to agree today.  So: `_value_text` names `op_annot::_finite`, it consults it
+## BEFORE it chooses the non-convergence words, and this file spells the test
+## exactly once - by calling it.
+set EN10_B [rw_body ::rdw::_value_text]
+set EN10_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
+check {EN10 STRUCTURAL the window asks op_annot::_finite - the predicate eng_or_blank itself uses - and asks it BEFORE it reaches for `(did not converge)`, and src/rdw.tcl carries no second spelling of the finiteness test: no Inf comparison, no nan regexp, no arithmetic of its own} \
+  [list [rw_bad $EN10_B] \
+        [expr {[rw_bad $EN10_B] ? 0 : [rw_has $EN10_B {op_annot::_finite}]}] \
+        [expr {[rw_bad $EN10_B] ? 0 : \
+               ([string first {_finite} $EN10_B] < \
+                [string first {_nonfinite_text} $EN10_B])}] \
+        [rw_count $EN10_F {*0.0}] [rw_count $EN10_F {-Inf}] \
+        [rw_count $EN10_F {to_eng}]] \
+  {0 1 1 0 0 0}
 
 catch {unset ::en_canary}
 set ::rdw::blocks {}
@@ -5260,7 +5419,20 @@ if {$live_tk} { rw_ans ::rdw::close ; catch {destroy .rdwctl} }
 ## (CP13..CP15 of test_rdw_keys_1245) are every one of them behind that suite's
 ## `have_tk` guard.  A floor is raised when rows are added and NEVER lowered to
 ## make a run pass.
-set RW_FLOOR 131
+## ⚠ AND RAISED 131 -> 134 BY THE REPAIR OF ISSUE 1345, IN THE SAME COMMIT AS
+## THE THREE ROWS IT COVERS: EN8 (a finite value the formatter merely declined
+## is never called a non-convergence, driven at all eight precisions the
+## shipped menu accepts without validation), EN9 (the evaluating formatter
+## rebases numeric literals, and both surfaces do it together) and EN10
+## (structural: the window ASKS op_annot::_finite rather than inferring
+## finiteness from a blank).  All three run on BOTH arms.  A floor is raised
+## when rows are added and NEVER lowered to make a run pass.
+
+## Issue 1345: put the reader's own precision back before the verdict.
+if {$RW_EVP_SAVE eq {NOVAR}} { catch {unset ::ev_precision} } \
+else { set ::ev_precision $RW_EVP_SAVE }
+
+set RW_FLOOR 134
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\

@@ -658,3 +658,123 @@ your own VcXsrv, please look**: open the window with no dumps and try Select All
 → Copy with something you care about on the clipboard; then select the saved
 settings path in the status line and press `Ctrl-C`, which should now hand you
 the path and leave it on screen.
+
+---
+
+## REPAIR P2 — issue 1345, the window said "(did not converge)" when its own formatter merely declined
+
+*Adversary finding #4 (item R5). **CONFIRMED and REPAIRED.** Item R5's
+mechanism is right and nothing of it is reverted: the window still formats
+through `op_annot::eng_or_blank`, the schematic's own proc. What was wrong is
+that it read that proc's EMPTY answer as a verdict about the circuit.*
+
+**Driven before the change, twice.** Headless, all eight values the shipped
+precision menu accepts without validation (`-1 2.5 abc 4x +4 0x4 6. 6.0`):
+every finite measured value printed `(did not converge)`. And in the live pane
+on `:99`, the adversary's own two-block session, reproduced against
+`git show HEAD:src/rdw.tcl` swapped in by `cp` and restored by `cp`
+(`md5sum` verified):
+
+```
+BEFORE   id : (did not converge)   gm : (did not converge)   vth : (did not converge)
+         id : 11.1u                gm : 1m                   vth : 0.75
+
+AFTER    id : 1.11e-05             gm : 0.001                vth : 0.75
+         id : 11.1u                gm : 1m                   vth : 0.75
+```
+
+**The fix.** `rdw::_value_text` asks `op_annot::_finite` — the predicate
+`eng_or_blank` gates on itself, so no second opinion about what non-finite
+means enters this file — and asks it **before** it chooses the words. Once
+finiteness is settled, an empty answer can only be the formatter declining, and
+the fallback is the raw text: unformatted but **true**. That also subsumes the
+old `NOFMT` sentinel.
+
+**Name+status diff** (baseline re-asserted on this tree against
+`git show HEAD:` for all three edited files before any change; every suite
+confirmed to have printed a RESULT line):
+
+| suite | how | before | after | rows that moved |
+|---|---|---|---|---|
+| `test_rdw_window_1245` | `--nogui` | ALL PASS (138) | **ALL PASS (141)** | EN8 EN9 EN10 added; EN6 rewritten |
+| `test_rdw_window_1245` | `:99` | ALL PASS (150) | **ALL PASS (153)** | same three |
+| `test_rdw_window_1245` | `:0` (Xwayland) | — | **ALL PASS (153)** | — |
+| `test_rdw_keys_1245` | `:99` | ALL PASS (74) | **ALL PASS (74)** | none |
+| `test_op_param_store_1245` | `--nogui` | ALL PASS (130) | **ALL PASS (130)** | none — `ev_precision` pinned, no rows added |
+| `test_op_annot` *(control)* | `--nogui` | ALL PASS (485) | **ALL PASS (485)** | none |
+| T1 `run_regression.tcl` | solo | 0 counted | **0 counted** | none |
+
+**RED before green**, against `git show HEAD:src/rdw.tcl`:
+`RESULT: 2 FAILED (139 passed)` — **EN8** and **EN10**. EN9 was green before and
+after, and saying so is the point: it fences the *fix*, not the code.
+
+**Three sabotages, all caught** (on a copy; restore `md5sum`-verified):
+`SB-OWNPREDICATE` (a `regexp {^[-+]?(nan|inf)}` of this file's own instead of
+`op_annot::_finite`) → **EN4 + EN10**; `SB-BLANK` (the declined-formatter
+fallback returns `{}`) → **EN8**; `SB-WORDS` (it returns
+`(no value reported)`) → **EN8**.
+
+**The other two findings, judged.**
+
+* **`to_eng` rebases numeric literals** (`010 -> 8`, `007 -> 7`, `0x10 -> 16`,
+  `0b101 -> 5`, measured; `08`/`09` are not doubles and take the verbatim arm).
+  **Comment corrected, code not hardened.** The paragraph at `src/rdw.tcl:455`
+  said the double gate stopped a value reaching `uplevel #0 expr` — true only
+  for NON-numeric strings. Hardening in `rdw.tcl` would print `10` where the
+  sheet prints `8`, which is the disagreement **DD-7** forbids, and `to_eng` is
+  the whole tree's formatter. Row **EN9** pins the agreement and the five
+  measured values, so a one-sided hardening reds rather than drifts.
+* **The `1341_nonfinite_in_the_devices_bucket` rule debt describes a DEAD arm**
+  — confirmed, and now **measured** rather than read. Stubbing
+  `xschem raw value` and restoring it: all ten spellings of a non-finite
+  (`nan -nan NaN inf -inf Inf INF Infinity 1e400 1e309`) route to the
+  `nonfinite` bucket through `op_annot::raw_class`, which the one and only
+  registrant uses; `format_answer` renders that bucket directly, never through
+  `_value_text`. The one reachable way to fire the arm *was this bug*, so it
+  now has no live producer at all. **Said so in `doc/claude/issues/1341-...md`**
+  so the user is not asked to rule on nothing.
+
+**EN6's fragility was never EN6's alone.** The adversary flagged that EN6
+asserted `$EN6_SAVE == 4`, hard-depending on the very preference the row is
+about. Measured with `--preinit 'set ev_precision N'` (which lands before
+`xschemrc`'s `set_ne`, reproducing a user rc): at **6**, `test_rdw_window_1245`
+red **1** row (EN6) and `test_op_param_store_1245` red **6** (D1 D2 D4 D6 D8
+D10); at **2**, the window suite red **11** (F1 F3 F8 F14 F15 F19 Q1 Q6 K8 EN1
+EN2). Both suites now **state the precision they measure at** and put the
+reader's own value back before the verdict, and **EN6 drives 4 and 6 itself and
+asserts neither is the shipped value**. After: **ALL PASS at default, 6, 2, -1
+and `abc`**, both suites.
+
+**Not fixed, said loudly.** `test_op_annot` — this batch's **control** — has
+the same latent fragility, **7 rows** (S5 S10 S16 S17 K10 K11 XR4) red at
+`ev_precision 6`. Pre-existing, not item R5's doing, and editing the control
+would compromise the one signal the batch measures acceptance against. Also
+still standing and untouched by this repair: issue **1330**'s file still opens
+*"Status: FILED, NOT FIXED"* while the code is fixed (now the **seventh** item
+to record that rather than edit another item's file), issue **1331**, issue
+**1332** (the keys suite's `after 100` flake), and issue **1343** (RA1..RA5 red
+on the user's own VcXsrv).
+
+**A test defect this repair's own row caught, worth remembering.** EN8's first
+green run reported a mismatch that was its own doing: the expected value was
+built with `expr {$s eq {} ? $v : $s}`, and **`expr` numifies the branch it
+takes** — `1.11e-05` came back as `1.11e-5`. A string comparison's golden must
+never be built by `expr`. Fixed to an `if`, and the reason is written into the
+row.
+
+**Rule debt** `1345_window_prints_what_the_sheet_blanks` — and it **answers**
+the adversary's open question
+`1341_R5_the_window_says_did_not_converge_when_the_formatter_fails`; the two
+should be read and cleared together. The decision taken on the user's behalf:
+when the value is finite and the formatter cannot render it, the window prints
+the **raw number** where the schematic prints a **blank** for the same row. The
+alternatives are the false statement just removed, or a blank whose existing
+footnote would then lie about a measured value. Its second half is upstream and
+deliberately not fixed here: the precision dialog validates nothing, and
+`to_eng` does not always even raise — measured at precision `4x`, `to_eng 0`
+answers the string **`0000g`**, and the sheet prints that too.
+
+**No look debt.** Nothing changed on a healthy setup — every existing golden is
+byte-identical, and the only visible difference needs a deliberately broken
+`ev_precision`. The format itself is still owed an eyeball on the standing look
+debt `the_RDW_engineering_notation`, unchanged by this repair.

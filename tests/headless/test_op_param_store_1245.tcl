@@ -337,6 +337,17 @@ set OL_BIN   [file join $repo src xschem]
 ## Anything this session might be tempted to write goes to the scratch dir.
 set ::netlist_dir $scratch
 
+## ⚠ THE SUITE STATES THE PRECISION IT MEASURES AT -- ISSUE 1345.  Section D's
+## goldens went through op_annot::text when item R5 (issue 1341) re-measured
+## them into engineering notation, and `set_ne ev_precision 4`
+## (src/xschem.tcl:18540) is only a DEFAULT: a ~/.xschem/xschemrc carrying
+## `set ev_precision 6` reds D1 D2 D4 D6 D8 D10 with nothing whatever wrong in
+## the tree (MEASURED with `--preinit 'set ev_precision 6'`).  Same fragility
+## the adversary found on row EN6 of test_rdw_window_1245, same repair: state
+## it, then put the reader's own value back.
+set OL_EVP_SAVE [expr {[info exists ::ev_precision] ? $::ev_precision : {NOVAR}}]
+set ::ev_precision 4
+
 # ============================================================================
 # THE ANSWER DISCIPLINE — AN ABSENT STORE MUST NEVER SATISFY A GOLDEN
 # ============================================================================
@@ -4791,6 +4802,10 @@ check {H1 HYGIENE the suite creates no untitled* anywhere and no .xschem directo
 #
 # 114 (HEAD 59ef24af) + 13 (item B5's preserved button-column rows, sections BG
 # and BE) + 3 (item B5-3's section DL) = 130.
+## Issue 1345: put the reader's own precision back before the verdict.
+if {$OL_EVP_SAVE eq {NOVAR}} { catch {unset ::ev_precision} } \
+else { set ::ev_precision $OL_EVP_SAVE }
+
 set OL_FLOOR 130
 set OL_RAN [expr {$npass + $fail}]
 if {$OL_RAN < $OL_FLOOR} {
