@@ -1668,4 +1668,21 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   closed FIXED on a `:99` number and its own suite debt names `:0`, which is
   Xwayland — neither is the user's screen. **FILED, NOT FIXED.**
 
-**The next free number is 1344.**
+* **1344** — **the Results Display Window put the WRONG text on the clipboard,
+  and wiped it.** Found by item R3's adversary, which REFUTED R3 while every
+  suite was green. Four defects, all in code item R3 added: the EMPTY window's
+  Select All + Copy replaced the user's clipboard with a newline (a Tk text
+  widget's mandatory trailing newline makes `tag add sel 1.0 end` a real range,
+  so both guards were dead); Ctrl-C copied the PANE whenever the user selected
+  in this window's own status entry, because `rdw::_selection_changed` scored a
+  LOCAL sibling as a foreign theft; the same chord then destroyed the text
+  being copied, `rdw::status` being a write to that entry's `-textvariable`;
+  and the two sentences disagreed about one and the same content. A fifth face
+  found by the new row: Tk's own `bind Text <<Copy>>` runs before the toplevel
+  chord and was a second door obeying none of the guards. Fixed by three pure
+  predicates (`_worth_copying`, `_copy_lines`, `_in_window`), a
+  `_sibling_selection` consulted between the live `sel` and the mirror, a
+  `_copy_report` that will not overwrite the widget it is reporting on, and the
+  chord bound on the pane itself with a `break`. **FIXED.**
+
+**The next free number is 1345.**

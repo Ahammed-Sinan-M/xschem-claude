@@ -5097,6 +5097,96 @@ rw_ans ::rdw::status {}
 ## the store ONLY through its published verbs and never a `_private` one, which
 ## is a stronger statement than a bare zero ever was. The other six tokens stay
 ## at zero here, unchanged.
+# ============================================================================
+# SECTION CY — THE COPY'S THREE DECISIONS, ON THE ARM WITH NO DISPLAY
+# ============================================================================
+# Issue 1344. The behavioural rows are CP13/CP14/CP15 of
+# test_rdw_keys_1245.tcl: they need a mapped pane, a real drag, a real X
+# selection and a real clipboard, so they are all behind that suite's
+# `have_tk` guard and a machine with no display runs NONE of them.
+#
+# Every decision those rows are about is a PURE function, and pure functions
+# run on both arms. So the three predicates are fenced here as well, where
+# nothing can drop them: "is there anything worth copying", "how many lines is
+# this", and "is that widget part of this window". A structural row underneath
+# holds the four call sites to them, because a predicate nobody consults is a
+# predicate that passes while the window goes on wiping the clipboard.
+
+## CY1 — the guard that matters.
+## `rdw::copy` used to ask `$txt eq {}`, which CANNOT be true of any span this
+## window can produce: `get first last` with first < last always yields at
+## least one character. The guard was dead, and the reachable class it should
+## have caught is a span holding nothing but BLANK SPACE — of which the empty
+## window's mandatory trailing newline is the instance that cost a user their
+## clipboard.
+set CY1_GOT {}
+foreach _c [list {} "\n" { } {   } "\t" " \t\n " "x" " x " "\nx\n" {0}] {
+  lappend CY1_GOT [rw_ans ::rdw::_worth_copying $_c]
+}
+check {CY1 the copy's guard asks whether there is anything WORTH copying, not whether the string is empty: a bare newline, a run of spaces, a tab and any mix of them are all refused, while any span carrying one printable character - `0` included, which is falsy in every other language the reader knows - is copied} \
+  $CY1_GOT \
+  {0 0 0 0 0 0 1 1 1 1}
+
+## CY2 — one counter, so the two sentences cannot disagree.
+## `rdw::select_all` counted the LINE NUMBER of `end - 1c` and `rdw::copy`
+## counted the elements of `split $txt \n`. Measured before the fix, on one and
+## the same Select All: "Selected the whole window, 7 lines." then "Copied 8
+## lines, 170 characters, to the clipboard." Both wrong, and wrong by different
+## amounts. What the user is promised is the shape that lands in their
+## document, so a trailing newline ENDS the last line rather than starting an
+## empty new one.
+set CY2_GOT {}
+foreach _c [list {} {a} "a\n" "a\nb" "a\nb\n" "\n" "\n\n" "a\n\n" "a\nb\nc\n"] {
+  lappend CY2_GOT [rw_ans ::rdw::_copy_lines $_c]
+}
+check {CY2 ONE counter for both sentences, and it counts the lines the PASTE will occupy: a trailing newline ends the last line instead of starting an empty new one, so `a` and `a<NL>` are both one line and `a<NL>b` and `a<NL>b<NL>` are both two - the split-on-newline arithmetic the copy used says two and three} \
+  $CY2_GOT \
+  {0 1 1 2 2 1 2 2 3}
+
+## CY3 — a widget of this toplevel is not a foreign thief.
+## `rdw::_selection_changed` used to test `$own eq {.rdw.p.t}` and nothing
+## else, so the status entry — a readonly `entry` with -exportselection 1, and
+## the widget item B5 writes the settings-file path into — was scored a FOREIGN
+## theft the moment the user dragged across it, the stale mirror was kept, and
+## Ctrl-C copied the pane.
+set CY3_GOT {}
+foreach _w [list {} {.} {.drw} {.rdw} {.rdw.p.t} {.rdw.s.msg} {.rdw.b.up} \
+                 {.rdwx} {.rdwx.y} {.rdwctl}] {
+  lappend CY3_GOT [rw_ans ::rdw::_in_window $_w]
+}
+check {CY3 the pane, the status entry and the button column are all THIS window - a selection made in any of them is the user's selection and not somebody else's theft - while the canvas, the main toplevel, a window that merely starts with the same letters and the empty answer `selection own` gives for a foreign owner are all not} \
+  $CY3_GOT \
+  {0 0 0 1 1 1 1 0 0 0}
+
+## CY4 — and the four call sites, because a predicate nobody consults is a
+## predicate that passes while the window goes on wiping the clipboard.
+## The last two terms are the two doors on to the clipboard: the pane's own
+## widget-tag chord, whose `break` is what stops Tk's `bind Text <<Copy>>`
+## running as a SECOND copy that obeys none of these guards, and the count that
+## says the dead `$txt eq {}` test is gone.
+set CY4_SA [rw_body ::rdw::select_all]
+set CY4_CP [rw_body ::rdw::copy]
+set CY4_SC [rw_body ::rdw::_selection_changed]
+set CY4_BD [rw_body ::rdw::build]
+check {CY4 STRUCTURAL the three predicates are actually consulted: select_all tags to `end - 1c` and never to a bare `end`, copy asks _worth_copying instead of the dead `$txt eq {}`, both count through _copy_lines, copy reaches a selection standing in a sibling widget and routes its receipt through _copy_report, _selection_changed decides with _in_window rather than on the pane's name alone, and build binds the chord on the PANE so Tk's own Text class copy cannot run behind rdw::copy's back} \
+  [list [rw_bad $CY4_SA] \
+        [rw_has $CY4_SA {end - 1c}] \
+        [rw_count $CY4_SA {tag add sel 1.0 end}] \
+        [rw_has $CY4_SA {_worth_copying}] \
+        [rw_has $CY4_SA {_copy_lines}] \
+        [rw_bad $CY4_CP] \
+        [rw_has $CY4_CP {_worth_copying}] \
+        [rw_count $CY4_CP {$txt eq {}}] \
+        [rw_has $CY4_CP {_copy_lines}] \
+        [rw_has $CY4_CP {_sibling_selection}] \
+        [rw_has $CY4_CP {_copy_report}] \
+        [rw_bad $CY4_SC] \
+        [rw_has $CY4_SC {_in_window}] \
+        [rw_count $CY4_SC "\$own eq {.rdw.p.t}"] \
+        [rw_bad $CY4_BD] \
+        [rw_count $CY4_BD ".rdw.p.t <<Copy>>"]] \
+  {0 1 0 1 1 0 1 0 1 1 1 0 1 0 0 1}
+
 set S1_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
 check {S1 STRUCTURAL the forbidden doors: rdw.tcl reaches the seam ONLY through ase::backend_hook, never by the backend proc's name, and names none of `xschem raw value` / ase::sim_capabilities / blanket_op_save / ase::theme (op_param_lists:: moved to row BT22 when item B5 wired the store)} \
   [list [expr {$S1_F eq {NOFILE} ? {NOFILE} : [rw_has $S1_F {ase::backend_hook}]}] \
@@ -5163,7 +5253,14 @@ if {$live_tk} { rw_ans ::rdw::close ; catch {destroy .rdwctl} }
 ## three run on BOTH arms.  R4's RED rows are section RA of
 ## test_rdw_keys_1245.tcl, which needs a stacking order and a keyboard.  A
 ## floor is raised when rows are added and NEVER lowered to make a run pass.
-set RW_FLOOR 127
+## ⚠ AND RAISED 127 -> 131 BY THE REPAIR OF ISSUE 1344, IN THE SAME COMMIT AS
+## THE FOUR ROWS IT COVERS: section CY's CY1..CY4, the copy's three pure
+## decisions and the structural row over their call sites.  All four run on
+## BOTH arms - which is why they are here at all: 1344's behavioural rows
+## (CP13..CP15 of test_rdw_keys_1245) are every one of them behind that suite's
+## `have_tk` guard.  A floor is raised when rows are added and NEVER lowered to
+## make a run pass.
+set RW_FLOOR 131
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\

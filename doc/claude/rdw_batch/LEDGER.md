@@ -555,3 +555,106 @@ is new; and the double-click-then-drag gesture is the one they said worked once.
 `1343_rdw_raise_on_your_own_server` — please watch a dump arrive on your own
 screen, and press `Ctrl-Alt-S` for the Library Manager, because if that does not
 raise either then 1343 is issue 0054's and older than this batch.
+
+### P1 — issue 1344, the wrong text on the clipboard — REPAIR, DONE 2026-09-05
+
+*Repairing item R3 (issue 1339) after its adversary REFUTED it. Nothing R3 built
+is reverted: the toplevel chord, the PRIMARY-theft mirror, the right-click menu
+and the double-click-then-drag union all stand, and the adversary's own verdict
+was that the mechanisms are right.*
+
+**What the user can now rely on:** the Results Display Window never touches the
+clipboard unless it has something to put there. Opening it from `Tools` with no
+dumps and choosing Select All → Copy leaves the document text they were about to
+paste exactly where it was, and says so instead of claiming it copied two lines
+of nothing. A selection made **anywhere in that window** is the selection
+`Ctrl-C` copies — including the settings-file path in its own status line, which
+now survives the copy rather than being overwritten by a receipt for itself. And
+Select All and the Copy that follows it give the **same** number of lines, which
+is the number the paste really is.
+
+**Files:** `src/rdw.tcl`,
+`tests/headless/test_rdw_keys_1245.tcl` (CP13, CP14, CP15; floor 71 → 74),
+`tests/headless/test_rdw_window_1245.tcl` (section CY: CY1..CY4; floor 127 → 131),
+`doc/claude/issues/1344-the-rdw-puts-the-wrong-text-on-the-clipboard-and-wipes-it.md`,
+`doc/claude/issues/NUMBERING.md`.
+
+**The four defects, each driven before the change and after it** (probe
+`scratchpad/P1/p1_probe.tcl`, run on `:99` **and** on the user's own VcXsrv,
+byte-identical on both):
+
+| # | before | after |
+|---|---|---|
+| a — the empty window | clipboard `MY-IMPORTANT-DOCUMENT-TEXT` → `<NL>`; *"Selected the whole window, 1 line."* then *"Copied 2 lines, 1 characters"* | selection range `{}`, *"There is nothing in the window to select yet."*, clipboard **preserved** |
+| b — the status line's own selection | PRIMARY `/home/analog/.xschem/op_param_lists.tcl`, clipboard `MCU:/` (the pane), mirror `{1.0 1.5}` still standing | clipboard **is the path**, mirror `{}` |
+| c — the text being copied | status → *"Copied 1 line, 5 characters"*, the path gone | status still **is** the path, the entry's selection still present |
+| d — the two counts | select_all `7`, copy `8`, paste really `6` | **6 and 6**, and the phantom newline is off the clipboard |
+
+**And a fifth, found by the row rather than by the report.** CP13's blank-span
+half stayed red after the whitespace guard landed: the pane's bindtags are
+`.rdw.p.t Text .rdw all`, so Tk's own `bind Text <<Copy>>` runs **before** R3's
+toplevel chord and is a second door on to the clipboard obeying none of
+`rdw::copy`'s guards. Fixed by binding the chord on the pane itself with a
+`break`, which is the only way `rdw::copy` is the one copy its comment says it
+is.
+
+**Name+status diff** (baseline re-asserted on this tree before any change, every
+suite confirmed to have printed a RESULT line):
+
+| suite | how | before | after | rows that moved |
+|---|---|---|---|---|
+| `test_rdw_window_1245` | `--nogui` | ALL PASS (134) | **ALL PASS (138)** | CY1 CY2 CY3 CY4 added |
+| `test_rdw_keys_1245` | `:99` | ALL PASS (71) | **ALL PASS (74)**, 3 runs | CP13 CP14 CP15 added |
+| `test_op_param_store_1245` | `--nogui` | ALL PASS (130) | **ALL PASS (130)** | none |
+| `test_op_annot` *(control)* | `--nogui` | ALL PASS (485) | **ALL PASS (485)** | none |
+| `test_rdw_keys_1245` | `$DISPLAY` (VcXsrv) | — | 7 FAILED (67 passed) | SD2 SD3b (issue **1332**) + RA1..RA5 (issue **1343**) — **all fifteen CP rows pass there**, the three new ones included |
+| `test_rdw_keys_1245` | `:0` (Xwayland) | 13 FAILED (61) | 10–11 FAILED (63–64) | RA1..RA6 + F1 V3 V7 D1, all present byte-identically on HEAD's `rdw.tcl`; F3 is a flake there (11/10/11 over three runs of the same tree). **All fifteen CP rows pass on `:0` as well**, so the copy behaves identically on all three X servers on this machine |
+
+**RED before green, both suites, against `git show HEAD:src/rdw.tcl`** (swapped
+in by `cp`, restored by `cp`, `md5sum` verified identical afterwards —
+`92bb2c03e6662526abf287fc63938e36`):
+
+```
+keys   :99   RESULT: 3 FAILED (71 passed)
+             CP13 -> {1 1 {1.0 2.0} {<NL>} ...
+             CP14 -> {1 1 2 0 1 0 1 1}  (exp {1 1 0 1 0 1 1 1})
+             CP15 -> {1 0 1 0 0}        (exp {1 1 1 1 1})
+window --nogui  RESULT: 4 FAILED (134 passed)   CY1 CY2 CY3 CY4
+```
+
+**Why four of the rows are in the `--nogui` suite.** Every behavioural row above
+is behind the keys suite's `have_tk` guard, so a machine with no display runs
+**none** of them. The three decisions the fix turns on are pure functions, and
+CY1..CY3 fence them on both arms; CY4 holds the call sites, because a predicate
+nobody consults passes while the window goes on wiping the clipboard.
+
+**Decisions relied on:** **DD-5** (the copy has a keyboard-free door — the
+right-click menu is now the door row CP13 drives the empty window through) and
+**DD-8**, paid in full: the four defects were driven, and the repair confirmed,
+on `$DISPLAY` = `172.20.160.1:0` / `HC-Consult`, not only on `:99`.
+
+**A driver decision, recorded not decided:** when the text being copied **is**
+the status line, the window says nothing and leaves the line alone. Reporting
+the copy would destroy both the user's selection and the only copy of the path
+on screen — a receipt is worth less than the text it is a receipt for, and the
+still-standing highlight is the receipt. Rule debt
+`1344_copy_from_the_status_line_is_silent`. Overruling it changes one proc
+(`rdw::_copy_report`) and CP14's leg 6.
+
+**Still not fixed, said loudly.** Issue **1330**'s file still opens *"Status:
+FILED, NOT FIXED"* although R2 fixed the code — now the **sixth** item in a row
+to record that instead of editing one line in another item's file. Issue
+**1331** untouched. Issue **1332** not fixed, and it is no longer "once in 134
+runs": it fired on the `$DISPLAY` run here as it did on both of the adversary's,
+so **any future `$DISPLAY` count for this suite is unusable until it is fixed by
+polling**. Issue **1343** untouched — RA1..RA5 still red on the user's server.
+And two costs the adversary recorded and did not fix are still live: after a
+PRIMARY theft the highlight cannot be put down by an ordinary click, and a drag
+that starts inside a standing selection can only grow it. Both are look debts,
+neither is this repair's subject.
+
+**Look debt:** `1344_rdw_copy_after_repair` — **suites green on `:99` and on
+your own VcXsrv, please look**: open the window with no dumps and try Select All
+→ Copy with something you care about on the clipboard; then select the saved
+settings path in the status line and press `Ctrl-C`, which should now hand you
+the path and leave it on screen.

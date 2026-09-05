@@ -1479,6 +1479,27 @@ proc rdw::build {} {
     # library_manager.tcl:144 already uses.  The `break` is defence in depth
     # against a future toplevel- or all-level Button-3, not the mechanism.
     bind .rdw.p.t <Button-3> {rdw::popup_menu %X %Y ; break}
+    ## ⚠ AND THE CHORD IS BOUND ON THE PANE AS WELL, WHICH IS THE ONLY WAY
+    ## rdw::copy CAN BE THE ONE COPY IT SAYS IT IS (issue 1344).
+    ## The bindtag chain here is `.rdw.p.t Text .rdw all`, so `bind Text
+    ## <<Copy>>` -- Tk's own tk_textCopy -- runs BEFORE the toplevel binding
+    ## above it.  While the pane holds the keyboard that class binding is a
+    ## SECOND door on to the clipboard, and it obeys none of rdw::copy's
+    ## guards: MEASURED while writing row CP13, a selection covering nothing
+    ## but a blank line put a bare newline on the clipboard through it, and the
+    ## refusal rdw::copy then printed was true of everything except what had
+    ## already happened.
+    ##
+    ## The widget tag runs FIRST, so this binding is the first thing the event
+    ## meets, and the `break` is load-bearing here rather than defence in
+    ## depth: it stops `Text` and it stops `.rdw`, so exactly one copy runs and
+    ## it is this one.  Breaking THIS class binding costs nothing -- rdw::copy
+    ## does everything tk_textCopy does and refuses the cases it should --
+    ## unlike <Button-1>, whose class binding sets the drag anchor and is why
+    ## the comment above it forbids a `break` there.
+    bind .rdw.p.t <<Copy>>             {rdw::copy ; break}
+    bind .rdw.p.t <Control-Key-c>      {rdw::copy ; break}
+    bind .rdw.p.t <Control-Key-Insert> {rdw::copy ; break}
     pack .rdw.p.ys -side right -fill y
     pack .rdw.p.t -side left -fill both -expand 1
     pack .rdw.p -side left -fill both -expand 1
@@ -1707,11 +1728,34 @@ proc rdw::_selection_changed {} {
     }
     set own {}
     catch {set own [selection own -displayof .rdw.p.t -selection PRIMARY]}
-    if {$own eq {.rdw.p.t}} {
+    # ⚠ A SELECTION IN ANY WIDGET OF THIS TOPLEVEL IS THE USER'S SELECTION,
+    # AND THE MIRROR MUST GIVE WAY TO IT (issue 1344, defect b).  This test used
+    # to be `$own eq {.rdw.p.t}` and nothing else, so the status entry -- which
+    # is a readonly `entry` with -exportselection 1, and which item B5 fills
+    # with the settings-file path, the single most copy-worthy string in the
+    # window -- was scored a FOREIGN theft the moment the user dragged across
+    # it.  The stale mirror was kept and the next Ctrl-C copied the PANE.
+    # MEASURED before this line: PRIMARY holding
+    # `/home/analog/.xschem/op_param_lists.tcl`, Ctrl-C, clipboard `MCU:/`.
+    #
+    # A theft is somebody ELSE taking the selection.  A sibling of this window
+    # taking it is the user putting the selection somewhere else on purpose,
+    # which is the same event as putting it down in the pane.
+    if {[rdw::_in_window $own]} {
         set selspan {}
         rdw::_paint_keepsel
     }
     return {}
+}
+
+# Is $w this window or something inside it?  Pure, so the --nogui suite can
+# fence it; `.rdw.` with the dot is deliberate -- a future toplevel named
+# `.rdwx` is not this window and `string match {.rdw*}` would claim it.
+proc rdw::_in_window {w} {
+    if {$w eq {}} { return 0 }
+    if {$w eq {.rdw}} { return 1 }
+    if {[string match {.rdw.*} $w]} { return 1 }
+    return 0
 }
 
 # The mirror's only painter, ::rdw::selspan and nothing else -- the same rule
@@ -1762,12 +1806,102 @@ proc rdw::_selection_span {} {
         return [list [lindex $r 0] [lindex $r end]]
     }
     if {[llength $selspan] != 2} { return {} }
+    # ⚠ AND THE MIRROR IS STALE THE MOMENT ANOTHER WIDGET OF THIS WINDOW
+    # HOLDS THE SELECTION (issue 1344, defect b).  rdw::_selection_changed
+    # already drops it when it sees the hand-over, but it only sees one it is
+    # told about: the pane fires <<Selection>> when its OWN `sel` tag changes,
+    # and after a foreign theft that tag is already empty, so a later drag in
+    # the status entry changes nothing the pane can hear.  Without this leg the
+    # mirror outlives the theft AND the hand-over and Ctrl-C copies the pane.
+    if {[llength [rdw::_sibling_selection]] == 2} { return {} }
     set ok 0
     if {[catch {.rdw.p.t compare [lindex $selspan 0] < [lindex $selspan 1]} ok]} {
         return {}
     }
     if {!$ok} { return {} }
     return $selspan
+}
+
+# THE SELECTION STANDING IN SOME OTHER WIDGET OF THIS WINDOW: {widget text},
+# or {} when no widget of .rdw except the pane holds one.
+#
+# ⚠ THE STATUS ENTRY IS NOT A CURIOSITY, IT IS THE POINT.  `.rdw.s.msg` is a
+# readonly `entry` with -exportselection 1 and a real drag selects in it; item
+# B5 writes the settings-file path there, and a path is exactly the sort of
+# string a user copies.  Ruling DD-5 gave this window a copy that works from
+# anywhere in it -- so "anywhere in it" has to include the one widget whose
+# contents the user most wants.
+#
+# ⚠ THE OWNER IS ASKED FIRST AND `selection get` ONLY AFTER.  `selection own`
+# names a window in THIS application or nothing and never makes an X round
+# trip; `selection get` against a LOCALLY owned selection is served in-process
+# by the owner's own handler, so neither call can block inside a key handler
+# for the selection timeout.  Reading it from X rather than from the widget
+# keeps this proc honest for a widget class that is not an entry.
+proc rdw::_sibling_selection {} {
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw]} { return {} }
+    set own {}
+    if {[catch {selection own -displayof .rdw -selection PRIMARY} own]} { return {} }
+    if {$own eq {.rdw.p.t}} { return {} }
+    if {![rdw::_in_window $own]} { return {} }
+    set txt {}
+    if {[catch {selection get -displayof .rdw -selection PRIMARY} txt]} { return {} }
+    return [list $own $txt]
+}
+
+# ⚠ THE GUARD THAT MATTERS IS NOT "IS THE STRING EMPTY" (issue 1344,
+# defect a).  `rdw::copy` used to ask `$txt eq {}`, which CANNOT be true of any
+# span this window can produce -- `get first last` with first < last always
+# yields at least one character -- so the guard was dead and the real case went
+# through it.  The reachable instance is the EMPTY WINDOW: a Tk text widget
+# always holds one mandatory trailing newline, `tag add sel 1.0 end` on it is
+# the range {1.0 2.0}, and the user's clipboard was replaced by "\n".
+#
+# Whitespace, so a span of spaces or blank separator lines is refused too.  The
+# cost is that a user who genuinely wanted to copy blank space is told no; the
+# alternative is destroying the document they were about to paste into.
+proc rdw::_worth_copying {txt} {
+    return [expr {[string trim $txt] eq {} ? 0 : 1}]
+}
+
+# ONE COUNTER, AND BOTH DOORS COUNT THE SAME STRING WITH IT (issue 1344,
+# defect d).  The window used to say "Selected the whole window, 1 line" and
+# then "Copied 2 lines, 1 characters" about one and the same content, because
+# rdw::select_all counted the LINE NUMBER of `end - 1c` and rdw::copy counted
+# the elements of `split $txt \n`.  Both were wrong and they were wrong by
+# different amounts.
+#
+# What the user is promised is the shape that lands in their document, so a
+# trailing newline ends the last line rather than starting a new empty one --
+# "a\nb\n" is two lines, and so is "a\nb".
+proc rdw::_copy_lines {txt} {
+    if {$txt eq {}} { return 0 }
+    set n [llength [split $txt "\n"]]
+    if {[string index $txt end] eq "\n"} { incr n -1 }
+    return $n
+}
+
+# SAY WHAT THE COPY DID -- UNLESS THE STATUS LINE IS THE THING BEING COPIED
+# (issue 1344, defect c).  rdw::status writes ::rdw::statusmsg, which is the
+# -textvariable of `.rdw.s.msg`; writing it REPLACES that entry's contents and
+# with them the user's live selection.  MEASURED before this proc existed: the
+# user selects the settings-file path in the status line, presses Ctrl-C, and
+# the path vanishes under their own selection.
+#
+# So when the copy's source IS that entry the window says nothing and leaves
+# the line alone.  A receipt is worth less than the text it is a receipt for,
+# and the still-standing highlight is the receipt: the selection survives, a
+# second Ctrl-C works, and the path is still on screen to be read.  Driver
+# decision, filed as a rule debt so the user can overturn it.
+#
+# Refusals are NOT routed through here and speak unconditionally: a refusal
+# from that entry means it held nothing but blank space, so there is nothing
+# left to destroy, and a silent refusal is CP5's own defect.
+proc rdw::_copy_report {from msg} {
+    if {$from eq {.rdw.s.msg}} { return {} }
+    rdw::status $msg
+    return {}
 }
 
 # THE ONE COPY, AND IT SERVES BOTH DOORS.  The chord (rdw::build) and the
@@ -1778,21 +1912,51 @@ proc rdw::_selection_span {} {
 proc rdw::copy {} {
     if {![rdw::have_tk]} { return {} }
     if {![winfo exists .rdw.p.t]} { return {} }
-    set span [rdw::_selection_span]
-    if {[llength $span] != 2} {
-        # ⚠ DECIDE FIRST, WRITE SECOND.  `clipboard clear` here -- DD-5's own
-        # order -- would destroy the clipboard of a user who pressed Ctrl-C in
-        # the wrong window, and they would never learn why.
-        rdw::status {Nothing is selected, so the clipboard was left alone. Drag over the lines you want (or right-click for Select All) and press Ctrl-C again.}
-        return {}
-    }
+    # THREE PLACES A SELECTION CAN BE, AND THE ORDER IS THE WHOLE DECISION.
+    #
+    #   1. the pane's own live `sel` -- the freshest answer there is, and the
+    #      one the user may have moved with the mouse a microsecond ago;
+    #   2. ANOTHER WIDGET OF THIS TOPLEVEL, which today means the status entry
+    #      and the settings-file path item B5 writes into it.  Issue 1344,
+    #      defect b: a selection made there used to be scored a foreign theft,
+    #      so the stale mirror was kept and Ctrl-C handed the user the pane's
+    #      first line instead of the path they had highlighted;
+    #   3. the mirror, which is what survives a genuine theft by another X
+    #      client (rdw::_selection_changed) and is therefore the STALEST of the
+    #      three -- it must come last, and rdw::_selection_span refuses it
+    #      outright while a sibling holds the selection.
+    #
+    # Legs 1 and 3 are rdw::_selection_span, which is why leg 2 is asked in
+    # between rather than after: a span from the mirror is not evidence about a
+    # selection that is standing somewhere else right now.
+    #
+    # ⚠ AND ONE TAIL, NOT A SECOND COPY FOR THE SECOND SOURCE.  Every leg below
+    # only decides `from` and `txt`; the guard, the clipboard write and the
+    # sentence are written once, underneath.  A `_copy_sibling` proc of its own
+    # would be the second implementation this comment block opens by warning
+    # about, with the whitespace guard on one side of it only.
+    set from .rdw.p.t
     set txt {}
-    if {[catch {.rdw.p.t get [lindex $span 0] [lindex $span 1]} txt]} {
-        rdw::status "The selection could not be read ([rdw::_oneline $txt]), so the clipboard was left alone."
-        return {}
+    set span [rdw::_selection_span]
+    if {[llength $span] == 2} {
+        if {[catch {.rdw.p.t get [lindex $span 0] [lindex $span 1]} txt]} {
+            rdw::status "The selection could not be read ([rdw::_oneline $txt]), so the clipboard was left alone."
+            return {}
+        }
+    } else {
+        set sib [rdw::_sibling_selection]
+        if {[llength $sib] != 2} {
+            # ⚠ DECIDE FIRST, WRITE SECOND.  `clipboard clear` here -- DD-5's
+            # own order -- would destroy the clipboard of a user who pressed
+            # Ctrl-C in the wrong window, and they would never learn why.
+            rdw::status {Nothing is selected, so the clipboard was left alone. Drag over the lines you want (or right-click for Select All) and press Ctrl-C again.}
+            return {}
+        }
+        set from [lindex $sib 0]
+        set txt  [lindex $sib 1]
     }
-    if {$txt eq {}} {
-        rdw::status {The selection is empty, so the clipboard was left alone.}
+    if {![rdw::_worth_copying $txt]} {
+        rdw::status {There is nothing but blank space in the selection, so the clipboard was left alone.}
         return {}
     }
     catch {clipboard clear -displayof .rdw.p.t}
@@ -1805,8 +1969,8 @@ proc rdw::copy {} {
     # shape that will land in their document.  Saying "3 lines" for a paste
     # that arrives as 5 display rows would be the window lying about its one
     # deliverable.
-    set n [llength [split $txt "\n"]]
-    rdw::status "Copied $n [expr {$n == 1 ? {line} : {lines}}], [string length $txt] characters, to the clipboard."
+    set n [rdw::_copy_lines $txt]
+    rdw::_copy_report $from "Copied $n [expr {$n == 1 ? {line} : {lines}}], [string length $txt] characters, to the clipboard."
     return {}
 }
 
@@ -1815,15 +1979,40 @@ proc rdw::copy {} {
 proc rdw::select_all {} {
     if {![rdw::have_tk]} { return {} }
     if {![winfo exists .rdw.p.t]} { return {} }
-    catch {.rdw.p.t tag add sel 1.0 end}
+    # ⚠ `end - 1c`, NEVER `end`, AND THAT ONE CHARACTER IS ISSUE 1344 DEFECT a.
+    # A Tk text widget always holds a mandatory trailing newline, so on an
+    # EMPTY pane `tag add sel 1.0 end` is the range {1.0 2.0} -- a real,
+    # two-element range over a character the user never put there.  The
+    # `llength $r < 2` guard below therefore never fired on the one window it
+    # exists for, rdw::copy found a one-character span that its own `$txt eq
+    # {}` test could not refuse, and three clicks in a freshly opened, empty
+    # Results Display Window replaced the user's clipboard with a newline.
+    # MEASURED identically on :99 and on the user's VcXsrv before this line.
+    #
+    # `end - 1c` collapses that range to nothing on an empty pane, so the guard
+    # fires, and on a populated one it drops the same phantom newline off the
+    # end of the copy -- which is also what makes the two sentences agree about
+    # how many lines there are.
+    catch {.rdw.p.t tag add sel 1.0 {end - 1c}}
     set r {}
     catch {.rdw.p.t tag ranges sel} r
-    if {[llength $r] < 2} {
+    set txt {}
+    if {[llength $r] >= 2} {
+        catch {.rdw.p.t get [lindex $r 0] [lindex $r end]} txt
+    }
+    # AND THE SAME "WORTH COPYING" TEST rdw::copy USES, for the same reason and
+    # from the same proc: a pane holding nothing but blank space is a pane with
+    # nothing in it to select, whatever the index arithmetic says.
+    if {![rdw::_worth_copying $txt]} {
+        catch {.rdw.p.t tag remove sel 1.0 end}
         rdw::status {There is nothing in the window to select yet.}
         return {}
     }
-    set n 0
-    catch {set n [expr {int([lindex [split [.rdw.p.t index {end - 1c}] .] 0])}]}
+    # ONE COUNTER, THE SAME STRING (issue 1344 defect d).  This used to be the
+    # LINE NUMBER of `end - 1c` while rdw::copy counted `split $txt` elements,
+    # so the window said "Selected the whole window, 1 line" and then "Copied 2
+    # lines, 1 characters" about one and the same content.
+    set n [rdw::_copy_lines $txt]
     rdw::status "Selected the whole window, $n [expr {$n == 1 ? {line} : {lines}}]. Press Ctrl-C, or right-click Copy, to put it on the clipboard."
     return {}
 }

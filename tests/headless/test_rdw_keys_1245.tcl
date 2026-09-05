@@ -3444,6 +3444,236 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
           [cp_sel]] \
     [list 1 1 .rdw.p.t {} {SENTINEL-STALE-SPAN} NOSEL]
 
+  # --- CP13 A COPY OF NOTHING MUST NEVER TOUCH THE CLIPBOARD ---------------
+  ## ⚠ ISSUE 1344 DEFECT a: THE HARM CP5 EXISTS TO PREVENT, ARRIVING THROUGH
+  ## THE DOOR CP4 TESTS, ON A FIXTURE NEITHER OF THEM HAS. `Tools > Results
+  ## Display Window` with no dumps, then right-click -> Select All -> Copy:
+  ## three clicks, no simulation, the first thing a new user does.
+  ##
+  ## A Tk text widget always holds one mandatory trailing newline, so on an
+  ## EMPTY pane `tag add sel 1.0 end` is the two-element range {1.0 2.0} over a
+  ## character the user never put there. rdw::select_all's `llength $r < 2`
+  ## guard therefore never fired on the one window it exists for, and
+  ## rdw::copy's `$txt eq {}` could not fire either because that character is a
+  ## newline. MEASURED before the fix, identically on :99 and on the user's
+  ## VcXsrv: clipboard `MY-IMPORTANT-DOCUMENT-TEXT` -> a bare newline, with
+  ## "Selected the whole window, 1 line." and then "Copied 2 lines, 1
+  ## characters, to the clipboard." Three false sentences and a wiped clipboard.
+  ##
+  ## ⚠ WHY NO ROW ABOVE SEES IT. CP4 drives Select All only on a POPULATED
+  ## fixture; CP5 drives the empty-selection guard only through the chord and
+  ## only after `tag remove sel`, which leaves `sel` nothing to be wrong about.
+  ## The empty WINDOW is a third state, and it is the one a user reaches first.
+  ##
+  ## ⚠ AND THE GUARD THAT MATTERS IS NOT "IS THE STRING EMPTY", SO PART 2 ASKS
+  ## THE GENERAL QUESTION. `get first last` with first < last always yields at
+  ## least one character, so `$txt eq {}` was dead for every span this window
+  ## can make. The reachable class is a span holding nothing but BLANK SPACE -
+  ## the empty window is one instance and a block's own trailing separator line
+  ## is another, reachable with one drag on a populated pane.
+  set ::rdw::blocks {}
+  kx_ans ::rdw::set_row 0
+  kx_ans ::rdw::close
+  catch {destroy .rdw}
+  kx_ans ::rdw::open
+  catch {update idletasks}
+  catch {set ::rdw::focus_pending 0}
+  set CP13_CHARS [string length [cp_w .rdw.p.t get 1.0 end]]
+  cp_setclip {SENTINEL-EMPTY-WINDOW}
+  set CP13_M0 [cp_posted_menus]
+  set CP13_BB [cp_w .rdw.p.t bbox 1.0]
+  set CP13_X [expr {[llength $CP13_BB] == 4 ? [lindex $CP13_BB 0] + 2 : 10}]
+  set CP13_Y [expr {[llength $CP13_BB] == 4 ? [lindex $CP13_BB 1] + 2 : 10}]
+  cp_gap
+  cp_ev .rdw.p.t <ButtonPress-3>   -x $CP13_X -y $CP13_Y
+  cp_ev .rdw.p.t <ButtonRelease-3> -x $CP13_X -y $CP13_Y
+  catch {update}
+  set CP13_MENU {}
+  foreach m [cp_posted_menus] {
+    if {[lsearch -exact $CP13_M0 $m] < 0} { set CP13_MENU $m ; break }
+  }
+  set CP13_IALL  [expr {$CP13_MENU ne {} ? [cp_entry $CP13_MENU {*select*all*}] : -1}]
+  set CP13_ICOPY [expr {$CP13_MENU ne {} ? [cp_entry $CP13_MENU {*copy*}] : -1}]
+  if {$CP13_MENU ne {} && $CP13_IALL >= 0} {
+    catch {$CP13_MENU invoke $CP13_IALL}
+    catch {update}
+  }
+  set CP13_RNG [cp_selrng]
+  set CP13_MSG1 [cp_status]
+  catch {$CP13_MENU unpost}
+  catch {grab release $CP13_MENU}
+  catch {update}
+  cp_gap
+  cp_ev .rdw.p.t <ButtonPress-3>   -x $CP13_X -y $CP13_Y
+  cp_ev .rdw.p.t <ButtonRelease-3> -x $CP13_X -y $CP13_Y
+  catch {update}
+  if {$CP13_MENU ne {} && $CP13_ICOPY >= 0} {
+    catch {$CP13_MENU invoke $CP13_ICOPY}
+    catch {update}
+  }
+  catch {$CP13_MENU unpost}
+  catch {grab release $CP13_MENU}
+  catch {update}
+  set CP13_MSG2 [cp_status]
+  set CP13_CLIP [cp_clip]
+  ## PART 2: a populated pane, and a drag that covers a BLANK line only. The
+  ## line is found at run time rather than hard-coded, so the row cannot go
+  ## vacuous if the block's shape changes; leg 7 asserts one was found.
+  cp_fixture
+  set CP13_LAST [lindex [split [cp_w .rdw.p.t index {end - 1c}] .] 0]
+  set CP13_BLANK 0
+  if {[string is integer -strict $CP13_LAST]} {
+    for {set _i 1} {$_i <= $CP13_LAST} {incr _i} {
+      set _t [cp_w .rdw.p.t get $_i.0 "$_i.0 lineend"]
+      if {![string match {ERR:*} $_t] && [string trim $_t] eq {}} {
+        set CP13_BLANK $_i
+        break
+      }
+    }
+  }
+  set CP13_BTXT {}
+  if {$CP13_BLANK > 0} {
+    cp_w .rdw.p.t tag add sel $CP13_BLANK.0 [expr {$CP13_BLANK + 1}].0
+    catch {update}
+    set CP13_BTXT [cp_sel]
+  }
+  cp_setclip {SENTINEL-BLANK-SPAN}
+  set CP13_HERE [cp_focus .rdw.p.t]
+  cp_ev $CP13_HERE <Control-Key-c>
+  catch {update}
+  set CP13_BCLIP [cp_clip]
+  set CP13_BMSG [cp_status]
+  check {CP13 A COPY OF NOTHING MUST NEVER TOUCH THE CLIPBOARD: in a Results Display Window that has never been given a dump - three clicks from the Tools menu, no simulation - the right-click Select All must select nothing and say so, and its Copy must leave the user's clipboard exactly as it was; and on a populated pane a drag covering nothing but a blank line is the same non-copy. A Tk text widget's mandatory trailing newline makes `tag add sel 1.0 end` a real range on an EMPTY pane, so both guards were dead and the user's document text was replaced by a newline} \
+    [list $CP13_CHARS \
+          [expr {$CP13_MENU ne {} && $CP13_IALL >= 0 && $CP13_ICOPY >= 0 ? 1 : 0}] \
+          $CP13_RNG \
+          $CP13_CLIP \
+          [string match {Copied *} $CP13_MSG2] \
+          [expr {[kx_oneline $CP13_MSG1] && [kx_oneline $CP13_MSG2] ? 1 : 0}] \
+          [expr {$CP13_BLANK > 0 ? 1 : 0}] \
+          [expr {[string length $CP13_BTXT] > 0 && [string trim $CP13_BTXT] eq {} ? 1 : 0}] \
+          $CP13_BCLIP \
+          [string match {Copied *} $CP13_BMSG]] \
+    [list 1 1 {} {SENTINEL-EMPTY-WINDOW} 0 1 1 1 {SENTINEL-BLANK-SPAN} 0]
+
+  # --- CP14 THE SELECTION IN THIS WINDOW'S OWN STATUS LINE ------------------
+  ## ⚠ ISSUE 1344 DEFECTS b AND c. `.rdw.s.msg` is a readonly `entry` with
+  ## -exportselection 1 and a real drag selects in it - driven below with
+  ## ButtonPress / B1-Motion / ButtonRelease, not with `selection range` - and
+  ## it is where item B5 writes the settings-file path, the single most
+  ## copy-worthy string in the window. Ruling DD-5 gave this window a copy that
+  ## works from anywhere in it; "anywhere in it" has to include that widget.
+  ##
+  ## b: selecting there takes PRIMARY off the pane, and
+  ## rdw::_selection_changed used to test only `$own eq {.rdw.p.t}` - so a
+  ## LOCAL widget of this same toplevel was scored a FOREIGN theft, the stale
+  ## mirror was kept, and the chord (which is on the `.rdw` bindtag that entry
+  ## carries) copied the PANE. MEASURED before the fix on :99 and on the user's
+  ## VcXsrv, byte-identical: PRIMARY `/home/analog/.xschem/op_param_lists.tcl`,
+  ## clipboard `MCU:/`, status "Copied 1 line, 5 characters, to the clipboard."
+  ##
+  ## c: and the same chord DESTROYED the text being copied. rdw::copy's
+  ## no-selection branch calls rdw::status, which writes ::rdw::statusmsg - the
+  ## -textvariable of the very entry holding the live selection - so the path
+  ## vanished under the user's own selection while the sentence claimed nothing
+  ## was selected, which was false.
+  ##
+  ## ⚠ AND THE LAST TWO LEGS ARE THE FENCE ROUND THE FIX. A copy that prefers a
+  ## sibling widget unconditionally would break the ordinary gesture this whole
+  ## section is about, so the row puts the entry's selection down, selects in
+  ## the PANE again and requires the same chord to copy the pane.
+  cp_fixture
+  cp_w .rdw.p.t tag add sel 1.0 {1.0 lineend}
+  catch {update}
+  set CP14_PANELINE [cp_sel]
+  kx_ans ::rdw::status {/home/analog/.xschem/op_param_lists.tcl}
+  catch {update}
+  set CP14_WANT [cp_status]
+  catch {update idletasks}
+  set CP14_EW [cp_w winfo width .rdw.s.msg]
+  set CP14_EH [cp_w winfo height .rdw.s.msg]
+  set CP14_EY [expr {[string is integer -strict $CP14_EH] ? $CP14_EH / 2 : 8}]
+  cp_gap
+  cp_ev .rdw.s.msg <ButtonPress-1> -x 3 -y $CP14_EY
+  if {[string is integer -strict $CP14_EW]} {
+    for {set _x 3} {$_x < $CP14_EW - 4} {incr _x 10} {
+      cp_ev .rdw.s.msg <B1-Motion> -x $_x -y $CP14_EY
+    }
+    cp_ev .rdw.s.msg <B1-Motion>       -x [expr {$CP14_EW - 5}] -y $CP14_EY
+    cp_ev .rdw.s.msg <ButtonRelease-1> -x [expr {$CP14_EW - 5}] -y $CP14_EY
+  }
+  catch {update}
+  set CP14_PRESENT [cp_w .rdw.s.msg selection present]
+  set CP14_PRIM NOPRIM
+  catch {set CP14_PRIM [selection get -selection PRIMARY]}
+  set CP14_MIRROR $::rdw::selspan
+  cp_setclip {SENTINEL-STATUS-LINE}
+  set CP14_HERE [cp_focus .rdw.p.t]
+  cp_ev $CP14_HERE <Control-Key-c>
+  catch {update}
+  set CP14_CLIP [cp_clip]
+  set CP14_AFTER [cp_status]
+  set CP14_STILL [cp_w .rdw.s.msg selection present]
+  catch {.rdw.s.msg selection clear}
+  catch {update}
+  cp_w .rdw.p.t tag add sel 2.0 {2.0 lineend}
+  catch {update}
+  set CP14_L2 [cp_sel]
+  cp_setclip {SENTINEL-BACK-TO-THE-PANE}
+  set CP14_HERE2 [cp_focus .rdw.p.t]
+  cp_ev $CP14_HERE2 <Control-Key-c>
+  catch {update}
+  set CP14_CLIP2 [cp_clip]
+  check {CP14 A SELECTION IN ANY WIDGET OF THIS WINDOW IS THE USER'S SELECTION: after a real drag across the settings-file path in the status line, Ctrl-C must put THAT PATH on the clipboard and not the pane's first line, must leave the path standing in the status line rather than overwriting it with a receipt for itself, and must leave the selection alive so a second copy works - and a selection made in the pane afterwards must still be what the same chord copies} \
+    [list $CP14_PRESENT \
+          [expr {$CP14_PRIM eq $CP14_WANT && $CP14_WANT ne {} ? 1 : 0}] \
+          [llength $CP14_MIRROR] \
+          [expr {$CP14_CLIP eq $CP14_WANT ? 1 : 0}] \
+          [expr {$CP14_CLIP eq $CP14_PANELINE ? 1 : 0}] \
+          [expr {$CP14_AFTER eq $CP14_WANT ? 1 : 0}] \
+          $CP14_STILL \
+          [expr {$CP14_L2 ne {NOSEL} && $CP14_CLIP2 eq $CP14_L2 ? 1 : 0}]] \
+    [list 1 1 0 1 0 1 1 1]
+
+  # --- CP15 THE TWO SENTENCES MUST AGREE ABOUT ONE AND THE SAME CONTENT -----
+  ## ⚠ ISSUE 1344 DEFECT d. rdw::select_all counted the LINE NUMBER of
+  ## `end - 1c` and rdw::copy counted the elements of `split $txt \n`, so for
+  ## one and the same Select All the window said "Selected the whole window, 7
+  ## lines." and then "Copied 8 lines, 170 characters, to the clipboard." Both
+  ## numbers were wrong, they were wrong by different amounts, and the extra
+  ## line in the copy was the widget's own mandatory trailing newline riding
+  ## along on to the clipboard.
+  ##
+  ## The third leg is what makes this more than an equality: the number both
+  ## sentences give must be the number of lines the paste really occupies,
+  ## counted here from the clipboard's own bytes.
+  cp_fixture
+  kx_ans ::rdw::select_all
+  catch {update}
+  set CP15_SA [cp_status]
+  set CP15_RNG [cp_selrng]
+  cp_setclip {SENTINEL-COUNTS}
+  kx_ans ::rdw::copy
+  catch {update}
+  set CP15_CP [cp_status]
+  set CP15_CLIP [cp_clip]
+  set CP15_N1 -1
+  set CP15_N2 -1
+  regexp {whole window, ([0-9]+) lines?\.} $CP15_SA -> CP15_N1
+  regexp {^Copied ([0-9]+) lines?,} $CP15_CP -> CP15_N2
+  ## The paste's own shape: a trailing newline ENDS the last line, it does not
+  ## start an empty new one. Counted from the bytes, not from rdw::_copy_lines.
+  set CP15_REAL [expr {[regexp -all "\n" $CP15_CLIP] \
+                       + ([string index $CP15_CLIP end] eq "\n" ? 0 : 1)}]
+  set CP15_PANE [cp_w .rdw.p.t get 1.0 {end - 1c}]
+  check {CP15 THE WINDOW MUST NOT CONTRADICT ITSELF ABOUT WHAT IT JUST DID: Select All and the Copy that follows it describe ONE piece of content, so they must give the SAME number of lines, that number must be the number of lines the paste really occupies, and what reaches the clipboard must be the pane's own text and not the pane's text plus the Tk text widget's mandatory trailing newline} \
+    [list [expr {$CP15_N1 >= 0 && $CP15_N2 >= 0 ? 1 : 0}] \
+          [expr {$CP15_N1 == $CP15_N2 ? 1 : 0}] \
+          [expr {$CP15_N1 == $CP15_REAL ? 1 : 0}] \
+          [expr {$CP15_CLIP eq $CP15_PANE && $CP15_PANE ne {} ? 1 : 0}] \
+          [cp_cmp [lindex $CP15_RNG 1] == {end - 1c}]] \
+    [list 1 1 1 1 1]
+
   # --- CP9  HYGIENE ---------------------------------------------------------
   catch {selection clear -selection PRIMARY}
   catch {selection handle . {}}
@@ -3540,7 +3770,14 @@ catch {xschem raw clear}
 ## introduces - namespace state holding text indices - and it is in section CP,
 ## behind the same have_tk guard, so it drops with the rest when no display
 ## comes up.
-set KX_FLOOR 71
+## ⚠ AND RAISED 71 -> 74 BY THE REPAIR OF ISSUE 1344, IN THE SAME COMMIT AS
+## THE THREE ROWS IT COVERS: CP13, CP14 and CP15 - the empty window's copy, the
+## selection in the window's own status line, and the two sentences that
+## disagreed about one and the same content.  All three are in section CP,
+## behind the same have_tk guard, so they drop with the rest when no display
+## comes up.  A floor is raised when rows are added and NEVER lowered to make a
+## run pass.
+set KX_FLOOR 74
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\
