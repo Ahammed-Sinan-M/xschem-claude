@@ -1607,8 +1607,25 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   the list's), no row crosses a `  <rawdev>` sub-header, an undeclared row keeps
   its slot, every block of the edited class follows, and the cursor follows the
   ROW. Carries the fix for **1330**. **FIXED.**
-* **1339** — select + `Ctrl-C` does not copy (VcXsrv); double-click-then-drag
-  extend is unreliable. PRIMARY is not CLIPBOARD.
+* **1339** — **select + `Ctrl-C` did not copy, and double-click-then-drag threw
+  the double-clicked word away.** DD-5's literal reading is a NO-OP on this
+  build: `event info <<Copy>>` already carries `<Control-Key-c>` AND
+  `<Control-Key-Insert>`, and with the keyboard in the pane a real Ctrl-C
+  already copied. Three real mechanisms, each driven: the copy rode a Text
+  CLASS binding and so died the moment the keyboard left `.rdw.p.t` (which
+  `rdw::_arm_focus_handback` arranges after every dump); a Tk text widget with
+  `-exportselection 1` DELETES its own `sel` tag when another client takes
+  PRIMARY, which is what VcXsrv's clipboard bridge does on its own schedule, so
+  the highlight vanished and the copy wrote nothing; and `bind Text <1>`
+  re-anchors on the press, cutting the double-clicked word in half. Item **R3**:
+  the chord moves to the TOPLEVEL bindtag (never `bind all`, which reaches
+  `.drw`), a `keepsel` mirror kept alive by an owner test that tells a THEFT
+  from a deselect (measured: after a deselect the pane still owns PRIMARY,
+  after a theft it does not), a `<B1-Motion>` union for the extend that needs no
+  Tk internals, a right-click Copy / Select All, and a copy that never wipes a
+  clipboard it has nothing to write to and SAYS which it did. `-exportselection
+  0` was the one-line fix and was rejected: it costs middle-click paste (row
+  CP10 is the receipt). **FIXED.**
 * **1340** — the RDW must RAISE when something is sent to it, like the Library
   Manager on Ctrl-Alt-S — raise only, no focus. `rdw::push` said nothing to the
   window manager at all, and `rdw::open`'s plain `raise` is an inert no-op on
@@ -1640,4 +1657,15 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   raw. The sibling branch's hand-off note named three suites to check and not
   this one, which belongs to the very probe it changed. **FIXED.**
 
-**The next free number is 1343.**
+* **1343** — **the RDW's raise works on Xvfb and on Xwayland and not on the
+  server the user actually looks at.** Found by item R3's crew paying ruling
+  DD-8. Section RA of `test_rdw_keys_1245` is ALL PASS on `:99` and **five of
+  six FAIL** on `$DISPLAY` = `172.20.160.1:0` (vendor `HC-Consult`, the VcXsrv
+  the batch's report came from) — proved pre-existing by re-running with R3's
+  `src/rdw.tcl` replaced by `git show HEAD:src/rdw.tcl`, byte-identical reds.
+  `wm state` answers `normal` where `iconic` was asked for, and even RA5 (the
+  shared raise still ACTIVATES for its four other callers) fails. Issue 1340 is
+  closed FIXED on a `:99` number and its own suite debt names `:0`, which is
+  Xwayland — neither is the user's screen. **FILED, NOT FIXED.**
+
+**The next free number is 1344.**

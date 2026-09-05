@@ -2784,6 +2784,699 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
 }
 
 
+# ============================================================================
+# SECTION CP — ITEM R3, ISSUE 1339: SELECT, AND ACTUALLY GET THE TEXT OUT
+# ============================================================================
+# The user's words: "Select and then press CTRL-C doesn't work. (Using VcXsrv
+# for now). Double-click to start selection and then extend selection with
+# press-and-drag seemed to work once, but not reliably. It's only worked one
+# time."
+#
+# This is the item that decides whether the window is usable at all: the whole
+# stated reason it is a Text widget and not a CIW dump is that a block can be
+# selected and pasted into a design-review document.
+#
+# ⚠ THE OBVIOUS ROW IS GREEN TODAY, AND IT MEASURES NOTHING. Measured here on
+# :99 before this section was written: with the keyboard in the pane and a
+# selection standing, a real <Control-Key-c> ALREADY puts the line on the
+# CLIPBOARD -- Tk 8.6.17's Text class binding for <<Copy>> does it, and on this
+# build <<Copy>> resolves to
+#     <Control-Key-c> <Key-F16> <Control-Lock-Key-C> <Meta-Key-w>
+#     <Lock-Meta-Key-W> <Control-Key-Insert>
+# so <Control-Key-Insert> is already carried too. A row that selected a line,
+# pressed Ctrl-C at the pane and asserted the clipboard would pass on the
+# unmodified tree and tell the user nothing. Every red row below is therefore
+# built on a state the USER is actually in and this suite was not.
+#
+# THE FOUR THINGS THAT ARE ACTUALLY BROKEN, EACH MEASURED ON THIS BINARY,
+# 2026-09-05, ON :99, BEFORE ANY src CHANGE:
+#
+#   1. ANOTHER CLIENT TAKES THE X PRIMARY SELECTION AND THE SELECTION VANISHES.
+#      The pane is -exportselection 1 (rdw::_exportsel). A Tk text widget that
+#      loses PRIMARY DELETES ITS OWN sel TAG: measured, `selection own
+#      -selection PRIMARY .` leaves `tag ranges sel` EMPTY, `get sel.first
+#      sel.last` raising "text doesn't contain any characters tagged with sel",
+#      and a following Ctrl-C copying NOTHING AT ALL -- tk_textCopy's catch
+#      swallows it and the clipboard is never written. That is both halves of
+#      the user's report in one mechanism, and VcXsrv is exactly where it
+#      bites: its Windows clipboard bridge takes PRIMARY on its own schedule,
+#      which is why the gesture "worked one time".                     -> CP3
+#
+#   2. THE KEYBOARD IS USUALLY NOT IN THE PANE. Every copy today rides the Text
+#      CLASS binding, so it exists only while the keyboard is on .rdw.p.t.
+#      Measured: with the keyboard on the Up button of this very window a real
+#      Ctrl-C copies nothing (the CLIPBOARD does not even come into existence),
+#      and with it on the toplevel .rdw the same. Both are one click away --
+#      the button column is what item R2 just made worth pressing, and
+#      rdw::_arm_focus_handback deliberately hands the keyboard to the CANVAS
+#      after a dump, so "press a button, then copy" is the ordinary path.  -> CP2
+#
+#   3. THERE IS NO WAY TO COPY WITHOUT THE KEYBOARD. Measured: `bind .rdw.p.t
+#      <Button-3>`, `bind Text <Button-3>` and `bind all <Button-3>` are all the
+#      EMPTY STRING and .rdw has three children, none of them a menu. Ruling
+#      DD-5 requires a right-click Copy / Select All, so that a chord a window
+#      manager or an X server eats can never leave the user with no way to get
+#      the text out -- which is the whole point of the window.          -> CP4
+#
+#   4. DOUBLE-CLICK-THEN-PRESS-AND-DRAG THROWS THE SELECTION AWAY. Measured
+#      five times out of five, deterministically, on line 3 of the fixture:
+#      the double-click selects `complete` at 3.6-3.14; a separate press at
+#      3.10 followed by a drag to 3.40 answers 3.10-3.40 -- `lete list: these
+#      are the opera`. The word the user double-clicked is CUT IN HALF. The
+#      gesture that does work is holding the second click down (word-wise
+#      extension, 3.6-3.44) and so does shift-click, which is why it "seemed to
+#      work once": the user's hand sometimes held the second click.     -> CP6
+#
+# ⚠ AND THE INPUT MOST LIKELY TO BREAK THE FIX, WITH A ROW OF ITS OWN. Ruling
+# DD-5 spells the copy as `clipboard clear` + `clipboard append`. Written in
+# that order with no selection to append, it WIPES THE USER'S CLIPBOARD -- the
+# document they were about to paste into, gone, because they pressed Ctrl-C in
+# the wrong window. Tk's own tk_textCopy guards it with a catch and today's
+# behaviour is safe (measured: a sentinel survives). CP5 is that fence, and it
+# is written as a fence rather than a feature on purpose.
+#
+# ⚠ THE SECOND-LIKELIEST: AN EXTEND THAT EXTENDS EVERYTHING. If a press-and-drag
+# always extends, the user can never make a SMALL selection - the second one
+# grows out of the first for ever. CP7 presses OUTSIDE the standing selection
+# and requires a FRESH one, alongside the two gestures that work today.
+#
+# WHERE THE ROWS LIVE. All of it needs a mapped pane, real button and key
+# events, a real X selection and a real clipboard, so all of it is here rather
+# than in the structural suite, and all of it must be run through
+#     GUI_GATE=0 tests/headless/devdisplay.sh exec ./src/xschem --pipe -q \
+#         --nolog --script tests/headless/test_rdw_keys_1245.tcl
+#
+# ⚠ RULING DD-8: :99 IS NOT ENOUGH FOR THIS ITEM. $DISPLAY is the VcXsrv /
+# HC-Consult server the user actually looks at and AUDIT_DISPLAY=:0 is WSLg's
+# Xwayland - three different servers (CLAUDE.md's table), and selection and
+# clipboard are precisely where they differ. A green run here is necessary and
+# not sufficient; the item is not done until it has run on $DISPLAY.
+
+if {[kx_ans ::rdw::have_tk] eq {1}} {
+
+  ## The widget-expression wrapper this section needs (cu_w's twin, kept
+  ## separate so a rename in one section cannot silently change another).
+  proc cp_w {args} {
+    set rc [catch {uplevel #0 $args} r]
+    if {$rc} { return "ERR:$r" }
+    return $r
+  }
+  ## ⚠ `clipboard get` RAISES when nothing owns the CLIPBOARD, and that is the
+  ## state a failed copy leaves. A bare read would abort the suite mid-run.
+  proc cp_clip {} {
+    set v {}
+    if {[catch {clipboard get} v]} { return NOCLIP }
+    return $v
+  }
+  proc cp_setclip {s} { catch {clipboard clear} ; catch {clipboard append -- $s} }
+  proc cp_sel {} {
+    set v {}
+    if {[catch {.rdw.p.t get sel.first sel.last} v]} { return NOSEL }
+    return $v
+  }
+  proc cp_selrng {} {
+    set v {}
+    if {[catch {.rdw.p.t tag ranges sel} v]} { return ERR }
+    return $v
+  }
+  proc cp_cmp {a op b} {
+    set r {}
+    if {[catch {.rdw.p.t compare $a $op $b} r]} { return ERR }
+    return $r
+  }
+  proc cp_status {} {
+    if {![info exists ::rdw::statusmsg]} { return NO-VAR }
+    return $::rdw::statusmsg
+  }
+  ## ⚠ EVENTS CARRY AN EXPLICIT, MONOTONIC TIME. Tk decides double-click from
+  ## the event's own `time` field, so two presses generated back to back are a
+  ## double only by accident of the clock - and `event generate` REFUSES a
+  ## Double modifier outright ("Double, Triple, or Quadruple modifier not
+  ## allowed", measured). Stamping the times is what makes CP6 deterministic
+  ## instead of a race, which is issue 1332's lesson applied before the fact.
+  set ::CP_T 100000
+  proc cp_ev {w seq args} {
+    incr ::CP_T 40
+    catch {eval [list event generate $w $seq -when now -time $::CP_T] $args}
+  }
+  ## Past the multiple-click time: the next press is a FRESH one, not a triple.
+  proc cp_gap {} { incr ::CP_T 900 }
+  ## POLL for the keyboard, never `after`. The window manager's grant to a
+  ## freshly re-mapped toplevel (item R4 re-maps on every dump) arrives on a
+  ## MapNotify round trip and can land after a `focus -force`.
+  proc cp_focus {w} {
+    for {set i 0} {$i < 60} {incr i} {
+      catch {focus -force $w}
+      catch {update}
+      if {[focus] eq $w} { return $w }
+      after 10
+    }
+    return [focus]
+  }
+  ## Every Menu widget in the application, and the posted ones. Walked from `.`
+  ## because a popup may be a child of .rdw or of the main window, and DIFFED
+  ## before/after: xschem's own menubar carries a Copy entry, so "a menu that
+  ## has a Copy label" is not by itself evidence that the pane posted one.
+  proc cp_menus {} {
+    set out {}
+    set q [list .]
+    while {[llength $q]} {
+      set w [lindex $q 0]
+      set q [lrange $q 1 end]
+      if {![winfo exists $w]} { continue }
+      if {[winfo class $w] eq {Menu}} { lappend out $w }
+      foreach c [winfo children $w] { lappend q $c }
+    }
+    return [lsort $out]
+  }
+  proc cp_posted_menus {} {
+    set out {}
+    foreach m [cp_menus] { if {[cp_w winfo ismapped $m] eq {1}} { lappend out $m } }
+    return $out
+  }
+  ## The index of the first entry whose label matches, or -1.
+  ## ⚠ `set l {}` INSIDE the loop: a separator has no -label at all and the
+  ## catch would otherwise leave the PREVIOUS entry's label standing, so a
+  ## separator following Copy would answer to *copy* as well.
+  proc cp_entry {m pat} {
+    set n {}
+    if {[catch {$m index end} n]} { return -1 }
+    if {![string is integer -strict $n]} { return -1 }
+    for {set i 0} {$i <= $n} {incr i} {
+      set l {}
+      catch {set l [$m entrycget $i -label]}
+      if {[string match -nocase $pat $l]} { return $i }
+    }
+    return -1
+  }
+  ## Is the span a..b still HIGHLIGHTED - covered by some tag the user can see?
+  ## ⚠ THE FOUR RENDER TAGS AND THE CURSOR ARE EXCLUDED, AND WITHOUT THAT THIS
+  ## PREDICATE IS A LIE: hdr / dim / dev / note each cover a WHOLE LINE of the
+  ## fixture and `cursor` covers the whole cursored line, so any of them would
+  ## answer yes for a span inside that line and CP3 would pass with the
+  ## selection long gone. What is left is `sel` - or a tag an implementation
+  ## introduces to keep the highlight alive across a PRIMARY theft, which is
+  ## the point: this asks whether the user can still SEE what they selected,
+  ## not which tag is doing it.
+  proc cp_highlighted {a b} {
+    set names {}
+    if {[catch {.rdw.p.t tag names} names]} { return ERR }
+    foreach t $names {
+      if {[lsearch -exact {cursor hdr dim dev note} $t] >= 0} { continue }
+      set r {}
+      catch {set r [.rdw.p.t tag ranges $t]}
+      foreach {s e} $r {
+        if {[cp_cmp $s <= $a] eq {1} && [cp_cmp $e >= $b] eq {1}} { return $t }
+      }
+    }
+    return {}
+  }
+  ## The fixture: ONE block, six lines - header / devpath / the incompleteness
+  ## sentence that really wraps / two parameter rows / the separator.
+  proc cp_block {} {
+    set ans [dict create devices [dict create {@m.x1.mcu} {{id 1.234} {vth 0.5}}] \
+                         absent {} nonfinite {} complete 0 state ok]
+    set ctx [dict create header {MCU:/} devpath {@m.x1.mcu} simtype op \
+                         instname MCU sim ngspice]
+    return [kx_ans ::rdw::format_answer $ans $ctx]
+  }
+  proc cp_fixture {} {
+    catch {clipboard clear}
+    set ::rdw::blocks {}
+    kx_ans ::rdw::set_row 0
+    kx_ans ::rdw::push [cp_block]
+    kx_ans ::rdw::render_pane
+    catch {update idletasks}
+    ## ⚠ SPEND THE ONE-SHOT BY HAND. rdw::push re-maps the window (item R4) and
+    ## arms rdw::_arm_focus_handback with it; every row below reads the
+    ## KEYBOARD, and a hand-back firing in the middle of one would measure
+    ## issue 1306 instead of this item. Asserted as a leg of CP1.
+    catch {set ::rdw::focus_pending 0}
+    catch {.rdw.p.t tag remove sel 1.0 end}
+    cp_focus .rdw.p.t
+    catch {update}
+    return {}
+  }
+
+  kx_ans ::rdw::open
+  catch {update idletasks}
+  cp_fixture
+
+  # --- CP1  CONTROL: the fixture, so no row below can pass vacuously --------
+  set CP1_L1 [cp_w .rdw.p.t get 1.0 {1.0 lineend}]
+  set CP1_L3 [cp_w .rdw.p.t get 3.0 {3.0 lineend}]
+  set CP1_B3 [cp_w .rdw.p.t bbox 3.10]
+  set CP1_DL [cp_w .rdw.p.t count -displaylines 3.0 {3.0 lineend}]
+  cp_w .rdw.p.t tag add sel 1.0 {1.0 lineend}
+  catch {update}
+  set CP1_SEL [cp_sel]
+  check {CP1 CONTROL the fixture every row below stands on: the pane is mapped, still read-only, holds the six-line block whose third line really WRAPS, the keyboard is in the pane, the focus hand-back one-shot is spent, and a selection made by hand really reads back as the line it covers - without all of that the copy rows measure nothing} \
+    [list [cp_w winfo ismapped .rdw.p.t] \
+          [cp_w .rdw.p.t cget -state] \
+          [focus] \
+          [kx_pending] \
+          [expr {$CP1_L1 eq {MCU:/} ? 1 : 0}] \
+          [expr {[string length $CP1_L3] > 60 ? 1 : 0}] \
+          [expr {[string is integer -strict $CP1_DL] && $CP1_DL >= 1 ? 1 : 0}] \
+          [expr {[llength $CP1_B3] == 4 ? 1 : 0}] \
+          [expr {$CP1_SEL eq $CP1_L1 ? 1 : 0}]] \
+    {1 disabled .rdw.p.t 0 1 1 1 1 1}
+
+  # --- CP2  Ctrl-C copies from ANYWHERE inside the window -------------------
+  ## THE USER'S FIRST SENTENCE. Today the copy is Tk's Text CLASS binding and
+  ## therefore exists only while .rdw.p.t itself holds the keyboard. One click
+  ## on the button column item R2 just made worth pressing - or the hand-back
+  ## that follows every dump - and Ctrl-C is dead. Each leg FOCUSES the widget,
+  ## asserts the keyboard really landed there, and then delivers the chord to
+  ## whatever holds it, because Tk redirects key events to the focus window and
+  ## a chord generated at a widget that is not focused would be answered by the
+  ## pane and pass while the user's own keystroke is lost.
+  cp_fixture
+  cp_w .rdw.p.t tag add sel 1.0 {1.0 lineend}
+  catch {update}
+  set CP2_WANT [cp_sel]
+  set CP2_GOT {}
+  set CP2_EXP {}
+  foreach cpw {.rdw.p.t .rdw.b.up .rdw.b.save .rdw} {
+    foreach cpseq {<Control-Key-c> <Control-Key-Insert>} {
+      set here [cp_focus $cpw]
+      catch {clipboard clear}
+      cp_ev $here $cpseq
+      catch {update}
+      lappend CP2_GOT [list $cpw $here [expr {[cp_clip] eq $CP2_WANT ? 1 : 0}]]
+      lappend CP2_EXP [list $cpw $cpw 1]
+    }
+  }
+  check {CP2 Ctrl-C and Ctrl-Insert copy the selection from ANY widget inside the Results Display Window - the text pane, the Up button, the Save button and the toplevel itself - because the user presses the chord where their hands are and not where Tk keeps its focus, and one press of a button column is all it takes to lose the class binding the copy rides today} \
+    [list $CP2_GOT [cp_sel] [cp_w .rdw.p.t cget -state]] \
+    [list $CP2_EXP $CP2_WANT disabled]
+
+  # --- CP3  the copy survives another client taking PRIMARY -----------------
+  ## THE MECHANISM, DRIVEN RATHER THAN CITED. `selection own -selection PRIMARY
+  ## .` is another X client taking the primary selection, which is what VcXsrv's
+  ## Windows clipboard bridge does on its own schedule. Measured on the
+  ## unmodified tree: the pane's sel tag is DELETED, the highlight the user is
+  ## looking at disappears, and Ctrl-C then writes nothing at all.
+  cp_fixture
+  cp_w .rdw.p.t tag add sel 2.0 {2.0 lineend}
+  catch {update}
+  set CP3_WANT [cp_sel]
+  set CP3_LINE [cp_w .rdw.p.t get 2.0 {2.0 lineend}]
+  proc cp_steal_handler {args} { return {STOLEN-BY-ANOTHER-CLIENT} }
+  catch {selection handle . cp_steal_handler}
+  catch {selection own -selection PRIMARY .}
+  catch {update}
+  set CP3_PRIM NOPRIM
+  catch {set CP3_PRIM [selection get -selection PRIMARY]}
+  set CP3_VIS [cp_highlighted 2.0 {2.0 lineend}]
+  set CP3_HERE [cp_focus .rdw.p.t]
+  catch {clipboard clear}
+  cp_ev $CP3_HERE <Control-Key-c>
+  catch {update}
+  set CP3_CLIP [cp_clip]
+  catch {selection clear -selection PRIMARY}
+  catch {selection handle . {}}
+  catch {update}
+  check {CP3 THE MECHANISM THE USER IS ON: after another X client takes the PRIMARY selection - which is what the VcXsrv clipboard bridge does on its own schedule - the text the user selected is STILL highlighted in the pane and Ctrl-C still puts exactly that text on the CLIPBOARD. A Tk text widget that exports the selection answers a theft by deleting its own sel tag, so today the highlight vanishes under the user and the copy writes nothing} \
+    [list [expr {$CP3_WANT eq $CP3_LINE && $CP3_LINE ne {} ? 1 : 0}] \
+          [expr {$CP3_PRIM eq {STOLEN-BY-ANOTHER-CLIENT} ? 1 : 0}] \
+          [expr {$CP3_VIS ne {} && $CP3_VIS ne {ERR} ? 1 : 0}] \
+          [expr {$CP3_CLIP eq $CP3_WANT ? 1 : 0}]] \
+    {1 1 1 1}
+
+  # --- CP4  a Copy that needs no keyboard at all (ruling DD-5) --------------
+  cp_fixture
+  cp_w .rdw.p.t tag add sel 4.0 {4.0 lineend}
+  catch {update}
+  set CP4_WANT [cp_sel]
+  set CP4_M0 [cp_posted_menus]
+  set CP4_BB [cp_w .rdw.p.t bbox 4.0]
+  set CP4_X [expr {[llength $CP4_BB] == 4 ? [lindex $CP4_BB 0] + 4 : 10}]
+  set CP4_Y [expr {[llength $CP4_BB] == 4 ? [lindex $CP4_BB 1] + 4 : 10}]
+  catch {clipboard clear}
+  cp_ev .rdw.p.t <ButtonPress-3>   -x $CP4_X -y $CP4_Y
+  cp_ev .rdw.p.t <ButtonRelease-3> -x $CP4_X -y $CP4_Y
+  catch {update}
+  set CP4_MENU {}
+  foreach m [cp_posted_menus] {
+    if {[lsearch -exact $CP4_M0 $m] < 0} { set CP4_MENU $m ; break }
+  }
+  set CP4_ICOPY -1
+  set CP4_IALL -1
+  if {$CP4_MENU ne {}} {
+    set CP4_ICOPY [cp_entry $CP4_MENU {*copy*}]
+    set CP4_IALL  [cp_entry $CP4_MENU {*select*all*}]
+  }
+  set CP4_CLIP NOCLIP
+  if {$CP4_MENU ne {} && $CP4_ICOPY >= 0} {
+    catch {$CP4_MENU invoke $CP4_ICOPY}
+    catch {update}
+    set CP4_CLIP [cp_clip]
+  }
+  catch {$CP4_MENU unpost}
+  catch {grab release $CP4_MENU}
+  catch {update}
+  set CP4_ALL ERR
+  if {$CP4_MENU ne {} && $CP4_IALL >= 0} {
+    cp_ev .rdw.p.t <ButtonPress-3>   -x $CP4_X -y $CP4_Y
+    cp_ev .rdw.p.t <ButtonRelease-3> -x $CP4_X -y $CP4_Y
+    catch {update}
+    catch {$CP4_MENU invoke $CP4_IALL}
+    catch {update}
+    set CP4_ALL [cp_selrng]
+  }
+  catch {$CP4_MENU unpost}
+  catch {grab release $CP4_MENU}
+  catch {update}
+  ## THE MENU IS A SECOND DOOR ONTO THE CLIPBOARD AND IT NEEDS THE SAME GUARD.
+  ## CP5 fences the chord against DD-5's `clipboard clear` + `clipboard append`
+  ## wiping a clipboard there is nothing to append to; a Copy ITEM written the
+  ## same way destroys the user's clipboard through the other door, and a fix
+  ## that routes both through one proc passes both legs for free.
+  set CP4_EMPTY NOCLIP
+  if {$CP4_MENU ne {}} {
+    catch {.rdw.p.t tag remove sel 1.0 end}
+    catch {update}
+    cp_setclip {SENTINEL-MENU-DO-NOT-WIPE}
+    cp_ev .rdw.p.t <ButtonPress-3>   -x $CP4_X -y $CP4_Y
+    cp_ev .rdw.p.t <ButtonRelease-3> -x $CP4_X -y $CP4_Y
+    catch {update}
+    if {$CP4_ICOPY >= 0} { catch {$CP4_MENU invoke $CP4_ICOPY} }
+    catch {update}
+    set CP4_EMPTY [cp_clip]
+    catch {$CP4_MENU unpost}
+    catch {grab release $CP4_MENU}
+    catch {update}
+  }
+  check {CP4 RULING DD-5 there is a way to copy that does not depend on the keyboard: a right-click in the pane posts a menu carrying Copy and Select All, its Copy puts exactly the selected text on the CLIPBOARD, its Select All selects the whole pane, and its Copy with nothing selected leaves the user's clipboard alone - a chord a window manager or an X server eats must never leave the user with no way to get the text out, which is the entire purpose of this window} \
+    [list [expr {$CP4_MENU ne {} ? 1 : 0}] \
+          [expr {$CP4_ICOPY >= 0 ? 1 : 0}] \
+          [expr {$CP4_IALL >= 0 ? 1 : 0}] \
+          [expr {$CP4_CLIP eq $CP4_WANT && $CP4_WANT ne {NOSEL} ? 1 : 0}] \
+          [expr {[llength $CP4_ALL] == 2 && [lindex $CP4_ALL 0] eq {1.0} \
+                 && [cp_cmp [lindex $CP4_ALL 1] >= {end - 1c}] eq {1} ? 1 : 0}] \
+          [expr {$CP4_EMPTY eq {SENTINEL-MENU-DO-NOT-WIPE} ? 1 : 0}] \
+          [cp_w .rdw.p.t cget -state]] \
+    {1 1 1 1 1 1 disabled}
+
+  # --- CP5  FENCE plus the silence the bug report is made of ----------------
+  ## THE INPUT MOST LIKELY TO BREAK THIS CHANGE. DD-5 spells the copy as
+  ## `clipboard clear` + `clipboard append`; in that order with nothing
+  ## selected it DESTROYS whatever the user had on the clipboard - very likely
+  ## the thing they were about to paste the dump next to. Legs 1 and 2 are a
+  ## fence and are green today, because Tk's own tk_textCopy guards it with a
+  ## catch. Legs 3-5 are not: a copy that does nothing and says nothing cannot
+  ## be told from a broken one, and "doesn't work" is precisely the report this
+  ## item is answering.
+  cp_fixture
+  catch {.rdw.p.t tag remove sel 1.0 end}
+  catch {update}
+  cp_setclip {SENTINEL-DO-NOT-WIPE}
+  kx_ans ::rdw::status {}
+  set CP5_HERE [cp_focus .rdw.p.t]
+  cp_ev $CP5_HERE <Control-Key-c>
+  catch {update}
+  set CP5_CLIP [cp_clip]
+  set CP5_MSG [cp_status]
+  cp_w .rdw.p.t tag add sel 1.0 {1.0 lineend}
+  catch {update}
+  kx_ans ::rdw::status {}
+  catch {clipboard clear}
+  cp_ev $CP5_HERE <Control-Key-c>
+  catch {update}
+  set CP5_CLIP2 [cp_clip]
+  set CP5_MSG2 [cp_status]
+  check {CP5 a Ctrl-C with nothing selected must not destroy the clipboard the user was about to paste into - and it must SAY so, because a copy that quietly does nothing is indistinguishable from the broken one this item exists to fix; a copy that succeeded says something different} \
+    [list [expr {$CP5_CLIP eq {SENTINEL-DO-NOT-WIPE} ? 1 : 0}] \
+          $CP5_HERE \
+          [expr {[string trim $CP5_MSG] ne {} && $CP5_MSG ne {NO-VAR} ? 1 : 0}] \
+          [kx_oneline $CP5_MSG] \
+          [expr {[string trim $CP5_MSG2] ne {} && $CP5_MSG2 ne {NO-VAR} ? 1 : 0}] \
+          [expr {$CP5_MSG2 ne $CP5_MSG ? 1 : 0}] \
+          [expr {$CP5_CLIP2 eq [cp_sel] ? 1 : 0}]] \
+    [list 1 .rdw.p.t 1 1 1 1 1]
+
+  # --- CP6  double-click, then press-and-drag, EXTENDS - five times over ----
+  ## THE USER'S SECOND SENTENCE, DRIVEN AS THEIR HAND DRIVES IT: double-click a
+  ## word, let go, then press and drag. Measured 5/5 on the unmodified tree:
+  ## the double-click selects `complete` and the drag REPLACES it with a
+  ## character run starting where the second press landed, cutting the word in
+  ## half. Every index below is read from the widget; none is transcribed.
+  cp_fixture
+  set CP6_Y  [expr {[lindex [cp_w .rdw.p.t bbox 3.0] 1] + 2}]
+  set CP6_X0 [expr {[lindex [cp_w .rdw.p.t bbox 3.10] 0] + 2}]
+  set CP6_X1 [expr {[lindex [cp_w .rdw.p.t bbox 3.40] 0] + 2}]
+  proc cp_dbl_then_drag {x0 x1 y} {
+    catch {.rdw.p.t tag remove sel 1.0 end}
+    catch {update}
+    cp_ev .rdw.p.t <ButtonPress-1>   -x $x0 -y $y
+    cp_ev .rdw.p.t <ButtonRelease-1> -x $x0 -y $y
+    cp_ev .rdw.p.t <ButtonPress-1>   -x $x0 -y $y
+    cp_ev .rdw.p.t <ButtonRelease-1> -x $x0 -y $y
+    catch {update}
+    set word [cp_selrng]
+    cp_gap
+    cp_ev .rdw.p.t <ButtonPress-1> -x $x0 -y $y
+    catch {update}
+    for {set px $x0} {$px <= $x1} {incr px 12} { cp_ev .rdw.p.t <B1-Motion> -x $px -y $y }
+    cp_ev .rdw.p.t <B1-Motion> -x $x1 -y $y
+    catch {update}
+    cp_ev .rdw.p.t <ButtonRelease-1> -x $x1 -y $y
+    catch {update}
+    return [list $word [cp_selrng]]
+  }
+  set CP6_R {}
+  for {set n 0} {$n < 5} {incr n} {
+    lappend CP6_R [cp_dbl_then_drag $CP6_X0 $CP6_X1 $CP6_Y]
+  }
+  set CP6_DRAGIX [cp_w .rdw.p.t index @$CP6_X1,$CP6_Y]
+  set CP6_WORD [lindex [lindex $CP6_R 0] 0]
+  set CP6_EXT  [lindex [lindex $CP6_R 0] 1]
+  check {CP6 THE USER'S OWN GESTURE: double-click a word, let go, then press and drag - the selection must GROW, keeping the whole word that was double-clicked and reaching the point the drag ended, and it must do it five times running and not once. Today the second press throws the word away and starts a fresh character run from wherever it landed, which is why the user saw it work exactly one time} \
+    [list [expr {[llength $CP6_WORD] == 2 ? 1 : 0}] \
+          [cp_cmp [lindex $CP6_WORD 1] < $CP6_DRAGIX] \
+          [cp_cmp [lindex $CP6_EXT 0] <= [lindex $CP6_WORD 0]] \
+          [cp_cmp [lindex $CP6_EXT 1] >= $CP6_DRAGIX] \
+          [llength [lsort -unique $CP6_R]]] \
+    {1 1 1 1 1}
+
+  # --- CP7  FENCE: the two gestures that DO work, and the small selection ---
+  ## Legs 1-3 are green today and must stay green: holding the second click and
+  ## dragging extends by word, and a shift-click extends to the click. Legs 4-5
+  ## are the fence around CP6's fix - a press OUTSIDE the standing selection
+  ## must start a FRESH one, or the user can never make a small selection again
+  ## because every drag grows the previous one.
+  cp_fixture
+  set CP7_X2 [expr {[lindex [cp_w .rdw.p.t bbox 3.60] 0] + 2}]
+  proc cp_held_drag {x0 x1 y} {
+    catch {.rdw.p.t tag remove sel 1.0 end}
+    catch {update}
+    cp_ev .rdw.p.t <ButtonPress-1>   -x $x0 -y $y
+    cp_ev .rdw.p.t <ButtonRelease-1> -x $x0 -y $y
+    cp_ev .rdw.p.t <ButtonPress-1>   -x $x0 -y $y
+    catch {update}
+    set word [cp_selrng]
+    for {set px $x0} {$px <= $x1} {incr px 12} { cp_ev .rdw.p.t <B1-Motion> -x $px -y $y }
+    cp_ev .rdw.p.t <B1-Motion> -x $x1 -y $y
+    catch {update}
+    cp_ev .rdw.p.t <ButtonRelease-1> -x $x1 -y $y
+    catch {update}
+    return [list $word [cp_selrng]]
+  }
+  proc cp_dbl_then_shift {x0 x1 y} {
+    catch {.rdw.p.t tag remove sel 1.0 end}
+    catch {update}
+    cp_ev .rdw.p.t <ButtonPress-1>   -x $x0 -y $y
+    cp_ev .rdw.p.t <ButtonRelease-1> -x $x0 -y $y
+    cp_ev .rdw.p.t <ButtonPress-1>   -x $x0 -y $y
+    cp_ev .rdw.p.t <ButtonRelease-1> -x $x0 -y $y
+    catch {update}
+    set word [cp_selrng]
+    cp_gap
+    cp_ev .rdw.p.t <Shift-ButtonPress-1> -x $x1 -y $y
+    cp_ev .rdw.p.t <ButtonRelease-1>     -x $x1 -y $y
+    catch {update}
+    return [list $word [cp_selrng]]
+  }
+  proc cp_fresh_drag {x0 x1 x2 y} {
+    catch {.rdw.p.t tag remove sel 1.0 end}
+    catch {update}
+    cp_ev .rdw.p.t <ButtonPress-1>   -x $x0 -y $y
+    cp_ev .rdw.p.t <ButtonRelease-1> -x $x0 -y $y
+    cp_ev .rdw.p.t <ButtonPress-1>   -x $x0 -y $y
+    cp_ev .rdw.p.t <ButtonRelease-1> -x $x0 -y $y
+    catch {update}
+    set word [cp_selrng]
+    cp_gap
+    cp_ev .rdw.p.t <ButtonPress-1> -x $x1 -y $y
+    catch {update}
+    for {set px $x1} {$px <= $x2} {incr px 12} { cp_ev .rdw.p.t <B1-Motion> -x $px -y $y }
+    cp_ev .rdw.p.t <B1-Motion> -x $x2 -y $y
+    catch {update}
+    cp_ev .rdw.p.t <ButtonRelease-1> -x $x2 -y $y
+    catch {update}
+    return [list $word [cp_selrng]]
+  }
+  set CP7_H [cp_held_drag $CP6_X0 $CP6_X1 $CP6_Y]
+  set CP7_S [cp_dbl_then_shift $CP6_X0 $CP6_X1 $CP6_Y]
+  set CP7_F [cp_fresh_drag $CP6_X0 $CP6_X1 $CP7_X2 $CP6_Y]
+  set CP7_MID [cp_w .rdw.p.t index @$CP6_X1,$CP6_Y]
+  check {CP7 FENCE the two gestures that already work keep working - holding the second click of a double and dragging still extends, and a double-click then a shift-click still extends to the shift-click - and a press that lands OUTSIDE the standing selection still starts a FRESH one, without which the user could never make a small selection again because every drag would grow the last} \
+    [list [cp_cmp [lindex $CP7_H 1 0] <= [lindex $CP7_H 0 0]] \
+          [cp_cmp [lindex $CP7_H 1 1] >= [lindex $CP7_H 0 1]] \
+          [cp_cmp [lindex $CP7_S 1 1] >= [lindex $CP7_S 0 1]] \
+          [cp_cmp [lindex $CP7_F 1 0] >= $CP7_MID] \
+          [cp_cmp [lindex $CP7_F 1 0] > [lindex $CP7_F 0 0]]] \
+    {1 1 1 1 1}
+
+  # --- CP8  FENCE: what lands on the clipboard is exactly the selection -----
+  ## The pane is -wrap word and line 3 really does wrap (asserted at CP1), so a
+  ## copy taken in DISPLAY lines would arrive in the design-review document
+  ## broken across the pane's width. The paste shape is the whole deliverable.
+  cp_fixture
+  cp_w .rdw.p.t tag add sel 1.0 4.0
+  catch {update}
+  set CP8_WANT [cp_sel]
+  set CP8_HERE [cp_focus .rdw.p.t]
+  catch {clipboard clear}
+  cp_ev $CP8_HERE <Control-Key-c>
+  catch {update}
+  set CP8_CLIP [cp_clip]
+  set CP8_NAMES [cp_w .rdw.p.t tag names]
+  set CP8_IC [lsearch -exact $CP8_NAMES cursor]
+  set CP8_IS [lsearch -exact $CP8_NAMES sel]
+  check {CP8 FENCE what reaches the clipboard is byte-for-byte the selection and nothing else: three LOGICAL lines even though the middle one wraps on screen, the selection still standing afterwards so a second copy is possible, the pane still read-only, and the line cursor still below sel so the user can see what they selected} \
+    [list [expr {$CP8_CLIP eq $CP8_WANT && $CP8_WANT ne {NOSEL} ? 1 : 0}] \
+          [llength [split $CP8_WANT "\n"]] \
+          [expr {[cp_selrng] ne {} && [cp_selrng] ne {ERR} ? 1 : 0}] \
+          [cp_w .rdw.p.t cget -state] \
+          [expr {$CP8_IC >= 0 && $CP8_IS >= 0 && $CP8_IC < $CP8_IS ? 1 : 0}]] \
+    [list 1 4 1 disabled 1]
+
+  # --- CP10 FENCE: the selection still reaches the X PRIMARY selection ------
+  ## ⚠ THE ONE PROMISE A CHEAP FIX FOR CP3 WOULD SPEND, AND THIS ROW IS HERE SO
+  ## THAT SPENDING IT IS VISIBLE. CP3's theft cannot happen at all if the pane
+  ## stops exporting the selection - `rdw::_exportsel` is a one-line accessor
+  ## whose own comment says it exists so a reviewer can flip it and watch the
+  ## suite say which promise broke, and this is that row. Flipping it to 0
+  ## makes CP3 pass and costs the X select-then-middle-click paste that
+  ## rdw::_exportsel calls "the user's stated reason the window exists at all".
+  ## The row is GREEN TODAY and it is not a veto: it is the receipt that
+  ## somebody decided, rather than a promise that disappeared quietly.
+  cp_fixture
+  cp_w .rdw.p.t tag add sel 5.0 {5.0 lineend}
+  catch {update}
+  set CP10_WANT [cp_sel]
+  set CP10_PRIM NOPRIM
+  catch {set CP10_PRIM [selection get -selection PRIMARY]}
+  check {CP10 FENCE a selection made in the pane still reaches the X PRIMARY selection, so select-then-middle-click-paste into another application keeps working - the theft CP3 is about cannot happen to a pane that exports nothing, and this row is what makes paying that price a decision somebody took rather than one that vanished quietly} \
+    [list [expr {$CP10_WANT ne {NOSEL} && $CP10_WANT ne {} ? 1 : 0}] \
+          [expr {$CP10_PRIM eq $CP10_WANT ? 1 : 0}] \
+          [cp_w .rdw.p.t cget -exportselection] \
+          [kx_ans ::rdw::_exportsel]] \
+    {1 1 1 1}
+
+  # --- CP11 FENCE: the CANVAS keeps its own Ctrl-C -------------------------
+  ## CP2 asks for a chord that works from every widget INSIDE this window. The
+  ## cheap way to get that is a binding on `all`, and `all` reaches the design
+  ## canvas, where Ctrl-C is xschem's own copy-selected-objects. Sections B3,
+  ## B4 and B5 of this file already fence the four bare digit keys the same
+  ## way, for the same reason: the collateral is what a greedy binding costs,
+  ## and it is green now precisely so that breaking it reds a row.
+  cp_fixture
+  cp_w .rdw.p.t tag add sel 1.0 {1.0 lineend}
+  catch {update}
+  cp_setclip {SENTINEL-CANVAS-KEEPS-ITS-CHORD}
+  set CP11_HERE [cp_focus .drw]
+  cp_ev $CP11_HERE <Control-Key-c>
+  catch {update}
+  set CP11_CLIP [cp_clip]
+  check {CP11 FENCE a Ctrl-C on the design canvas is still the schematic's own copy and does not put the Results window's text on the clipboard - the cheap way to satisfy CP2 is a binding on `all`, and `all` reaches the canvas} \
+    [list $CP11_HERE \
+          [expr {$CP11_CLIP eq {SENTINEL-CANVAS-KEEPS-ITS-CHORD} ? 1 : 0}]] \
+    [list .drw 1]
+
+  # --- CP12 FENCE: a new dump must not leave the copy on the old text -------
+  ## ⚠ THE INPUT MOST LIKELY TO BREAK THE FIX, AND NO ROW ABOVE SEES IT. The
+  ## repair for CP3 has to REMEMBER the selection in namespace state, and a
+  ## text INDEX never fails to resolve - Tk clamps it rather than refusing it -
+  ## so a span left standing across a repaint goes on copying, silently and
+  ## plausibly, whatever slid under those line numbers. That is issue 1324's
+  ## shape (a mark left to drift while a variable still named the old row)
+  ## pointed at the clipboard, and every other row in this section selects and
+  ## copies inside ONE fixture, so not one of them would ever see it. Item R2
+  ## made a second dump the ordinary thing and item R4 raises the window for
+  ## it, so this is not an exotic path: it is Tuesday.
+  ##
+  ## ⚠ AND IT IS DRIVEN FROM THE POST-THEFT STATE, WHICH IS THE WHOLE POINT.
+  ## MEASURED while writing this row: with `sel` still standing, the repaint's
+  ## own `delete 1.0 end` empties the tag and Tk fires <<Selection>>, which any
+  ## sane mirror already listens to - so a row that pushes over a LIVE
+  ## selection passes with the sweep deleted and fences nothing (it did:
+  ## ALL PASS 71 with rdw::_forget_selection commented out of render_pane).
+  ## After a theft `sel` is ALREADY empty, the repaint changes nothing, no
+  ## event fires, and the remembered span is the only thing left pointing into
+  ## the old buffer. That is the reachable defect and it is CP3's own state.
+  cp_fixture
+  cp_w .rdw.p.t tag add sel 1.0 {1.0 lineend}
+  catch {update}
+  set CP12_WAS [cp_sel]
+  catch {selection handle . cp_steal_handler}
+  catch {selection own -selection PRIMARY .}
+  catch {update}
+  set CP12_LIVE [cp_highlighted 1.0 {1.0 lineend}]
+  kx_ans ::rdw::push [cp_block]
+  kx_ans ::rdw::render_pane
+  catch {update}
+  catch {selection clear -selection PRIMARY}
+  catch {selection handle . {}}
+  catch {set ::rdw::focus_pending 0}
+  set CP12_HERE [cp_focus .rdw.p.t]
+  cp_setclip {SENTINEL-STALE-SPAN}
+  cp_ev $CP12_HERE <Control-Key-c>
+  catch {update}
+  check {CP12 FENCE a new dump does not leave the copy pointing at text that has moved: the span remembered so that CP3's theft cannot cost the user their selection is a pair of text INDICES into a buffer rdw::render_pane has just rewritten, and Tk resolves a stale index rather than refusing it - so after a dump the highlight must be gone and a Ctrl-C must leave the user's clipboard alone, not silently hand them whichever line now sits at those numbers} \
+    [list [expr {$CP12_WAS ne {NOSEL} ? 1 : 0}] \
+          [expr {$CP12_LIVE ne {} && $CP12_LIVE ne {ERR} ? 1 : 0}] \
+          $CP12_HERE \
+          [cp_highlighted 1.0 {1.0 lineend}] \
+          [cp_clip] \
+          [cp_sel]] \
+    [list 1 1 .rdw.p.t {} {SENTINEL-STALE-SPAN} NOSEL]
+
+  # --- CP9  HYGIENE ---------------------------------------------------------
+  catch {selection clear -selection PRIMARY}
+  catch {selection handle . {}}
+  foreach m [cp_posted_menus] { catch {$m unpost} ; catch {grab release $m} }
+  catch {update}
+  set CP9_GRAB [cp_w grab current]
+  set CP9_POSTED [cp_posted_menus]
+  cp_setclip {}
+  set ::rdw::blocks {}
+  kx_ans ::rdw::set_row 0
+  kx_ans ::rdw::set_list annotation
+  kx_ans ::rdw::status {}
+  kx_ans ::rdw::close
+  catch {destroy .rdw}
+  catch {set ::rdw::focus_pending 0}
+  xschem unselect_all
+  cp_focus .drw
+  catch {update}
+  check {CP9 HYGIENE section CP leaves nothing behind: no posted menu, no grab, no window, no stored dumps, no cursored row, the hand-back one-shot spent, the keyboard back on the canvas and no untitled* anywhere} \
+    [list [expr {$CP9_GRAB eq {} || $CP9_GRAB eq {ERR:} ? 1 : 0}] \
+          [llength $CP9_POSTED] \
+          [expr {[winfo exists .rdw] ? 1 : 0}] \
+          [llength $::rdw::blocks] \
+          [kx_ans ::rdw::_target_line] \
+          [kx_pending] \
+          [focus] \
+          [expr {[lsort [glob -nocomplain -directory $repo -tails untitled*]] eq $S1_ROOT0 ? 1 : 0}] \
+          [llength [glob -nocomplain -directory $scratch -tails untitled*]]] \
+    [list 1 0 0 0 0 0 .drw 1 0]
+}
+
+
+
 if {[llength [info commands kx_ciw_echo_real]]} { rename kx_ciw_echo_real ciw_echo }
 catch {xschem raw clear}
 
@@ -2835,7 +3528,19 @@ catch {xschem raw clear}
 ## toplevel on a real stacking order.  That section is guarded by
 ## `[kx_ans ::rdw::have_tk] eq 1` too, so a display that fails to come up drops
 ## all six silently - which is exactly what a floor is for.
-set KX_FLOOR 59
+## ⚠ AND RAISED 59 -> 70 BY ITEM R3 (issue 1339), IN THE SAME COMMIT AS THE
+## ELEVEN ROWS IT COVERS: section CP's CP1..CP11, select-and-copy driven with real
+## chords, a real right-click and real double-click-then-drag gestures against
+## a real X selection and a real clipboard.  That section is guarded by
+## `[kx_ans ::rdw::have_tk] eq 1` too, so a display that fails to come up drops
+## all eleven silently - which is exactly what a floor is for.
+## ⚠ AND RAISED 70 -> 71 BY R3's IMPLEMENTING CREW, IN THE SAME COMMIT AS THE
+## ONE ROW IT COVERS: CP12, the stale remembered span. The RED agent's eleven
+## rows all select and copy inside a single fixture; CP12 is the input the FIX
+## introduces - namespace state holding text indices - and it is in section CP,
+## behind the same have_tk guard, so it drops with the rest when no display
+## comes up.
+set KX_FLOOR 71
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\

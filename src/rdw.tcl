@@ -1271,6 +1271,12 @@ proc rdw::open {} {
 # mistaken for a fresh one.  Rule debt 1245_B3_dumps_survive_close.
 proc rdw::close {} {
     if {![rdw::have_tk]} { return {} }
+    # Item R3: the remembered selection is a pair of indices into a buffer that
+    # is about to stop existing.  Forgetting it here rather than on the next
+    # open keeps `rdw::copy` from ever answering with the previous window's
+    # text -- the pane is rebuilt by rdw::render_pane, but ::rdw::selspan is
+    # namespace state and would otherwise outlive the widget.
+    rdw::_forget_selection
     catch {destroy .rdw}
     return {}
 }
@@ -1308,6 +1314,44 @@ proc rdw::build {} {
     bind .rdw <Key-Escape> {
         if {[::rdw::pick_running]} { ::rdw::pick_end ; break }
     }
+    ## ⚠ THE COPY CHORD LIVES ON THE TOPLEVEL TAG TOO, AND FOR THE SAME REASON
+    ## AS ESCAPE -- ITEM R3, ISSUE 1339, RULING DD-5.
+    ## Tk sends a key event to the FOCUS window, and the only copy this window
+    ## had was `bind Text <<Copy>>`, which therefore existed only while
+    ## .rdw.p.t itself held the keyboard.  MEASURED on this binary: with the
+    ## keyboard on this window's own `Up` button a real Ctrl-C copies nothing
+    ## at all -- the CLIPBOARD does not even come into existence -- and the
+    ## same with it on .rdw.  Both are one click away, and worse:
+    ## rdw::_arm_focus_handback deliberately hands the keyboard to the CANVAS
+    ## after every dump, so "press a button, then copy" is the ORDINARY path
+    ## and "select, then copy" is the rare one.  That is the user's first
+    ## sentence, and no amount of re-binding the pane would have reached it.
+    ##
+    ## The toplevel tag is in the bindtag chain of every widget in this window
+    ## (measured: .rdw.p.t -> `.rdw.p.t Text .rdw all`, .rdw.b.up ->
+    ## `.rdw.b.up Button .rdw all`, .rdw itself -> `.rdw Toplevel all`), so one
+    ## binding covers the pane, all five buttons, the status entry and the
+    ## toplevel.
+    ##
+    ## ⚠ AND NOT `bind all`, WHICH IS THE CHEAP WAY TO GET THE SAME REACH.
+    ## `all` reaches .drw, where Ctrl-C is the schematic's own copy-selected-
+    ## objects; row CP11 of the keys suite is that fence, the same shape as the
+    ## bare-digit fences B3/B4/B5 already in that file.
+    ##
+    ## THREE SEQUENCES, PER DD-5, AND THE VIRTUAL ONE IS NOT REDUNDANT.
+    ## `event info <<Copy>>` on this build answers <Control-Key-c>, <Key-F16>,
+    ## <Control-Lock-Key-C>, <Meta-Key-w>, <Lock-Meta-Key-W> and
+    ## <Control-Key-Insert>; the two physical binds are what DD-5 names and are
+    ## what a reader looks for, and <<Copy>> is what carries the other four and
+    ## whatever a future Tk maps.  Tk prefers a physical binding over a virtual
+    ## one on the SAME tag, so exactly one of the three fires per keystroke.
+    ##
+    ## The `break` stops the `all` tag.  Measured empty for all three sequences
+    ## on this build, so it is defence in depth rather than the mechanism --
+    ## kept, and named, the way wave_viewer.tcl:9187 keeps its own.
+    bind .rdw <<Copy>>             {rdw::copy ; break}
+    bind .rdw <Control-Key-c>      {rdw::copy ; break}
+    bind .rdw <Control-Key-Insert> {rdw::copy ; break}
     catch {.rdw configure -background [rdw::color panel]}
 
     # The status line owns the bottom edge: it is where the five inert buttons
@@ -1394,12 +1438,47 @@ proc rdw::build {} {
     # round.  Row CU10 of tests/headless/test_rdw_keys_1245.tcl is that fence.
     .rdw.p.t tag configure cursor -background [rdw::color cursor]
     .rdw.p.t tag lower cursor sel
+    # ITEM R3, ISSUE 1339 -- THE HIGHLIGHT THAT SURVIVES A PRIMARY THEFT.
+    # `keepsel` wears the selection's own colours because it IS the selection,
+    # still standing after the X server handed PRIMARY to somebody else; see
+    # rdw::_selection_changed for the mechanism and for what was measured.
+    #
+    # ⚠ ITS PRIORITY IS PINNED BETWEEN THE OTHER TWO, and neither neighbour is
+    # arbitrary.  A tag created now lands ABOVE everything, and a full-width
+    # selection colour above `sel` would hide the real selection whenever both
+    # cover the same span.  Below `cursor` it would be hidden BY the line
+    # cursor, which is a full-width background of its own.  Raising it just
+    # above `cursor` leaves the order cursor / keepsel / sel, which is what row
+    # CP8 of the keys suite reads back.
+    .rdw.p.t tag configure keepsel -background [rdw::color selectbg] \
+        -foreground [rdw::color selectfg]
+    .rdw.p.t tag raise keepsel cursor
+    bind .rdw.p.t <<Selection>> {rdw::_selection_changed}
     # ⚠ NO `break`.  A <Button-1> binding that ends in `break` stops the Text
     # CLASS binding, which is where the drag anchor a selection extends from is
     # set -- so the cursor would cost the window the one thing it is for.  The
-    # widget binding runs BEFORE the class binding (bindtags are
-    # {.rdw.p.t Text . all}), so both happen, in that order.
+    # widget binding runs BEFORE the class binding (bindtags MEASURED on this
+    # binary are `.rdw.p.t Text .rdw all` -- item R1 wrote `.` for the third
+    # tag, and item R3 depends on it really being `.rdw`), so both happen, in
+    # that order.
     bind .rdw.p.t <Button-1> {rdw::pane_click %x %y}
+    # ITEM R3 -- THE EXTEND, AND WHY IT IS ON THE TOPLEVEL TAG.
+    # The fix-up has to run AFTER Tk's own <B1-Motion> has recomputed `sel`,
+    # and the widget tag runs BEFORE the class tag.  `.rdw` is the next tag
+    # after `Text` in the chain above, so this is the first place a binding can
+    # see what the class binding decided.  rdw::pane_drag ignores every widget
+    # but the pane -- the scrollbar shares this tag.
+    bind .rdw <B1-Motion> {rdw::pane_drag %W}
+    # ITEM R3, RULING DD-5 -- A COPY THAT NEEDS NO KEYBOARD AT ALL.
+    # "A keyboard binding that a window manager or X server eats can never
+    # leave the user with no way to get the text out -- which is the whole
+    # point of the window."  MEASURED before this line existed: `bind
+    # .rdw.p.t <Button-3>`, `bind Text <Button-3>` and `bind all <Button-3>`
+    # were all the empty string, so a right-click in this pane did nothing.
+    # %X %Y are ROOT pixels, which is what tk_popup wants -- the spelling
+    # library_manager.tcl:144 already uses.  The `break` is defence in depth
+    # against a future toplevel- or all-level Button-3, not the mechanism.
+    bind .rdw.p.t <Button-3> {rdw::popup_menu %X %Y ; break}
     pack .rdw.p.ys -side right -fill y
     pack .rdw.p.t -side left -fill both -expand 1
     pack .rdw.p -side left -fill both -expand 1
@@ -1438,6 +1517,13 @@ proc rdw::render_pane {} {
     if {![winfo exists .rdw.p.t]} { return {} }
     .rdw.p.t configure -state normal
     .rdw.p.t delete 1.0 end
+    # ITEM R3, ISSUE 1339.  ::rdw::selspan and ::rdw::dragfrom are pairs of
+    # TEXT INDICES, and every line they name has just ceased to exist.  A text
+    # index never fails to resolve -- Tk clamps it -- so a span left standing
+    # here would go on copying, silently and plausibly, whatever slid under
+    # those line numbers.  That is issue 1324's shape (a mark left to drift
+    # while a variable still named the old row) pointed at the clipboard.
+    rdw::_forget_selection
     foreach b $blocks {
         foreach e $b {
             .rdw.p.t insert end "[lindex $e 1]\n" [lindex $e 0]
@@ -1490,12 +1576,361 @@ proc rdw::_paint_cursor {} {
 proc rdw::pane_click {x y} {
     if {![rdw::have_tk]} { return {} }
     if {![winfo exists .rdw.p.t]} { return {} }
+    # ITEM R3, ISSUE 1339.  This runs BEFORE the Text class binding throws the
+    # standing selection away, which is the only moment the press can still be
+    # compared against it.  It arms or disarms unconditionally, above every
+    # early return below: a click this proc REFUSES for the cursor's sake is
+    # still a click, and leaving the previous gesture's anchor armed would let
+    # it extend a selection the user has since walked away from.
+    rdw::_arm_extend $x $y
     set ix {}
     if {[catch {.rdw.p.t index @$x,$y} ix]} { return {} }
     set l [lindex [split $ix .] 0]
     if {![string is integer -strict $l]} { return {} }
     if {[rdw::_locate $l] eq {}} { return {} }
     rdw::set_row $l
+    return {}
+}
+
+# ===========================================================================
+# ITEM R3, ISSUE 1339 -- SELECT, AND COPY WHAT YOU SELECTED
+# ===========================================================================
+# The user's words: "Select and then press CTRL-C doesn't work. (Using VcXsrv
+# for now). Double-click to start selection and then extend selection with
+# press-and-drag seemed to work once, but not reliably. It's only worked one
+# time."
+#
+# Pasting a dump into a design-review document is the whole stated reason this
+# window is a Text widget and not a CIW dump, so this is the item that decides
+# whether the feature is usable at all.
+#
+# ⚠ THE LITERAL READING OF RULING DD-5 IS A NO-OP HERE, AND SHIPPING IT WOULD
+# HAVE BEEN GREEN AND WRONG.  DD-5 spells the repair as "bind <Control-c>,
+# <Control-Insert> and <<Copy>> to a proc that does clipboard clear + clipboard
+# append".  MEASURED on this binary, Tk 8.6.17, :99, 2026-09-05:
+# `event info <<Copy>>` ALREADY answers <Control-Key-c>, <Key-F16>,
+# <Control-Lock-Key-C>, <Meta-Key-w>, <Lock-Meta-Key-W> and
+# <Control-Key-Insert>, and with the keyboard in the pane a real Ctrl-C ALREADY
+# copies, through Tk's own Text class binding.  A row that selected a line,
+# pressed Ctrl-C at the pane and asserted the clipboard passes on the
+# UNMODIFIED tree.  Three different things are broken, and the literal reading
+# of DD-5 fixes none of them:
+#
+#   1. THE KEYBOARD IS USUALLY NOT IN THE PANE.  Fixed by binding the chord on
+#      the TOPLEVEL tag -- see rdw::build, where the measurement is recorded.
+#
+#   2. ANOTHER X CLIENT TAKES PRIMARY AND THE SELECTION VANISHES.  Fixed by
+#      the mirror below -- see rdw::_selection_changed.
+#
+#   3. DOUBLE-CLICK, LET GO, THEN PRESS AND DRAG THROWS THE WORD AWAY.  Fixed
+#      by rdw::pane_drag below.
+#
+# AND THE INPUT MOST LIKELY TO BREAK THE FIX, WHICH IS DD-5's OWN SPELLING:
+# `clipboard clear` followed by `clipboard append` with nothing to append
+# DESTROYS whatever the user had on the clipboard -- very likely the thing they
+# were about to paste this dump next to.  rdw::copy therefore decides FIRST and
+# writes second, and says out loud that it copied nothing: a copy that quietly
+# does nothing cannot be told from the broken one this item exists to fix, and
+# "doesn't work" is the entire bug report.  Same obligation as calc::inert's
+# and rdw::button's -- a real control that does something and says nothing.
+#
+# WHAT WAS REJECTED, AND WHAT IT WOULD HAVE COST.  `-exportselection 0` (flip
+# rdw::_exportsel) makes 2 impossible in ONE LINE, because a pane that exports
+# nothing can never lose PRIMARY.  It also ends select-then-middle-click-paste,
+# which rdw::_exportsel's own comment calls the user's stated reason the window
+# exists at all.  Row CP10 of the keys suite is the receipt for not paying it.
+#
+# Suite: tests/headless/test_rdw_keys_1245.tcl section CP.  ⚠ RULING DD-8: a
+# green :99 run is necessary and NOT sufficient for this item -- $DISPLAY is
+# the VcXsrv / HC-Consult server the user actually looks at, `:0` is WSLg's
+# Xwayland and `:99` is Xvfb (CLAUDE.md's three-server table), and selection
+# and clipboard are precisely where the three differ.
+
+namespace eval rdw {
+    # THE REMEMBERED SELECTION, {first last} or {} -- the mirror that keeps the
+    # user's selection alive across a PRIMARY theft.  rdw::_selection_changed
+    # is its only writer.
+    variable selspan
+    if {![info exists selspan]} { set selspan {} }
+
+    # The standing selection a <Button-1> press landed INSIDE of, {first last}
+    # or {}, armed by rdw::_arm_extend and spent by rdw::pane_drag.  It is not
+    # the same thing as `selspan`: this one answers "should the drag now
+    # starting GROW what is already selected", and it is empty for the far more
+    # common press that lands outside.
+    variable dragfrom
+    if {![info exists dragfrom]} { set dragfrom {} }
+}
+
+# THE MIRROR'S ONLY WRITER, and the one place this window decides whether a
+# selection went away because the USER dropped it or because SOMEBODY TOOK IT.
+#
+# ⚠ THE MECHANISM, MEASURED RATHER THAN ASSUMED.  A Tk text widget with
+# -exportselection 1 answers the loss of the X PRIMARY selection by DELETING
+# ITS OWN `sel` TAG.  Driven on this binary: with a line selected,
+# `selection own -selection PRIMARY .` leaves `tag ranges sel` EMPTY, `get
+# sel.first sel.last` raising "text doesn't contain any characters tagged with
+# sel", and the following Ctrl-C writing NOTHING AT ALL -- tk_textCopy's catch
+# swallows it, so the user's clipboard silently keeps whatever it had.  That is
+# BOTH halves of the user's report in one mechanism, and VcXsrv is exactly
+# where it bites: its Windows clipboard bridge takes PRIMARY on its own
+# schedule, which is why the gesture "worked one time".
+#
+# ⚠ AND THE DISCRIMINATOR IS THE OWNER, WHICH IS THE ONLY HONEST ONE.  Both a
+# theft and a deliberate deselect arrive here as one <<Selection>> event with
+# `tag ranges sel` empty, so the event alone cannot tell them apart.  MEASURED,
+# reading `selection own` INSIDE the handler:
+#     user clicks elsewhere in the pane   -> owner is .rdw.p.t
+#     a script does `tag remove sel`      -> owner is .rdw.p.t
+#     another client takes PRIMARY        -> owner is that client, or empty
+# Tk does not release the selection when the tag is merely emptied, so "the
+# pane still owns PRIMARY" means the user gave the selection up and the mirror
+# must go with it; "the pane has lost PRIMARY" means it was taken, and the
+# highlight the user is looking at must NOT vanish under them.  The query is
+# local -- `selection own` names a window in THIS application or nothing, and
+# never makes an X round trip to a foreign owner, which inside an event handler
+# could block for the selection timeout.
+#
+# The mirror is NOT re-asserted as `sel`, deliberately: re-adding the tag would
+# take PRIMARY straight back off the client that just asked for it, and two
+# applications fighting over the selection is worse than the bug.
+proc rdw::_selection_changed {} {
+    variable selspan
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw.p.t]} { return {} }
+    set r {}
+    if {[catch {.rdw.p.t tag ranges sel} r]} { return {} }
+    if {[llength $r] >= 2} {
+        set selspan [list [lindex $r 0] [lindex $r end]]
+        rdw::_paint_keepsel
+        return {}
+    }
+    set own {}
+    catch {set own [selection own -displayof .rdw.p.t -selection PRIMARY]}
+    if {$own eq {.rdw.p.t}} {
+        set selspan {}
+        rdw::_paint_keepsel
+    }
+    return {}
+}
+
+# The mirror's only painter, ::rdw::selspan and nothing else -- the same rule
+# rdw::_paint_cursor follows, and for the same reason: a highlight drawn from a
+# second opinion is a highlight that can disagree with what Ctrl-C copies.
+proc rdw::_paint_keepsel {} {
+    variable selspan
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw.p.t]} { return {} }
+    catch {.rdw.p.t tag remove keepsel 1.0 end}
+    if {[llength $selspan] == 2} {
+        catch {.rdw.p.t tag add keepsel [lindex $selspan 0] [lindex $selspan 1]}
+    }
+    return {}
+}
+
+# Drop both spans and the highlight that draws one.  Called wherever the buffer
+# they index into stops being the buffer they were taken from.
+proc rdw::_forget_selection {} {
+    variable selspan
+    variable dragfrom
+    set selspan {}
+    set dragfrom {}
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw.p.t]} { return {} }
+    catch {.rdw.p.t tag remove keepsel 1.0 end}
+    return {}
+}
+
+# The span a copy acts on: {first last}, or {} when there is nothing to copy.
+#
+# ⚠ `sel` FIRST AND THE MIRROR SECOND, NEVER THE OTHER WAY ROUND.  While the
+# pane still owns PRIMARY the widget's own tag is the truth -- the user may
+# have moved it with the mouse a microsecond ago, and the mirror is only ever
+# as fresh as the last <<Selection>>.  The mirror is consulted only when `sel`
+# is gone, which in this window means one thing: somebody took PRIMARY.
+#
+# first..last rather than the individual ranges, because that is exactly what
+# Tk's own tk_textCopy copies (`$w get sel.first sel.last`).  The two doors on
+# to the clipboard must not disagree about a discontiguous selection, and this
+# window has no way to make one anyway.
+proc rdw::_selection_span {} {
+    variable selspan
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw.p.t]} { return {} }
+    set r {}
+    if {![catch {.rdw.p.t tag ranges sel} r] && [llength $r] >= 2} {
+        return [list [lindex $r 0] [lindex $r end]]
+    }
+    if {[llength $selspan] != 2} { return {} }
+    set ok 0
+    if {[catch {.rdw.p.t compare [lindex $selspan 0] < [lindex $selspan 1]} ok]} {
+        return {}
+    }
+    if {!$ok} { return {} }
+    return $selspan
+}
+
+# THE ONE COPY, AND IT SERVES BOTH DOORS.  The chord (rdw::build) and the
+# right-click menu (rdw::popup_menu) call this proc and nothing else, so the
+# guard below cannot be true of one door and false of the other -- two
+# implementations of "copy the selection" is exactly how a window ends up
+# wiping the clipboard through the menu after the keyboard path was fixed.
+proc rdw::copy {} {
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw.p.t]} { return {} }
+    set span [rdw::_selection_span]
+    if {[llength $span] != 2} {
+        # ⚠ DECIDE FIRST, WRITE SECOND.  `clipboard clear` here -- DD-5's own
+        # order -- would destroy the clipboard of a user who pressed Ctrl-C in
+        # the wrong window, and they would never learn why.
+        rdw::status {Nothing is selected, so the clipboard was left alone. Drag over the lines you want (or right-click for Select All) and press Ctrl-C again.}
+        return {}
+    }
+    set txt {}
+    if {[catch {.rdw.p.t get [lindex $span 0] [lindex $span 1]} txt]} {
+        rdw::status "The selection could not be read ([rdw::_oneline $txt]), so the clipboard was left alone."
+        return {}
+    }
+    if {$txt eq {}} {
+        rdw::status {The selection is empty, so the clipboard was left alone.}
+        return {}
+    }
+    catch {clipboard clear -displayof .rdw.p.t}
+    if {[catch {clipboard append -displayof .rdw.p.t -- $txt} e]} {
+        rdw::status "The clipboard refused the selection ([rdw::_oneline $e])."
+        return {}
+    }
+    # The pane is -wrap word and the long sentences really do wrap, so the
+    # count the user is told is the count of LOGICAL lines -- which is the
+    # shape that will land in their document.  Saying "3 lines" for a paste
+    # that arrives as 5 display rows would be the window lying about its one
+    # deliverable.
+    set n [llength [split $txt "\n"]]
+    rdw::status "Copied $n [expr {$n == 1 ? {line} : {lines}}], [string length $txt] characters, to the clipboard."
+    return {}
+}
+
+# Select the whole window.  The other half of DD-5's keyboard-free door: a user
+# who wants the entire dump should not have to drag across a scrolling pane.
+proc rdw::select_all {} {
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw.p.t]} { return {} }
+    catch {.rdw.p.t tag add sel 1.0 end}
+    set r {}
+    catch {.rdw.p.t tag ranges sel} r
+    if {[llength $r] < 2} {
+        rdw::status {There is nothing in the window to select yet.}
+        return {}
+    }
+    set n 0
+    catch {set n [expr {int([lindex [split [.rdw.p.t index {end - 1c}] .] 0])}]}
+    rdw::status "Selected the whole window, $n [expr {$n == 1 ? {line} : {lines}}]. Press Ctrl-C, or right-click Copy, to put it on the clipboard."
+    return {}
+}
+
+# RULING DD-5's KEYBOARD-FREE DOOR.  Built once and kept: it is a child of
+# .rdw, so rdw::close destroys it with the window and a reopened window builds
+# a fresh one.
+#
+# ⚠ `::menu`, WITH THE GLOBAL QUALIFIER, for rdw::build's own reason -- an
+# unqualified widget command inside this namespace is one same-named proc away
+# from a `wrong # args` raised inside a Button-3 handler, which Tk sends to
+# bgerror, which pops a modal dialog nobody clicks.
+#
+# ⚠ `Copy` IS THE FIRST ENTRY AND NOTHING ELSE MAY MATCH `*copy*` ABOVE IT --
+# row CP4 finds the entry by label, and so will the next reader.  The
+# accelerator names the chord that really exists; `Select All` deliberately
+# carries none, because Tk's Text class already spends <Control-Key-a> on
+# beginning-of-line and an accelerator that does nothing is a lie on screen.
+proc rdw::popup_menu {rootx rooty} {
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw]} { return {} }
+    if {![winfo exists .rdw.pop]} {
+        if {[catch {::menu .rdw.pop -tearoff 0 -takefocus 0}]} { return {} }
+        .rdw.pop add command -label {Copy} -accelerator {Ctrl+C} -command rdw::copy
+        .rdw.pop add command -label {Select All} -command rdw::select_all
+        catch {
+            .rdw.pop configure -background [rdw::color panel] \
+                -foreground [rdw::color fieldfg] \
+                -activebackground [rdw::color selectbg] \
+                -activeforeground [rdw::color selectfg]
+        }
+    }
+    catch {tk_popup .rdw.pop $rootx $rooty}
+    return {}
+}
+
+# ARM THE EXTEND.  Called from rdw::pane_click, which the widget tag runs
+# BEFORE the Text class binding -- the one moment at which the press can still
+# be compared against the selection the class binding is about to delete.
+#
+# ⚠ THE PRESS MUST LAND INSIDE THE STANDING SELECTION, AND THAT TEST IS THE
+# WHOLE FENCE.  An extend that extends unconditionally is the obvious over-fix
+# and it is worse than the bug: the second selection would grow out of the
+# first for ever and the user could never make a small one again.  Row CP7 of
+# the keys suite presses OUTSIDE and requires a FRESH selection; rows CP6 and
+# CP7 together are what pins this to "inside".
+proc rdw::_arm_extend {x y} {
+    variable dragfrom
+    set dragfrom {}
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw.p.t]} { return {} }
+    set r {}
+    if {[catch {.rdw.p.t tag ranges sel} r]} { return {} }
+    if {[llength $r] < 2} { return {} }
+    set first [lindex $r 0]
+    set last [lindex $r end]
+    set ix {}
+    if {[catch {.rdw.p.t index @$x,$y} ix]} { return {} }
+    set inside 0
+    if {[catch {expr {[.rdw.p.t compare $ix >= $first] \
+                      && [.rdw.p.t compare $ix <= $last]}} inside]} { return {} }
+    if {$inside} { set dragfrom [list $first $last] }
+    return {}
+}
+
+# THE USER'S SECOND SENTENCE: double-click a word, LET GO, then press and drag.
+#
+# ⚠ WHAT TK DOES, MEASURED 5/5 ON THE FIXTURE.  `bind Text <1>` ends in
+# `%W tag remove sel 0.0 end` and tk::TextButton1 re-anchors on the press, so
+# the second gesture starts a FRESH character run from wherever it landed: a
+# double-click on `complete` at 3.6-3.14 followed by a press at 3.10 and a drag
+# to 3.40 answers 3.10-3.40 -- the word the user double-clicked, cut in half.
+# The gesture that DOES work is holding the second click down (Tk's own
+# word-wise extension), and so does a shift-click, which is exactly why the
+# user saw it work "one time": their hand sometimes held the second click.
+#
+# ⚠ AND THE REPAIR IS A UNION AFTER THE FACT, NOT A `break` BEFORE IT.  The
+# alternative is to stop the class binding on the press and re-anchor by hand,
+# which means writing `tk::Priv(selectMode)` and the widget's private anchor
+# mark from this file -- Tk internals, re-derived, in the one binding whose
+# comment in rdw::build already records what breaking that class binding costs.
+# Unioning the drag's own answer with the span the press landed in needs no
+# internals at all, keeps every gesture Tk already gets right (row CP7 legs 1-3
+# are unchanged code paths), and degrades correctly: with `dragfrom` empty this
+# proc is a no-op and the pane behaves exactly as it does today.
+#
+# It restores the span even when the drag has not yet moved far enough for
+# tk::TextSelectTo to re-tag anything, which is what keeps a press-and-tiny-
+# drag inside a selection from silently emptying it.
+proc rdw::pane_drag {w} {
+    variable dragfrom
+    if {$w ne {.rdw.p.t}} { return {} }
+    if {[llength $dragfrom] != 2} { return {} }
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw.p.t]} { return {} }
+    set first [lindex $dragfrom 0]
+    set last [lindex $dragfrom 1]
+    set r {}
+    if {![catch {.rdw.p.t tag ranges sel} r] && [llength $r] >= 2} {
+        catch {
+            if {[.rdw.p.t compare [lindex $r 0] < $first]} { set first [lindex $r 0] }
+            if {[.rdw.p.t compare [lindex $r end] > $last]} { set last [lindex $r end] }
+        }
+    }
+    # ONE range, always: the press landed inside {first last}, so the drag's own
+    # answer and the remembered span overlap and their union is contiguous.
+    catch {.rdw.p.t tag add sel $first $last}
     return {}
 }
 

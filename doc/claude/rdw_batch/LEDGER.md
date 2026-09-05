@@ -25,7 +25,7 @@ user's files.
 | R2 | 1338 | Up/Down move the row and the sheet follows | **DONE** 2026-09-05 |
 | R4 | 1340 | raise the window when something is sent to it | **DONE** 2026-09-05 |
 | R5 | 1341 | engineering notation | **DONE** 2026-09-05 |
-| R3 | 1339 | select and copy | not started |
+| R3 | 1339 | select and copy | **DONE** 2026-09-05 |
 
 Order is deliberate: R2 needs R1's cursor for its subject; R3 is last because it
 is the only one that cannot be finished without a run on the user's real X
@@ -426,3 +426,132 @@ one formatter, not a second filing) with the counts, the ragged-value-column
 question and the lossy-nonfinite caveat. **Suites green, please look** — whether
 the numbers read the same as the schematic's is a judgement about a number's
 shape, and no count makes it.
+
+
+### R3 — issue 1339, select and copy — DONE 2026-09-05
+
+**What the user can now do:** select any part of a dump and press `Ctrl-C`
+**from anywhere in the window** — the pane, any of the five buttons, the
+toplevel itself — and get exactly that text on the CLIPBOARD; keep the selection
+when VcXsrv's clipboard bridge takes the X PRIMARY selection out from under it,
+which is what made the gesture "work one time"; double-click a word, **let go**,
+and press-and-drag to grow the selection with the word intact; right-click for
+**Copy** / **Select All** when a chord is eaten; and, when a `Ctrl-C` has nothing
+to copy, keep the clipboard they were about to paste into **and be told so**.
+
+**Files:** `src/rdw.tcl` (the only file under `src/`),
+`tests/headless/test_rdw_keys_1245.tcl` (section CP, floor 59 → 71 — CP1…CP11
+from the RED pass, CP12 added by the implementing pass),
+`doc/claude/issues/1339-select-and-ctrl-c-do-not-copy.md` (the reserved number
+had no file),
+`doc/claude/issues/1343-the-rdw-raise-does-not-work-on-the-users-vcxsrv-server.md`,
+`doc/claude/issues/NUMBERING.md`, `doc/claude/rdw_batch/LEDGER.md`.
+
+**Name+status diff.** Every cell printed a real RESULT line. The brief's
+baseline numbers were stale (R1/R2/R4/R5 had already raised them) and were
+**re-measured here, not taken on trust**:
+
+| suite | how | before | after | rows that moved |
+|---|---|---|---|---|
+| `test_rdw_keys_1245` | `:99` | 5 FAILED (65 passed) | **ALL PASS (71)** | CP2 CP3 CP4 CP5 CP6 FAIL→ok; CP12 added |
+| `test_rdw_keys_1245` | **`$DISPLAY`, the user's VcXsrv** | 11 FAILED (60 passed) | **5 FAILED (66 passed)** | CP2 CP3 CP4 CP5 CP6 CP12 FAIL→ok; **RA1…RA5 red before and after, byte-identically** — see below |
+| `test_rdw_window_1245` | `--nogui` | ALL PASS (134) | **ALL PASS (134)** | none |
+| `test_rdw_window_1245` | `:99` | ALL PASS (146) | **ALL PASS (146)** | none |
+| `test_op_param_store_1245` | `--nogui` | ALL PASS (130) | **ALL PASS (130)** | none |
+| `test_annot_declutter_1244` | `:99` | ALL PASS (134) | **ALL PASS (134)** | none |
+| `test_op_annot` *(control)* | `--nogui` | ALL PASS (485) | **ALL PASS (485)** | none |
+
+Four consecutive `:99` runs of the keys suite, all `ALL PASS (71)`.
+
+**RULING DD-8 IS PAID, and it found something.** `$DISPLAY` =
+`172.20.160.1:0`, vendor string `HC-Consult` — the VcXsrv the user actually
+looks at, *not* `AUDIT_DISPLAY=:0`, which is WSLg's Xwayland. **Every row of
+section CP passes there**, including CP3's theft and CP6's extend. Five rows of
+section **RA** — item R4's raise — fail there, and they fail **byte-identically
+with this item's `src/rdw.tcl` replaced by `git show HEAD:src/rdw.tcl`**
+(restored by `cp`, `md5sum` verified), so they are pre-existing and are not R3's.
+Filed as **1343**, with a `look` debt: issue 1340 is closed FIXED on a `:99`
+number and its own suite debt names `:0`, and neither is the user's screen. That
+is DD-8's argument applied to R4, and nobody had applied it.
+
+**THE LITERAL READING OF DD-5 IS A NO-OP ON THIS BUILD, and implementing it
+would have shipped green-and-wrong.** `event info <<Copy>>` already answers
+`<Control-Key-c> <Key-F16> <Control-Lock-Key-C> <Meta-Key-w> <Lock-Meta-Key-W>
+<Control-Key-Insert>` — both sequences DD-5 names — and with the keyboard in the
+pane a real `Ctrl-C` **already copied**. DD-5 is honoured in its *purpose* (all
+three sequences are bound, and the menu exists) and its prescription is
+deliberately not the mechanism. Three real mechanisms, each driven before a line
+was written: the copy rode a **class** binding and died the moment the keyboard
+left `.rdw.p.t` — which `rdw::_arm_focus_handback` arranges after **every**
+dump; a `-exportselection 1` text widget **deletes its own `sel` tag** when
+another client takes PRIMARY (`tag ranges sel` empty, `get sel.first sel.last`
+raising, `tk_textCopy`'s catch swallowing it so the clipboard is never written);
+and `bind Text <1>` re-anchors on the press, cutting the double-clicked word in
+half 5/5.
+
+**The discriminator is the one honest one, and it was measured rather than
+guessed.** A theft and a deliberate deselect both arrive as one `<<Selection>>`
+with `tag ranges sel` empty, so the event cannot tell them apart. Reading
+`selection own` **inside** the handler: user clicks elsewhere → `.rdw.p.t`;
+script `tag remove sel` → `.rdw.p.t`; another client takes PRIMARY → that client
+or empty. Tk does not release the selection when the tag is merely emptied, so
+"the pane still owns PRIMARY" *is* "the user gave it up". The query is local —
+`selection own` never makes an X round trip to a foreign owner, which inside an
+event handler could block for the selection timeout.
+
+**The extend needed no Tk internals.** The rejected shape was `break` on the
+press plus a hand-written re-anchor, which means writing `tk::Priv(selectMode)`
+and the widget's private anchor mark from this file — in the one binding whose
+existing comment records what breaking that class binding costs. What shipped is
+a **union after the fact**: `rdw::pane_click` (widget tag, *before* the class
+binding) records the standing selection only if the press landed **inside** it,
+and a `<B1-Motion>` on the `.rdw` tag — the first place a binding can see what
+the class binding decided — unions the drag's own answer with it. With nothing
+armed the proc is a no-op and the pane behaves exactly as before, which is why
+CP7's three "already works" legs are unchanged code paths.
+
+**CP12 is the crew brief's question, and its first draft was VACUOUS.** The
+input most likely to break the fix is namespace state holding **text indices**:
+Tk clamps a stale index rather than refusing it, so a remembered span left
+standing across a repaint copies whatever slid under those numbers. Written the
+obvious way — push over a *live* selection — it passed with
+`rdw::_forget_selection` commented out of `render_pane` (**ALL PASS 71**),
+because the repaint's own `delete 1.0 end` fires `<<Selection>>` and the mirror
+already listens. Driven from the **post-theft** state, where `sel` is already
+empty and no event fires, it reds correctly and hands the user `MCU:/` from the
+**new** block off a span into the old one. The sabotage ran on a copy;
+`md5sum`-verified restore both times.
+
+**Decisions relied on:** **DD-5**, honoured in purpose and **found wrong as
+written** — its prescription is already true on this build and fixes none of the
+three defects; recorded here and in the 1339 write-up rather than implemented
+literally. **DD-8**, paid in full, and it produced issue 1343.
+
+**The E question, recorded not decided:** rows CP5 and CP4 require the window to
+**say** that a `Ctrl-C` with nothing selected copied nothing, and to say
+something different on success. The user asked only that copy work. Rule debt
+`1339_R3_copy_says_what_it_did` (`--eyes`), which also names the cost: every
+`Ctrl-C` overwrites whatever the status line was showing, including item B5's
+saved-settings path. Overruling it moves CP5 legs 3–6 and CP4 leg 6 and no
+source behaviour but the wording.
+
+**CP10 is green and was not spent.** `-exportselection 0` is the one-line fix
+for CP3 and costs select-then-middle-click paste, which `rdw::_exportsel`'s own
+comment calls the user's stated reason the window exists. The mirror keeps both.
+
+**Still not fixed, said loudly:** issue **1331** (the narrow arm refuses a symbol
+path containing a space and offers no *"Choose every device of class X
+instead"*) is untouched — R3 adds status sentences but changes no refusal path.
+Issue **1330** is R2's and is fixed in the code; its own issue file still opens
+*"Status: FILED, NOT FIXED"*, which is stale — the fourth item in a row to
+record that here rather than edit another item's file. **Somebody should just
+fix that line.** And issue **1332**'s `after 100` flake in section SD was not
+seen in any of the eight runs taken here, and was not fixed.
+
+**Look debts:** `1339_R3_select_and_copy` — **suites green on `:99` AND on the
+user's own VcXsrv, please look**: the post-theft highlight is now drawn by a tag
+of the window's own and must still *read* as a selection; the right-click menu
+is new; and the double-click-then-drag gesture is the one they said worked once.
+`1343_rdw_raise_on_your_own_server` — please watch a dump arrive on your own
+screen, and press `Ctrl-Alt-S` for the Library Manager, because if that does not
+raise either then 1343 is issue 0054's and older than this batch.
