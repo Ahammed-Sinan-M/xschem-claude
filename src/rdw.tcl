@@ -1137,9 +1137,33 @@ proc rdw::push {block} {
 # since B3; this was the one emit point outside it.  Collapsed at the emit
 # point, not at the ten call sites, for _line's own reason: the eleventh call
 # site is the one the next author forgets.
+# ⚠ AND A REWRITE PUTS DOWN ANY SELECTION IT INVALIDATES (issue 1351).  The
+# entry's selection is a pair of INDICES, not a hold on the characters, so
+# replacing the -textvariable leaves the range standing over text the user
+# never selected.  MEASURED by issue 1344's adversary, in two presses of the
+# chord that item added: the line reads `alpha    beta`, the user selects the
+# four spaces (a double-click on the gap does exactly this), Ctrl-C is refused
+# -- and the refusal is not routed through rdw::_copy_report, so it REPLACES
+# the line.  The range 5-9 survives the rewrite verbatim and now covers ` is `
+# of the refusal sentence, so a second Ctrl-C copies ` is ` onto the clipboard
+# SILENTLY, because the source is still that entry.  That is item R3's own
+# quoted defect -- "silently handed you the wrong text" -- reached in two
+# presses.
+#
+# Cleared HERE, at the one emit point, for rdw::_oneline's own reason: the
+# eleventh call site is the one the next author forgets.  Only when the text
+# actually CHANGES -- a status line reset to what it already said has not
+# invalidated anything, and dropping a live selection for no reason is its own
+# small defect.
 proc rdw::status {msg} {
     variable statusmsg
-    set statusmsg [rdw::_oneline $msg]
+    set new [rdw::_oneline $msg]
+    if {$new ne $statusmsg} {
+        if {[rdw::have_tk] && [winfo exists .rdw.s.msg]} {
+            catch {.rdw.s.msg selection clear}
+        }
+    }
+    set statusmsg $new
     return {}
 }
 

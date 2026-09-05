@@ -1756,4 +1756,32 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   wrong), so it is an E question: rule debt
   `1350_R2_does_a_new_dump_follow_the_store`. **FILED, NOT FIXED.**
 
-**The next free number is 1351.**
+- **1351** — four defects the repair round's own adversaries found, one number
+  because they share a cause: each is a FIX's own new failure mode, invisible to
+  the rows that shipped with that fix. (A) issue 1332's fix added SD5–SD7 and
+  did not raise `KX_FLOOR`, leaving the guard three rows of slack over the three
+  rows that fence 1332 itself; (B) `sd_poll_modal` waited on a bare
+  `[grab current] ne {}`, which answers for every grab the application holds, so
+  the "exact pair" its comment claims was not exact; (C) `sd_arm` overwrote its
+  predecessor's timer handles instead of cancelling them, turning a one-shot
+  stray timer into a self-re-arming chain that lives across rows; (D) the
+  give-up was a poll count that measured 6.0–6.5 s at load average 54, past the
+  5 s deadman it was documented as sitting inside; (E) `rdw::status` replaced
+  the status entry's text and left the user's selection INDICES standing over
+  the new sentence, so the next Ctrl-C silently copied a slice of a refusal
+  message. **FIXED**, fenced by SD8, SD9, SD10 and CP16, each proved by a
+  sabotage that reds exactly it.
+
+- **1352** — `input_line`'s OK button (`src/xschem.tcl:14146-14152`) runs
+  `eval $cmd \[.dialog.f1.e get\]`, so the text typed into the dialog is
+  spliced into a script and parsed as Tcl rather than passed as a value.
+  DRIVEN in the real widget on `:99`: typing `7 ; set ::INJECTED yes` into
+  **Simulation > Set netlist / graph / annotation precision** executes the
+  second command. Shared by every `input_line` caller that passes a `cmd`,
+  including **Set top level netlist name**. Stock xschem code, inherited, not
+  introduced by this branch. **FILED, NOT FIXED** — the one-line fix
+  (`[list ...]`) would silently change behaviour for any caller that relies on
+  the typed text being substituted as several arguments, so it is a survey and
+  a ruling, not a patch.
+
+**The next free number is 1353.**

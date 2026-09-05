@@ -1818,18 +1818,43 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
   ## shape: the toplevel exists all through the build's own `update`.
   ##
   ## THE DEADMAN IS UNCHANGED AND STILL NOT OPTIONAL (issue 0803): `tkwait`
-  ## must return even if the driver never runs. The poll's budget is 900 x 5 ms
-  ## = 4.5 s, deliberately INSIDE the 5 s deadman, so a poll that never sees
-  ## its dialog gives up rather than driving whatever is on screen later.
+  ## must return even if the driver never runs. The poll gives up on whichever
+  ## comes first, 900 polls or a wall-clock deadline 500 ms short of the
+  ## deadman, so a poll that never sees its dialog stops rather than driving
+  ## whatever is on screen later. ⚠ THE POLL COUNT ALONE IS NOT THE 4.5 s THIS
+  ## PARAGRAPH USED TO CLAIM: `after 5` is a floor, and a measured give-up ran
+  ## 6.5 s at load avg 54 - past the deadman, under exactly the contention the
+  ## poll exists for. See the deadline comment on `sd_arm`.
   ##
   ## AND BOTH TIMERS ARE CANCELLED WHEN THE ROW ENDS. They used to be left
   ## armed: SD1's 5 s deadman was still live while SD3b's dialog was up, one
   ## `catch {destroy .rdw.scope}` away from cancelling a dialog a later row was
   ## in the middle of driving.
   set ::SD_POLL_ID {} ; set ::SD_DEADMAN {} ; set ::SD_POLLS 0
-  set ::SD_GAVEUP 0   ; set ::SD_RAN 0
+  set ::SD_GAVEUP 0   ; set ::SD_RAN 0 ; set ::SD_DEADLINE 0
+  ## ⚠ ARMING DISARMS FIRST, AND THAT IS NOT TIDINESS. Blanking `::SD_POLL_ID`
+  ## and overwriting `::SD_DEADMAN` throws the previous chain's handles away
+  ## while the chain itself keeps running, so `sd_disarm` can no longer reach
+  ## it. Under the old fixed `after 100` a stray timer was a ONE-SHOT that
+  ## fired once within 100 ms and almost certainly inside its own row; a poll
+  ## is a SELF-RE-ARMING chain that lives seconds, i.e. across several rows,
+  ## and it will press broad+OK on whatever dialog a later row has up. DRIVEN
+  ## by issue 1332's adversary: one extra `sd_arm` before SD2's own, with no
+  ## dialog in that row, reds SD2. The chain is a stronger version of the very
+  ## flake class this section was written to remove.
   proc sd_arm {script {budget 900} {deadman 5000}} {
+    sd_disarm
     set ::SD_POLLS 0 ; set ::SD_GAVEUP 0 ; set ::SD_RAN 0
+    ## ⚠ AND THE GIVE-UP IS A WALL-CLOCK DEADLINE AS WELL AS A POLL COUNT.
+    ## `after 5` is a FLOOR, not a period: this comment used to call 900 polls
+    ## "4.5 s, deliberately INSIDE the 5 s deadman", and issue 1332's
+    ## adversary measured a full give-up at 4856-4986 ms at load avg 25 and
+    ## 6028-6524 ms at load avg 54 - 1.0 to 1.5 s PAST the deadman it was
+    ## claimed to sit inside, under exactly the contention the poll exists
+    ## for. Whichever limit is reached first stops the chain, so the stated
+    ## safety property is now true at any load, and a SMALL budget (SD7A
+    ## passes 10) still gives up on its poll count the way that row asserts.
+    set ::SD_DEADLINE [expr {[clock milliseconds] + $deadman - 500}]
     set ::SD_POLL_ID {}
     set ::SD_DEADMAN [after $deadman {catch {destroy .rdw.scope}}]
     sd_poll_modal $script $budget
@@ -1838,18 +1863,27 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
   proc sd_poll_modal {script budget} {
     set ::SD_POLL_ID {}
     incr ::SD_POLLS
-    if {[winfo exists .rdw.scope] && [grab current] ne {}} {
+    ## ⚠ THE GRAB MUST BE THE DIALOG'S. A bare `grab current` answers for
+    ## EVERY grab this application holds on any display, so the "exact pair"
+    ## the comment above describes was not exact: issue 1332's adversary
+    ## armed one unrelated `grab set .rdw` and the poll fired during the
+    ## build's own `update`, with the focus still on `.drw`, reding SD2
+    ## exactly as the old fixed timer did. Naming the window restores the
+    ## pair the comment claims.
+    if {[winfo exists .rdw.scope] && [grab current] eq {.rdw.scope}} {
       set ::SD_RAN 1
       uplevel #0 $script
       return
     }
-    if {$::SD_POLLS >= $budget} { set ::SD_GAVEUP 1 ; return }
+    if {$::SD_POLLS >= $budget || [clock milliseconds] >= $::SD_DEADLINE} {
+      set ::SD_GAVEUP 1 ; return
+    }
     set ::SD_POLL_ID [after 5 [list sd_poll_modal $script $budget]]
   }
   proc sd_disarm {} {
     if {$::SD_POLL_ID ne {}} { catch {after cancel $::SD_POLL_ID} }
     if {$::SD_DEADMAN ne {}} { catch {after cancel $::SD_DEADMAN} }
-    set ::SD_POLL_ID {} ; set ::SD_DEADMAN {}
+    set ::SD_POLL_ID {} ; set ::SD_DEADMAN {} ; set ::SD_DEADLINE 0
     return {}
   }
   ## The sabotage rows below delay the real build by spinning the EVENT LOOP,
@@ -2152,6 +2186,99 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
           [expr {[winfo exists .rdw.scope] ? 1 : 0}] [grab current] \
           [expr {[llength [info commands ::rdw::sd_real_build]] == 0 ? 1 : 0}]] \
     [list CANCELLED 0 1 1 CANCELLED 1 1 0 {} 1]
+
+  # --- SD8  THE GRAB THE POLL WAITS FOR MUST BE THE DIALOG'S ----------------
+  ## Issue 1332's adversary refuted the poll's own justification. The comment
+  ## on `sd_arm` says a driver that sees a grab "is running from inside
+  ## `tkwait` on a dialog that is fully modal and already holds the keyboard".
+  ## That is true of the DIALOG'S grab. `grab current` with no window argument
+  ## answers for EVERY grab this application holds, so one unrelated grab
+  ## anywhere in the program satisfied the condition and the poll fired during
+  ## the build's own `update` - with the focus still on `.drw`, which is
+  ## precisely the losing shape SD6 exists to forbid.
+  ##
+  ## THE FIXTURE IS SD6's, PLUS A FOREIGN GRAB. The delay sits between the
+  ## build and `rdw::scope_dialog`'s `focus -force`, and `.rdw` holds a local
+  ## grab across the whole row. Under `[grab current] ne {}` the driver runs
+  ## in that window and reads grab `.rdw` and focus `.drw`; under
+  ## `eq {.rdw.scope}` it waits for the real thing.
+  sd_slow_install after 200
+  catch {grab set .rdw}
+  set ::SD8_GRAB UNSET ; set ::SD8_FOCUS UNSET
+  sd_arm {
+    catch {set ::SD8_GRAB [grab current]}
+    catch {set ::SD8_FOCUS [focus]}
+    catch {.rdw.scope.btns.ok invoke}
+  }
+  set SD8_GOT [kx_ans ::rdw::scope_dialog delete $SD_SUBJ annotation]
+  update
+  sd_disarm
+  catch {grab release .rdw}
+  set SD8_RESTORED [sd_slow_remove]
+  check {SD8 a grab held ANYWHERE ELSE in the program is not this dialog's grab: with `.rdw` holding one and the build delayed past its own `focus -force`, the driver still waits for `.rdw.scope` to own the grab AND the keyboard before it presses anything, so the answer is the one the buttons gave and not the one a canvas got - under a bare `[grab current] ne {}` this row reads grab .rdw, focus .drw, and reds the way the old fixed timer did} \
+    [list $::SD_RAN $::SD8_GRAB \
+          [expr {$::SD8_FOCUS eq {.rdw.scope} || [string match {.rdw.scope.*} $::SD8_FOCUS] ? 1 : 0}] \
+          [sd_pair $SD8_GOT] \
+          [expr {[winfo exists .rdw.scope] ? 1 : 0}] [grab current] \
+          $SD8_RESTORED] \
+    [list 1 .rdw.scope 1 {broad annotation} 0 {} 1]
+
+  # --- SD9  ARMING AGAIN CANCELS THE CHAIN IT REPLACES ----------------------
+  ## Issue 1332's adversary again. `sd_arm` used to blank `::SD_POLL_ID` and
+  ## overwrite `::SD_DEADMAN`, which throws the previous chain's HANDLES away
+  ## while the chain keeps running - so `sd_disarm` could no longer reach it.
+  ## Under the old fixed `after 100` a stray timer was a one-shot that fired
+  ## once within 100 ms, almost certainly inside its own row. A poll is a
+  ## self-re-arming chain that lives seconds, i.e. ACROSS rows, and it presses
+  ## buttons on whatever dialog a later row puts up. That is a stronger form
+  ## of the very flake this section removed, introduced by the fix for it.
+  ##
+  ## DRIVEN: chain A is armed against a fixture where no dialog is ever built,
+  ## so it is still polling; chain B is then armed for a REAL dialog. Only B's
+  ## script may run. Pre-fix both chains see the dialog and A's script fires.
+  sd_slow_none
+  set ::SD9_A 0 ; set ::SD9_B 0
+  sd_arm {set ::SD9_A 1}
+  set SD9_RESTORED [sd_slow_remove]
+  sd_arm {set ::SD9_B 1 ; catch {.rdw.scope.btns.ok invoke}}
+  set SD9_GOT [kx_ans ::rdw::scope_dialog delete $SD_SUBJ annotation]
+  update
+  sd_disarm
+  check {SD9 a second arm cancels the first, it does not orphan it: with a chain left polling for a dialog that was never built and a second chain armed for a real one, only the second chain's script runs - pre-fix the first chain's handles were thrown away while the chain lived on, and it pressed buttons in a row it was never armed for} \
+    [list $::SD9_A $::SD9_B $SD9_RESTORED \
+          [sd_pair $SD9_GOT] \
+          [expr {[winfo exists .rdw.scope] ? 1 : 0}] [grab current] \
+          $::SD_POLL_ID $::SD_DEADMAN] \
+    [list 0 1 1 {broad annotation} 0 {} {} {}]
+
+  # --- SD10  THE GIVE-UP IS A CLOCK, NOT A COUNT ----------------------------
+  ## `after 5` is a FLOOR, not a period. The comment on this section used to
+  ## call 900 polls "4.5 s, deliberately INSIDE the 5 s deadman"; issue 1332's
+  ## adversary timed a full give-up at 4856-4986 ms at load avg 25 and
+  ## 6028-6524 ms at load avg 54 - past the deadman it was claimed to sit
+  ## inside, under exactly the contention the poll exists for. A give-up that
+  ## arrives after the deadman is the orphan chain of SD9 wearing a budget.
+  ##
+  ## DRIVEN with the two limits pulled apart: a budget so large no run could
+  ## ever spend it, and a short deadman. Only a wall-clock deadline can stop
+  ## this chain. Pre-fix it is still polling when the row reads it.
+  sd_slow_none
+  set ::SD10_SCRIPT 0
+  sd_arm {set ::SD10_SCRIPT 1} 100000 800
+  set SD10_T0 [clock milliseconds]
+  set SD10_GOT [kx_ans ::rdw::scope_dialog delete $SD_SUBJ annotation]
+  sd_spin 600
+  set SD10_DT [expr {[clock milliseconds] - $SD10_T0}]
+  set SD10_GAVE $::SD_GAVEUP ; set SD10_POLLS $::SD_POLLS
+  set SD10_RAN $::SD_RAN
+  sd_disarm
+  set SD10_RESTORED [sd_slow_remove]
+  check {SD10 the poll gives up on a clock as well as on a count: with a budget of 100000 polls that no run could ever spend and a 800 ms deadman, the chain has stopped itself before the deadman fires - it spent only a few dozen polls, its script never ran, and it is not still re-arming into the next row. Pre-fix the count was the only limit and this chain was still alive} \
+    [list $SD10_GAVE $SD10_RAN $::SD10_SCRIPT \
+          [expr {$SD10_POLLS > 0 ? 1 : 0}] [expr {$SD10_POLLS < 1000 ? 1 : 0}] \
+          [expr {$SD10_DT < 800 ? 1 : 0}] \
+          [sd_pair $SD10_GOT] $SD10_RESTORED] \
+    [list 1 0 0 1 1 1 CANCELLED 1]
 
   ## HYGIENE for this section: the real dialog is already back (SD3b needed it),
   ## so forget the fixture and leave no settings file anywhere near the
@@ -3905,6 +4032,65 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
           [cp_cmp [lindex $CP15_RNG 1] == {end - 1c}]] \
     [list 1 1 1 1 1]
 
+  # --- CP16 A REWRITTEN STATUS LINE PUTS DOWN THE SELECTION IT INVALIDATES --
+  ## ⚠ ISSUE 1351, found by issue 1344's own adversary, in TWO presses of the
+  ## chord item R3 added. An entry's selection is a pair of INDICES, not a hold
+  ## on the characters. `rdw::status` replaces `::rdw::statusmsg`, the
+  ## -textvariable of `.rdw.s.msg`, and the range used to survive that rewrite
+  ## verbatim - so it came to cover a slice of the NEW sentence, text the user
+  ## had never selected.
+  ##
+  ## MEASURED before the fix: the line reads `alpha    beta`; the user selects
+  ## the four spaces (a double-click on the gap does exactly this); Ctrl-C is
+  ## refused, because a whitespace-only span is not worth copying - and the
+  ## refusal is deliberately NOT routed through rdw::_copy_report, so it
+  ## REPLACES the line. Range 5-9 now covers ` is ` of the refusal sentence,
+  ## and a SECOND Ctrl-C copies ` is ` to the clipboard SILENTLY, because the
+  ## source is still that entry and _copy_report says nothing for it. That is
+  ## item R3's own quoted defect class -- "silently handed you the wrong text".
+  ##
+  ## ⚠ THE LAST LEG IS THE FENCE. Clearing on EVERY call would drop a live
+  ## selection for nothing; a status line reset to what it already says has
+  ## invalidated no index, so the selection must survive that.
+  cp_fixture
+  kx_ans ::rdw::status {alpha    beta}
+  catch {update}
+  set CP16_LINE0 [cp_status]
+  catch {.rdw.s.msg selection range 5 9}
+  catch {update}
+  set CP16_PRESENT0 [cp_w .rdw.s.msg selection present]
+  set CP16_SEL0 NOSEL
+  catch {set CP16_SEL0 [selection get -selection PRIMARY]}
+  cp_setclip {SENTINEL-CP16}
+  set CP16_HERE [cp_focus .rdw.p.t]
+  cp_ev $CP16_HERE <Control-Key-c>
+  catch {update}
+  set CP16_CLIP1 [cp_clip]
+  set CP16_LINE1 [cp_status]
+  set CP16_PRESENT1 [cp_w .rdw.s.msg selection present]
+  cp_ev $CP16_HERE <Control-Key-c>
+  catch {update}
+  set CP16_CLIP2 [cp_clip]
+  ## AND THE FENCE: the same text again must NOT put a live selection down.
+  kx_ans ::rdw::status {alpha    beta}
+  catch {update}
+  catch {.rdw.s.msg selection range 0 5}
+  catch {update}
+  kx_ans ::rdw::status {alpha    beta}
+  catch {update}
+  set CP16_KEPT [cp_w .rdw.s.msg selection present]
+  catch {.rdw.s.msg selection clear}
+  check {CP16 A REWRITTEN STATUS LINE MUST NOT LEAVE A SELECTION STANDING OVER TEXT THE USER NEVER CHOSE: a refused copy replaces that line, so the indices the user's selection was made of no longer mean what they meant - they must be put down, or the very next press of the same chord silently copies a slice of the refusal sentence. And a line rewritten to the string it already held has invalidated nothing, so a selection standing in it survives} \
+    [list [expr {$CP16_LINE0 eq {alpha    beta} ? 1 : 0}] \
+          $CP16_PRESENT0 \
+          [expr {$CP16_SEL0 eq {    } ? 1 : 0}] \
+          [expr {$CP16_CLIP1 eq {SENTINEL-CP16} ? 1 : 0}] \
+          [expr {$CP16_LINE1 ne $CP16_LINE0 ? 1 : 0}] \
+          $CP16_PRESENT1 \
+          [expr {$CP16_CLIP2 eq {SENTINEL-CP16} ? 1 : 0}] \
+          $CP16_KEPT] \
+    [list 1 1 1 1 1 0 1 1]
+
   # --- CP9  HYGIENE ---------------------------------------------------------
   catch {selection clear -selection PRIMARY}
   catch {selection handle . {}}
@@ -4008,7 +4194,29 @@ catch {xschem raw clear}
 ## behind the same have_tk guard, so they drop with the rest when no display
 ## comes up.  A floor is raised when rows are added and NEVER lowered to make a
 ## run pass.
-set KX_FLOOR 74
+## ⚠ AND RAISED 74 -> 77 BY THE REPAIR OF ISSUE 1332, WHICH ADDED SD5, SD6
+## AND SD7 AND FORGOT TO RAISE IT - caught by that repair's adversary, not by
+## the suite, which is the point: the floor had three rows of slack, and the
+## three rows it could no longer see were the three that fence issue 1332
+## itself.  Section SD is EIGHT rows now, not the five the B5-2 paragraph
+## above lists (that paragraph is correct about its own raise and is not an
+## inventory of the section).  All eight sit behind the same
+## `[kx_ans ::rdw::have_tk] eq {1}` guard, so they drop together when no
+## display comes up.  A floor is raised when rows are added and NEVER lowered
+## to make a run pass.
+## ⚠ AND RAISED 77 -> 80 IN THE SAME COMMIT AS SD8, SD9 AND SD10, the three
+## rows that fence what issue 1332's adversary found in the fix for 1332: a
+## grab belonging to any other window satisfied the poll, a second arm
+## orphaned the chain it replaced instead of cancelling it, and the give-up
+## was a poll count that ran PAST the deadman it was said to sit inside.
+## Section SD is ELEVEN rows now.  All eleven are behind the same
+## `[kx_ans ::rdw::have_tk] eq {1}` guard.
+## ⚠ AND RAISED 80 -> 81 IN THE SAME COMMIT AS CP16, the row that fences issue
+## 1351: a status line rewritten under a live selection used to leave the
+## indices standing over the new text, so the next press of the chord copied a
+## slice of the refusal sentence, silently.  CP16 is in section CP, behind the
+## same guard, so it drops with the rest when no display comes up.
+set KX_FLOOR 81
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\

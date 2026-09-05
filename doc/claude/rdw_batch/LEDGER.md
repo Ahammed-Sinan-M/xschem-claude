@@ -1046,3 +1046,71 @@ line is read by everyone and re-derived by nobody.
 Nothing new is drawn. The one thing a human sees is a status sentence, and its
 wording rides the standing rule debt `1245_B3_window_wording` like every other
 sentence in this window; the decision behind it is on `1347_R2_summary_order_on_the_sheet`.
+
+---
+
+## Round 3 — the repair round's own adversaries (issue 1351)
+
+The repair round put four crews on the four confirmed defects. Their adversaries
+came back **REFUTED, HOLDS_WITH_CAVEAT, REFUTED, REFUTED** — every suite green
+throughout, again. What follows is what the driver fixed from those reports and
+what it deliberately did not.
+
+### The shared cause, and why it gets one number
+
+Each of the four is **a fix's own new failure mode, invisible to the rows that
+shipped with the fix.** Issue 1332's fix introduced three; issue 1344's
+introduced one. That is the batch's oldest lesson arriving for the third time:
+a suite proves the defect it was written about and nothing else.
+
+### Fixed here
+
+| # | what | fenced by |
+|---|---|---|
+| A | `KX_FLOOR` was never raised for SD5–SD7, so the guard had three rows of slack over the three rows that fence issue 1332 itself | the floor, 74 → 81 across this commit |
+| B | `sd_poll_modal` waited on a bare `[grab current] ne {}` — every grab the application holds, not the dialog's | **SD8** |
+| C | `sd_arm` overwrote its predecessor's timer handles instead of cancelling them, turning a one-shot stray timer into a self-re-arming chain that lives across rows | **SD9** |
+| D | the give-up was a poll count that measured **6.0–6.5 s at load average 54**, past the 5 s deadman it was documented as sitting inside | **SD10** |
+| E | `rdw::status` replaced the status entry's text and left the user's selection **indices** standing over the new sentence, so the next Ctrl-C silently copied a slice of a refusal message | **CP16** |
+
+**Every one proved by a sabotage that reds exactly it**, each applied to the repo
+file and restored by `cp` from a gold copy with the md5 verified afterwards
+(`9d9d5f2090343ff10faebb55c70ed9fc` for the suite,
+`17339010560a05d7e57d0e972b61bccf` for `src/rdw.tcl`), `git status --short`
+empty after each.
+
+### Acceptance
+
+| suite | how | before | after | rows that moved |
+|---|---|---|---|---|
+| `test_rdw_keys_1245` | `:99` | ALL PASS (77) | **ALL PASS (81)** | SD8 SD9 SD10 CP16 added; nothing else moved |
+| `test_rdw_keys_1245` | `$DISPLAY` (VcXsrv) | 5 FAILED (72) | **5 FAILED (76)** | the same four added; the five reds are RA1–RA5, issue **1343** |
+| `test_rdw_window_1245` | `--nogui` | ALL PASS (145) | ALL PASS (145) | none |
+| `test_rdw_window_1245` | `:99` | ALL PASS (157) | ALL PASS (157) | none |
+| `test_op_param_store_1245` | `--nogui` | ALL PASS (130) | ALL PASS (130) | none |
+| `test_op_annot` *(control)* | `--nogui` | ALL PASS (485) | ALL PASS (485) | none |
+
+Three consecutive `:99` runs at 81. Every count read off a printed RESULT line.
+
+### NOT fixed, and why
+
+Everything else the adversaries found needs a **ruling**, and guessing at a
+ruling is the move this batch exists to avoid. They are in the user's queue:
+
+- `1344_the_status_line_receipt_goes_stale` — the receipt keeps the **previous**
+  sentence rather than going silent, so the line can contradict the clipboard.
+- `1344_two_highlights_after_a_status_line_drag` — two selection-coloured
+  regions in one window, and the pane's highlight disagreeing with Ctrl-C.
+- `1349_the_pane_order_flips_between_lists_on_Add`,
+  `1349_Delete_and_Add_now_wipe_the_pane_selection` — item P4's adversary.
+- Issue **1343** — item R4's raise on the user's own VcXsrv. Needs their screen.
+- New rule debt **1351**, because fix E is a *third* answer to the question
+  `1344_the_status_line_receipt_goes_stale` already asks.
+
+Two more, reported and off this batch's path: `bind Entry <<Copy>>` is a second
+clipboard door on the status entry, and — found by P2's adversary — `input_line`
+(`src/xschem.tcl:14146-14152`) runs its typed text through `eval`, so typing
+`7 ; set ::INJECTED yes` into **Simulation > Set netlist / graph / annotation
+precision** sets the precision *and* executes the second command. That is
+arbitrary Tcl from a shipped menu, shared by every `input_line` caller. Not this
+batch's file, not touched, and it wants its own number.
