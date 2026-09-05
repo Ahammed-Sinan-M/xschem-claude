@@ -195,6 +195,69 @@ check {R14 a declined parameter is BLANK, never a fabricated zero} \
 
 catch {xschem raw clear}
 
+# ============================================================================
+# V — THE VERDICT, AS A PURE FUNCTION
+# ============================================================================
+# ⚠ THE QUESTION IS THE DEFECT, NOT THE FEATURE. Every ngspice since ng-37 /
+# ngspice-22 has `altshow`, the distro package included, so asking "is it
+# there" separates nothing. What decides whether the dump is READABLE is the
+# printer fix 10276f993, which `git tag --contains` places in NO release -- so
+# no version string can answer it either. Given a source declared `pwl`, an
+# unfixed printer replays that source's coefficients under eight names.
+set V_FIXED "vpw:\n    dc                 = 0\n    pulse              =         -\n    sin                =         -\n    pwl                = 0\n    pwl                = 1e-06\n"
+set V_BROKEN "vpw:\n    dc                 = 0\n    pulse              = 0\n    pulse              = 1e-06\n    sin                = 0\n    sin                = 1e-06\n    pwl                = 0\n"
+set V_LEGACY "     device m.x1.x23.xm2.msky130_\n         id       2.1e-12\n"
+
+check {V1 a SOUND printer -- only the declared `pwl` carries numbers, the other seven waveform keywords are placeholders} \
+  [ase::cap_altshow_verdict $V_FIXED] 1
+check {V2 an UNFIXED printer is caught by `sin` carrying the PWL source's own coefficients, which is the uninitialised-value replay} \
+  [ase::cap_altshow_verdict $V_BROKEN] 0
+check {V3 the LEGACY column format has no block headers at all and is refused, so a lost `set altshow` cannot read as a pass} \
+  [ase::cap_altshow_verdict $V_LEGACY] 0
+check {V4 an empty dump is not a pass} [ase::cap_altshow_verdict {}] 0
+
+# ============================================================================
+# T — THE TIER GUARD, DRIVEN OFF A PRIMED ANSWER (no simulator is started)
+# ============================================================================
+set STUB [file join $scratch stub_ngspice]
+set fh [open $STUB w]; puts $fh "#!/bin/sh\nexit 0"; close $fh
+file attributes $STUB -permissions 0755
+
+proc t_tier {caps} {
+  global STUB scratch
+  catch {ase::sim_caps_clear} ; catch {ase::sim_clear}
+  ase::sim_register optier $STUB
+  ase::sim_select optier
+  set r [dict get [ase::sim_status ngspice] resolved]
+  set ::ase::sim_caps [dict create $r [list stamp [ase::cap_stamp $r] caps $caps]]
+  set st [ase::state_default]
+  dict set st design [dict create lib zzlib cell zzcell view schematic]
+  dict set st rundir [file join $scratch orun]
+  dict set st analyses {{type op enabled 1}}
+  dict set st save_op_params 1
+  set d [ase::op_save_tier $st]
+  return [list [dict get $d tier] [dict get $d reason]]
+}
+set C_BASE {known 1 usable 1 appendwrite 1 hier_op_names 1 blanket_op_save 0}
+
+check {T1 a measured-SOUND printer selects shape d} \
+  [t_tier [dict merge $C_BASE {altshow_op_dump 1}]] {d dump}
+## ⚠ `c unsafe`, NOT `c nocap`, AND THAT IS THE POINT. Falling past the new
+## guard lands on the EXISTING G4 demotion, because this stand-in also answers
+## yes to appendwrite and hier_op_names. Both reach the per-device shape -- the
+## one that always works -- and the reason token is what says which guard got
+## there. A row expecting `nocap` here would be asserting that the new guard
+## had swallowed G4.
+check {T2 a measured-BROKEN printer falls past shape d to the per-device shape, through the EXISTING G4 demotion} \
+  [t_tier [dict merge $C_BASE {altshow_op_dump 0}]] {c unsafe}
+check {T3 an ABSENT key means "not measured", never "yes" -- a leg that ran out of budget must not promote the deck} \
+  [t_tier $C_BASE] {c unsafe}
+check {T4 nothing measured at all still refuses shape d} \
+  [t_tier {known 0 unmeasured timeout}] {c unknown}
+check {T5 ORDERING d beats a: shape a's capability is cold code on every released ngspice, so a build answering both must take the shape whose printer was actually watched working} \
+  [t_tier [dict merge $C_BASE {blanket_op_save 1 altshow_op_dump 1}]] {d dump}
+catch {ase::sim_caps_clear} ; catch {ase::sim_clear}
+
 cd $T_OLDPWD
 check_true {H1 HYGIENE the suite left the cwd where it found it and made no untitled* in the repo root} \
   [expr {[pwd] eq $T_OLDPWD &&

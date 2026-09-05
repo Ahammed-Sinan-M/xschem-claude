@@ -3903,6 +3903,53 @@ proc ase::op_cards_devices {block} {
 # RETURNS the three characters; the file CONTAINS the escaped five.
 proc ase::cap_param_wildcard {} { return \[*\] }
 
+# ===========================================================================
+# THE ALTSHOW VERDICT — is THIS binary's `show` printer sound enough to read?
+# ===========================================================================
+#
+# ⚠ THE OBVIOUS QUESTION IS THE WRONG ONE. "Does this ngspice have altshow?"
+# is answered YES by every release since ng-37 / ngspice-22 (upstream
+# 0a8a56c65, 2007-10-09), the distro package included, so it separates nothing.
+# The question that decides whether the dump can be READ is whether this build
+# carries the printer fix 10276f993 (2026-07-07) -- and NO VERSION STRING CAN
+# ANSWER IT, because `git tag --contains` on that commit returns nothing: it is
+# in no release at all. 45.2 says no, 46 says no, a future 47 will say yes, a
+# master build says yes. Parsing a version here would be guessing.
+#
+# So the probe asks the DEFECT, not the feature, and it needs exactly one
+# source to do it. Given a source declared `pwl`, an unfixed printer replays
+# that source's coefficient list under EIGHT parameter names because `IFvalue
+# val` is uninitialised and the element loop reads past the end; a fixed one
+# prints the real parameter and a `-` placeholder for the other seven.
+#
+# MEASURED on the same two-component deck, same flags:
+#   /usr/bin/ngspice 45.2   -> `sin` appears 6 times carrying the PWL numbers
+#   local build with the fix -> `sin` appears once, reading `sin = -`
+#   dump size 1864 bytes against 919
+#
+# ONE RUN ANSWERS TWO QUESTIONS, and both must hold:
+#   (a) block headers `<name>:` exist at all -> `set altshow` was honoured.
+#       Their absence means the legacy column format, whose device names are
+#       truncated to 21 characters and are unusable.
+#   (b) no NON-`pwl` waveform keyword carries a number -> the printer is sound.
+#
+# Takes the dump TEXT, not a path, so every test row can drive it with no
+# simulator anywhere on the box.
+proc ase::cap_altshow_verdict {text} {
+  ## (a) the block format, or nothing.
+  if {![regexp -line {^[^ ][^:]*:$} $text]} { return 0 }
+  ## (b) the source is declared `pwl`; any OTHER waveform keyword carrying a
+  ## number is the uninitialised-value replay.
+  foreach kw {pulse sin exp sffm am trnoise trrandom} {
+    foreach line [split $text "\n"] {
+      if {[regexp "^ +$kw +=  *(.*)\$" $line -> v]} {
+        if {[string is double -strict [string trim $v]]} { return 0 }
+      }
+    }
+  }
+  return 1
+}
+
 # The wildcard request for each DISTINCT device a captured block names — the
 # shape the probe measured, one entry per device, covering every parameter that
 # device has. Derived from the block, never rebuilt (invariant I1).
@@ -3961,6 +4008,7 @@ proc ase::op_ctl_saves {names} {
 #
 #   G1 forced   the override is set                       -> that shape
 #   G2 unknown  nothing was measured about the program    -> c
+#   G3a dump     its `show` printer is sound (measured)     -> d
 #   G3 blanket  it can save every device in one request   -> a
 #   G4 unsafe   it could take the short form              -> c   (the demotion)
 #   G5 nocap    it can take neither shorter form          -> c
@@ -4003,6 +4051,16 @@ proc ase::op_save_tier {state} {
     if {![dict exists $caps known] || [dict get $caps known] != 1} {
       set tier c
       set reason unknown
+    } elseif {[dict exists $caps altshow_op_dump] &&
+              [dict get $caps altshow_op_dump] == 1} {
+      # G3a -- THE DUMP SHAPE, AND IT IS ABOVE THE BLANKET GUARD ON PURPOSE.
+      # Shape a is gated on `blanket_op_save`, which NO RELEASED NGSPICE
+      # answers 1 to -- its own probe comment says so. Shape d is gated on a
+      # printer this probe just watched work. Below the blanket guard, a build
+      # that somehow answered both would take the dead path; above it, the
+      # measured-working shape wins. Do not reorder these two.
+      set tier d
+      set reason dump
     } elseif {[dict exists $caps blanket_op_save] &&
               [dict get $caps blanket_op_save] == 1} {
       set tier a
@@ -8571,6 +8629,23 @@ write probe_b.raw
 .end
 "
     close $f
+    # DECK C -- THE ALTSHOW PRINTER. One PWL source is the whole probe; see
+    # ase::cap_altshow_verdict for why the defect and not the feature is what
+    # gets asked. It writes a TEXT file, not a raw, so it needs none of the
+    # cap_claim/cap_result machinery the two decks above use.
+    set deckc [file join $workdir probe_c.sp]
+    set dumpc [file join $workdir probe_c.txt]
+    set f [open $deckc w]
+    puts -nonewline $f "${ckt}vpw pw 0 pwl 0 0 1u 1 2u 0
+rpw pw 0 1k
+.control
+op
+set altshow
+show all > probe_c.txt
+.endc
+.end
+"
+    close $f
     # ONE BUDGET FOR THE WHOLE MEASUREMENT, NOT ONE PER RUN (issue 0953). The
     # measured 20.0 s freeze of the user's Run gesture was two runs each paying
     # a ten-second cap that nothing could ask to be smaller. And once one run
@@ -8653,6 +8728,25 @@ write probe_b.raw
         if {[string first {@m.xo1.xi1.m1[} $nm] >= 0} { set blanket 1 }
       }
     }
+    # ---- ALTSHOW_OP_DUMP -----------------------------------------------
+    #
+    # ⚠ ITS KEY IS PUBLISHED ONLY FOR A COMPLETE MEASUREMENT, and it does NOT
+    # make the whole answer `known 0` when it alone runs out of budget. Same
+    # contract as the casemode leg below: a missing key means "not measured",
+    # never "no", and ase::op_save_tier reads absence as "do not take shape d"
+    # -- which lands on the per-device form, the one that always works.
+    set altshow_ok 0
+    set altshow_measured 0
+    if {[ase::cap_left $t0] > 0} {
+      set rc [ase::cap_run $exe [concat $exeargs [list -b $deckc]] $workdir \
+                [ase::cap_left $t0]]
+      if {![lindex $rc 2] && [file exists $dumpc]} {
+        set fh [open $dumpc r]
+        set altshow_ok [ase::cap_altshow_verdict [read $fh]]
+        close $fh
+        set altshow_measured 1
+      }
+    }
     # ---- CASE MODE: THE THIRD MEASUREMENT, from `fluid-editing` --------------
     #
     # WHICH CASE MODES THIS BUILD CAN ACTUALLY DELIVER. It is the same kind of
@@ -8698,6 +8792,7 @@ write probe_b.raw
     set out [dict create known 1 usable $usable appendwrite $appendwrite \
                          blanket_op_save $blanket hier_op_names $hier]
     if {$cmok} { dict set out casemode_detected $cmdet }
+    if {$altshow_measured} { dict set out altshow_op_dump $altshow_ok }
     return $out
   }
 
