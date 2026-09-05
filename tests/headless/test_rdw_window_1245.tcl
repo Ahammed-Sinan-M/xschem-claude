@@ -79,6 +79,13 @@
 #            block capped at 24, RIGHT-TRIMMED so a blank value leaves no
 #            trailing space.  Rows are devices pairs first (raw-file order),
 #            then nonfinite, then absent.
+#            ⚠ THE VALUE IS ENGINEERING NOTATION SINCE ITEM R5 (issue 1341):
+#            it goes through `op_annot::eng_or_blank`, the proc that puts the
+#            sheet's own annotation on the canvas, so the two surfaces cannot
+#            disagree.  Every golden below carries `11.1u`, not `1.11e-05`.
+#            Section EN is where that is fenced, including the three things the
+#            formatter must NOT swallow: a non-numeric value, a non-finite one,
+#            and the window's three existing words.
 #   then     the blank-value footnote, ONLY when `absent` is non-empty
 #   then     ONE empty separator line.
 # Data NEVER becomes a format spec and nothing is subst'ed or eval'ed, so a `%`
@@ -722,8 +729,8 @@ set F_ANS1 [rw_ansd [dict create {@m.x1.m1} $SIX_PAIRS] {} {} 0 ok]
 check {F1 THE PASTE SHAPE: header, dim devpath, the honesty line, then six aligned rows in raw-file order and one separator - the exact text a user copies into a design-review document} \
   [rw_text $F_ANS1 $F_CTX1] \
   [rw_lines {M1:/xdut/xbg} {@m.x1.m1} $RW_INC \
-            {    id  : 1.11e-05} {    is  : 0} {    vth : 0.75} \
-            {    gm  : 0.001} {    vds : 1.25} {    vgs : 0.5} {}]
+            {    id  : 11.1u} {    is  : 0} {    vth : 0.75} \
+            {    gm  : 1m} {    vds : 1.25} {    vgs : 0.5} {}]
 
 check {F2 DD-1's corollary: complete 0 prints the incompleteness sentence, exactly ONCE per block, and it is a `note` line rather than a value row} \
   [list [rw_count [rw_text $F_ANS1 $F_CTX1] $RW_INC] \
@@ -738,8 +745,8 @@ set F3_T [rw_text [rw_ansd [dict create {@m.x1.m1} $SIX_PAIRS] {} {} 1 ok] $F_CT
 check {F3 CONTROL complete 1 prints NO incompleteness sentence - an unconditional honesty line would be indistinguishable from an honest one and would survive the wildcard ngspice} \
   [list [rw_count $F3_T $RW_INC] $F3_T] \
   [list 0 [rw_lines {M1:/xdut/xbg} {@m.x1.m1} \
-                    {    id  : 1.11e-05} {    is  : 0} {    vth : 0.75} \
-                    {    gm  : 0.001} {    vds : 1.25} {    vgs : 0.5} {}]]
+                    {    id  : 11.1u} {    is  : 0} {    vth : 0.75} \
+                    {    gm  : 1m} {    vds : 1.25} {    vgs : 0.5} {}]]
 
 ## OBLIGATION 2. A non-converged operating point is a RESULT a designer wants
 ## told, not a gap and not a number. Driver default, rule debt
@@ -750,7 +757,7 @@ set F4_T [rw_text $F4_ANS $F_CTX1]
 check {F4 a nonfinite column renders `(did not converge)` and the block contains neither `nan` nor `inf` anywhere; the finite rows and the genuine zero are untouched} \
   [list $F4_T [rw_count $F4_T {nan}] [rw_count $F4_T {inf}]] \
   [list [rw_lines {M1:/xdut/xbg} {@m.x1.m1} $RW_INC \
-                  {    vth : 0.75} {    gm  : 0.001} {    is  : 0} \
+                  {    vth : 0.75} {    gm  : 1m} {    is  : 0} \
                   {    id  : (did not converge)} {}] 0 0]
 
 ## INVARIANT I3 for the other bucket: a missing vector renders BLANK — not 0,
@@ -764,7 +771,7 @@ check {F5 an absent column renders a BLANK value with no trailing space, is text
         [rw_count [rw_text $F_ANS1 $F_CTX1] $RW_ABSN] \
         [rw_count $F4_T $RW_ABSN]] \
   [list [rw_lines {M1:/xdut/xbg} {@m.x1.m1} $RW_INC \
-                  {    gm  : 0.001} {    vth : (did not converge)} {    ib  :} \
+                  {    gm  : 1m} {    vth : (did not converge)} {    ib  :} \
                   $RW_ABSN {}] 0 0]
 
 ## THE UNION RULE. Both halves measured against the landed seam: an all-dims=0
@@ -792,17 +799,17 @@ set F7_ANS [rw_ansd [dict create {@r.xr1.x0.rend1} {{i 1e-06}} \
 check {F7 D-3: five primitives from one XR1 print five sub-headers in raw-file order, and the two columns both spelled `i` are attributed to DIFFERENT primitives} \
   [rw_text $F7_ANS [rw_ctx {XR1:/} {@r.xr1} op XR1]] \
   [rw_lines {XR1:/} {@r.xr1} $RW_INC \
-            {  @r.xr1.x0.rend1} {    i : 1e-06} \
-            {  @r.xr1.x0.rend2} {    i : 2e-06} \
-            {  @c.xr1.x0.xc0.c0} {    c : 1e-15} \
-            {  @c.xr1.x0.xc1.c0} {    c : 2e-15} \
-            {  @b.xr1.x0.brbody} {    i : 4e-06} {}]
+            {  @r.xr1.x0.rend1} {    i : 1u} \
+            {  @r.xr1.x0.rend2} {    i : 2u} \
+            {  @c.xr1.x0.xc0.c0} {    c : 1f} \
+            {  @c.xr1.x0.xc1.c0} {    c : 2f} \
+            {  @b.xr1.x0.brbody} {    i : 4u} {}]
 
 check {F8 the sub-header is suppressed ONLY when there is exactly one primitive whose name equals line 2; one primitive under a BROADER request still names itself} \
   [list [rw_count [rw_text $F_ANS1 $F_CTX1] {  @m.x1.m1}] \
         [rw_text [rw_ansd [dict create {@m.x1.m1} {{id 1.11e-05}}] {} {} 0 ok] \
                  [rw_ctx {M1:/} {@m.x1} op M1]]] \
-  [list 0 [rw_lines {M1:/} {@m.x1} $RW_INC {  @m.x1.m1} {    id : 1.11e-05} {}]]
+  [list 0 [rw_lines {M1:/} {@m.x1} $RW_INC {  @m.x1.m1} {    id : 11.1u} {}]]
 
 ## THE FIFTH SILENCE. state ok with nothing in any bucket is the COMMON case
 ## under measured rule R1 (gm/gds/vth exist only if the deck saved them;
@@ -892,13 +899,13 @@ check {F14 a state-ok block whose analysis is NOT an operating point carries one
   [list $F14_T [rw_tags $F_ANS1 $F14_CTX] \
         [expr {[rw_count $F14_T {dc}] >= 1 ? 1 : 0}]] \
   [list [rw_lines {M1:/xdut/xbg} {@m.x1.m1} [RW_ANALYSIS dc] $RW_INC \
-                  {    id  : 1.11e-05} {    is  : 0} {    vth : 0.75} \
-                  {    gm  : 0.001} {    vds : 1.25} {    vgs : 0.5} {}] \
+                  {    id  : 11.1u} {    is  : 0} {    vth : 0.75} \
+                  {    gm  : 1m} {    vds : 1.25} {    vgs : 0.5} {}] \
         {hdr dim note note {} {} {} {} {} {} {}} 1]
 
 set F15_OPBLOCK [rw_lines {M1:/xdut/xbg} {@m.x1.m1} $RW_INC \
-                          {    id  : 1.11e-05} {    is  : 0} {    vth : 0.75} \
-                          {    gm  : 0.001} {    vds : 1.25} {    vgs : 0.5} {}]
+                          {    id  : 11.1u} {    is  : 0} {    vth : 0.75} \
+                          {    gm  : 1m} {    vds : 1.25} {    vgs : 0.5} {}]
 check {F15 CONTROL a state-ok block whose simtype IS `op`, and one whose simtype is EMPTY, carry no analysis sentence at all - asserted as the whole block, because a bare count of zero is also zero over a string that was never rendered} \
   [list [rw_text $F_ANS1 $F_CTX1] \
         [rw_text $F_ANS1 [rw_ctx {M1:/xdut/xbg} {@m.x1.m1} {} M1]]] \
@@ -1356,8 +1363,8 @@ set Q1_TXT [expr {[rw_bad $Q1_BLK] ? $Q1_BLK : [rw_ans ::rdw::block_text $Q1_BLK
 check {Q1 Q10 ASSERTED: one raw holding an Operating Point plot AND a Transient plot lands on the OP, and the window renders its six real numbers with the honesty line - the RDW IS reachable after an ordinary OP+TRAN run} \
   [list $Q1_ST $Q1_TXT] \
   [list op [rw_lines {M1:/xdut/xbg} {@m.x1.m1} $RW_INC \
-            {    id  : 1.11e-05} {    is  : 0} {    vth : 0.75} \
-            {    gm  : 0.001} {    vds : 1.25} {    vgs : 0.5} {}]]
+            {    id  : 11.1u} {    is  : 0} {    vth : 0.75} \
+            {    gm  : 1m} {    vds : 1.25} {    vgs : 0.5} {}]]
 
 ## The block is PUSHED, and the store is namespace state that works headless —
 ## the pane is a projection of it, never the other way round.
@@ -1441,7 +1448,7 @@ check {Q3 the two devices the seam answers with an EMPTY `devices` dict still re
                   {    id  : (did not converge)} {    vth : (did not converge)} {}] \
         0 \
         [rw_lines {M1:/xdut/xbg} {@m.x1.m1} $RW_INC \
-                  {    vth : 0.75} {    gm  : 0.001} {    is  : 0} \
+                  {    vth : 0.75} {    gm  : 1m} {    is  : 0} \
                   {    id  : (did not converge)} {}]]
 
 ## D-3 end to end: ONE request, FIVE primitives out of the real seam, and the
@@ -1451,11 +1458,11 @@ set Q4_TXT [rw_dumptext {@r.xr1} [rw_ctx {XR1:/} {@r.xr1} op XR1]]
 check {Q4 D-3 end to end: one XR1 request resolves through the seam to five primitives in raw-file order, each labelled, and the xr10 decoy is nowhere in the block} \
   [list $Q4_TXT [rw_count $Q4_TXT {xr10}]] \
   [list [rw_lines {XR1:/} {@r.xr1} $RW_INC \
-                  {  @r.xr1.x0.rend1} {    i : 1e-06} \
-                  {  @r.xr1.x0.rend2} {    i : 2e-06} \
-                  {  @c.xr1.x0.xc0.c0} {    c : 1e-15} \
-                  {  @c.xr1.x0.xc1.c0} {    c : 2e-15} \
-                  {  @b.xr1.x0.brbody} {    i : 4e-06} {}] 0]
+                  {  @r.xr1.x0.rend1} {    i : 1u} \
+                  {  @r.xr1.x0.rend2} {    i : 2u} \
+                  {  @c.xr1.x0.xc0.c0} {    c : 1f} \
+                  {  @c.xr1.x0.xc1.c0} {    c : 2f} \
+                  {  @b.xr1.x0.brbody} {    i : 4u} {}] 0]
 
 ## rdw::sim resolves the BACKEND; the seam is never called by its proc name.
 ## Behaviourally identical today, which is precisely why row S1 is structural:
@@ -1492,8 +1499,8 @@ rw_annot $R_OP3
 set Q6_STY2 {} ; catch {set Q6_STY2 [xschem raw sim_type]}
 set Q6_T2 [rw_dumptext {@m.x1.m1} [rw_ctx {M1:/xdut/xbg} {@m.x1.m1} $Q6_STY2 M1]]
 set Q6_WANT [rw_lines {M1:/xdut/xbg} {@m.x1.m1} [RW_ANALYSIS dc] $RW_INC \
-                      {    id  : 1.11e-05} {    is  : 0} {    vth : 0.75} \
-                      {    gm  : 0.001} {    vds : 1.25} {    vgs : 0.5} {}]
+                      {    id  : 11.1u} {    is  : 0} {    vth : 0.75} \
+                      {    gm  : 1m} {    vds : 1.25} {    vgs : 0.5} {}]
 check {Q6 DD-5 end to end through the real seam: a DC transfer characteristic AND a three-point Operating Point (which save.c itself renames `dc`) both answer ok with real point-0 numbers, and both blocks now NAME the analysis instead of presenting it as an operating point} \
   [list $Q6_STY1 $Q6_STY2 $Q6_T1 $Q6_T2] \
   [list dc dc $Q6_WANT $Q6_WANT]
@@ -2206,7 +2213,7 @@ set K8_T2 [rw_ans ::rdw::block_text [lindex $::rdw::blocks 0]]
 set K8_C2 [llength $::K_CIW]
 xschem unselect_all
 check {K8 THE TWO CHANNELS ARE NOT DOUBLE-BOOKED: one instance selected pushes exactly ONE block whose header names it, with its numbers and ZERO CIW lines, and an instance with NO descriptor still pushes a BLOCK carrying B3's locked no_devpath sentence and ZERO CIW lines - the window speaks whenever a device resolved} \
-  [list $K8_N1 $K8_H1 [rw_has $K8_T1 {zid : 1.11e-05}] $K8_C1 \
+  [list $K8_N1 $K8_H1 [rw_has $K8_T1 {zid : 11.1u}] $K8_C1 \
         $K8_N2 [k_top_hdr] [rw_has $K8_T2 [RW_NODEVPATH R1]] $K8_C2] \
   [list 1 {M1:/} 1 0 1 {R1:/} 1 0]
 
@@ -3052,7 +3059,7 @@ if {[llength [info commands k_ciw_echo_real]]} { rename k_ciw_echo_real ciw_echo
 # descriptor whose first triple has LABEL != PARAM ({id ids 0}).
 #
 # ⚠ THAT TRIPLE IS THE WHOLE POINT OF THE FIXTURE. MEASURED on this binary: the
-# pane prints the RAW param, `    ids : 1.2e-05`, while the store's triple is
+# pane prints the RAW param, `    ids : 12u`, while the store's triple is
 # `{id ids 0}`. A button column that looks its row up in the list BY LABEL
 # round-trips sky130 and gf180 perfectly and silently misses IHP — the one PDK
 # in the tree that distinguishes them, and this batch's own discriminator.
@@ -3067,9 +3074,9 @@ if {[llength [info commands k_ciw_echo_real]]} { rename k_ciw_echo_real ciw_echo
 #     1 hdr  M2:/            6 hdr  M1:/
 #     2 dim  @m.m2           7 dim  @m.m1
 #     3 note (incomplete)    8 note (incomplete)
-#     4      ids : 9.9e-06   9      ids : 1.2e-05
-#     5      (separator)    10      gm  : 3.4e-05
-#                           11      gds : 5.6e-06
+#     4      ids : 9.9u   9      ids : 12u
+#     5      (separator)    10      gm  : 34u
+#                           11      gds : 5.6u
 #                           12      vgs : 0.5
 #                           13      (separator)
 #
@@ -3256,7 +3263,7 @@ check {BT0 CONTROL the fixture is live: two devices of ONE private class from TW
         [expr {$B5_CELL1 ne {} && $B5_CELL1 ne $B5_CELL2 ? 1 : 0}] \
         [llength $::rdw::blocks] [llength [b5_flat]] \
         [lindex [b5_entry 9] 1]] \
-  [list 0 b5ndev b5pdev b5cls b5cls $B5_SEED $B5_SEED 0 1 2 13 {    ids : 1.2e-05}]
+  [list 0 b5ndev b5pdev b5cls b5cls $B5_SEED $B5_SEED 0 1 2 13 {    ids : 12u}]
 
 # --- BT1  THE HEADER IS INVERTIBLE -------------------------------------------
 ## rdw::header joins the instance name and the cadence path with a `:`, and an
@@ -4157,8 +4164,8 @@ check {CU17 the cursor is dropped when the line it points at is thrown away, WIT
 # rdw::format_answer emits, per primitive, the `devices` pairs FIRST, then
 # `nonfinite`, then `absent`.  So a list of {id ids 0} {gm gm 1} {gds gds 1}
 # whose `gm` came back non-finite renders as
-#       ids : 1.2e-05          list index 0
-#       gds : 5.6e-06          list index 2
+#       ids : 12u          list index 0
+#       gds : 5.6u          list index 2
 #       gm  : (did not converge)   list index 1
 # and an Up on `gds` swaps list entries 2 and 1 - which leaves the DISPLAY
 # order exactly as it was.  A swap of the two adjacent display lines would put
@@ -4369,8 +4376,8 @@ proc re_flush {} {
 ##      1 hdr  MZZ:/          7 hdr  M2:/         13 hdr  M1:/
 ##      2 dim  @m.mzz         8 dim  @m.m2        14 dim  @m.m1
 ##      3 note (incomplete)   9 note (incomplete) 15 note (incomplete)
-##      4      gm  : 2.0     10      gm  : 3.4e-05 16     ids : 1.2e-05
-##      5      ids : 1.0     11      ids : 9.9e-06 17     gds : 5.6e-06
+##      4      gm  : 2     10      gm  : 34u 16     ids : 12u
+##      5      ids : 1     11      ids : 9.9u 17     gds : 5.6u
 ##      6      (separator)   12      (separator)   18     gm  : (did not converge)
 ##                                                 19     (separator)
 proc re_ansd {devices nonfinite} {
@@ -4400,11 +4407,11 @@ proc re_fixture {} {
 ## which is what makes "the declared rows re-fill the slots the declared rows
 ## occupied" a different answer from "the block's rows are sorted".
 ## MEASURED PANE LAYOUT, driven out of rdw::format_answer on this binary:
-##      1 hdr  M1:/           6      gm  : 2.2e-05   11      vgs : 0.55
+##      1 hdr  M1:/           6      gm  : 22u   11      vgs : 0.55
 ##      2 dim  x1             7      gds :           12      gds :
 ##      3 note (incomplete)   8 dev    @m.x1.mb      13 note (blank footnote)
-##      4 dev    @m.x1.ma     9      ids : 3.3e-05   14      (separator)
-##      5      ids : 1.1e-05 10      gm  : 4.4e-05
+##      4 dev    @m.x1.ma     9      ids : 33u   14      (separator)
+##      5      ids : 11u 10      gm  : 44u
 proc re_fixture_multi {} {
   set ::rdw::blocks {}
   rw_ans ::rdw::set_row 0
@@ -4585,14 +4592,14 @@ set RE4_C0 [re_cursor_param]
 set RE4_M  [re_press up]
 set RE4_EXP [list [list hdr {M1:/}] [list dim x1] [list note $RW_INC] \
                   [list dev {  @m.x1.ma}] \
-                  [list {} {    ids : 1.1e-05}] \
+                  [list {} {    ids : 11u}] \
                   [list {} {    gds :}] \
-                  [list {} {    gm  : 2.2e-05}] \
+                  [list {} {    gm  : 22u}] \
                   [list dev {  @m.x1.mb}] \
-                  [list {} {    ids : 3.3e-05}] \
+                  [list {} {    ids : 33u}] \
                   [list {} {    gds :}] \
                   [list {} {    vgs : 0.55}] \
-                  [list {} {    gm  : 4.4e-05}] \
+                  [list {} {    gm  : 44u}] \
                   [list note $RW_ABSN] \
                   [list {} {}]]
 check {RE4 in a multi-primitive block both primitives re-order because both draw the same list, no row crosses a device sub-header so every value stays under the device that published it, a BLANK-valued row re-orders with the rest, the parameter the run published and no list declares keeps its own slot even when a declared row moves past it, and the cursor is on the moved row of the primitive the user clicked} \
@@ -4797,6 +4804,263 @@ set RH3_RT [rw_body ::raise_toplevel]
 set RH3_RA [rw_body ::raise_activate_toplevel]
 check {RH3 STRUCTURAL the two halves of the split are still joined: raise_toplevel exists and holds the shared body - issue 0054's wm withdraw re-map and issue 0843's deferred _remap_verify - and asks for no activation, while raise_activate_toplevel DELEGATES to it rather than carrying a second copy of that body. A rewrite that re-derived either half would pass RH1, RH2 and every row of section RA}   [list [rw_bad $RH3_RT]         [expr {[rw_bad $RH3_RT] ? 0 : [rw_has $RH3_RT {wm withdraw}]}]         [expr {[rw_bad $RH3_RT] ? 0 : [rw_has $RH3_RT {_remap_verify}]}]         [expr {[rw_bad $RH3_RT] ? 1 : [rw_count $RH3_RT {activate_window}]}]         [expr {[rw_bad $RH3_RA] ? 0 : [rw_has $RH3_RA {raise_toplevel}]}]         [expr {[rw_bad $RH3_RA] ? 1 : [rw_count $RH3_RA {wm withdraw}]}]]   {0 1 1 0 1 0}
 
+set ::rdw::blocks {}
+rw_ans ::rdw::set_row 0
+rw_ans ::rdw::status {}
+
+
+# ============================================================================
+# SECTION EN — ITEM R5, ISSUE 1341: THE VALUES PRINT IN ENGINEERING NOTATION,
+# THROUGH THE SHEET'S OWN PROC
+# ============================================================================
+# The user's words: "Display of parameters in the RDW should be using
+# engineering notation - just like annotation on the schematic."
+#
+# THE SEAM IS ONE PROC. `rdw::_value_text` (src/rdw.tcl:419) is the only place
+# a `devices` value becomes text; `op_annot::eng_or_blank` (src/op_annot.tcl:1266)
+# is what `op_annot::text` (:2125) puts on the sheet. "Just like annotation on
+# the schematic" is not "looks similar": it is THE SAME PROC, so the window and
+# the sheet cannot drift. A second formatter living in rdw.tcl would pass EN1
+# and red EN2 and EN6.
+#
+# ⚠ RULING DD-7 IS THE WHOLE DESIGN OF THIS ITEM, AND IT REJECTS THE ONE-LINER.
+# `set v [op_annot::eng_or_blank $v]` at the call site is the obvious version.
+# It is wrong in three measured ways, one row each:
+#   EN3  eng_or_blank returns {} FOR EVERYTHING THAT IS NOT A FINITE NUMBER, and
+#        this window's values are frequently not numbers: a model name, a `-`
+#        placeholder, a width already written `1.5u`, a two-token value. The
+#        one-liner blanks every one of them, and a blanked value in this window
+#        does not read as "not a number" - it reads as the ABSENT column's
+#        blank, whose footnote then says something FALSE about it (F5, F19).
+#   EN4  a non-finite value in the `devices` bucket. eng_or_blank blanks it,
+#        which is issue 1272's defect wearing engineering notation: `nan` used
+#        to print here, and an empty string where `nan` used to print is a
+#        SILENT loss of the one thing the user needed told. The RDW already has
+#        words for it and they are what must appear - `rdw::_nonfinite_text`,
+#        the same words the `nonfinite` BUCKET gets (F4, Q3). Invariant I3
+#        forbids painting the raw `nan` too, so pass-through is not the answer
+#        either.
+#   EN3  `to_eng` (xschem.tcl:1902) EVALUATES its argument: `uplevel #0 expr
+#        [join $args]`. So `to_eng {[set ::en_canary 1]}` really runs the
+#        bracket, at GLOBAL SCOPE, on a string that arrived from a raw file.
+#        eng_or_blank's `_finite` gate is what stops it, which is why the fence
+#        below is "rdw.tcl names eng_or_blank and names to_eng ZERO times" and
+#        not merely "the numbers look right".
+#
+# ⚠ THE SHARPEST INPUT, AND IT IS MEASURED ON THIS BINARY: `to_eng 1e400`
+# returns the string `infT`. A raw may hold an overflowing literal, `1e400`
+# passes `string is double -strict`, and an implementation that reached for
+# to_eng directly would paste `ft : infT` into a design-review document - a
+# plausible-looking engineering number that is not a number. EN4's fourth leg
+# is that input.
+#
+# ⚠ THE ABSENT BUCKET'S BLANK AND `(no value reported)` BOTH SURVIVE, and EN5
+# is the row that asks all three of the window's existing words at once, in ONE
+# block, so a fix that gets the numbers right by flattening the vocabulary reds
+# here rather than in a suite nobody re-ran.
+#
+# WHICH ROWS ARE RED BEFORE R5, AND WHY.  MEASURED on the unmodified tree,
+# HEAD 62391a3f, --nogui and :99 both: `5 FAILED (128 passed)`.
+#   RED    EN1 EN2 EN4 EN5 EN6 - `rdw::_value_text` returns the raw string
+#          today, so every golden below carries a number the window does not
+#          yet print, EN2's list differs from its first element on, and EN6
+#          asks a question about a formatter that does not exist.
+#   GREEN  EN3, AND SAYING SO IS THE POINT.  Today nothing is formatted, so
+#          nothing is lost and nothing is evaluated; EN3 is the fence against
+#          the fix, not against the code, and its red-before proof is a
+#          SABOTAGE RUN.  A row whose only evidence is the shipped tree is a
+#          statement about the FENCE, which is three items old on this branch.
+#   EN7 was added by the IMPLEMENTING pass, not the RED pass, and it is red
+#          before the change too (`1e-321` printed raw is not what the sheet
+#          prints for it).  It exists because the implementing pass asked the
+#          crew brief's question - "the input most likely to break your change:
+#          would any row see it?" - and the answer for a value outside to_eng's
+#          SI ladder was no.  Its own comment carries the measurements.
+#
+# FOUR SABOTAGE VARIANTS RUN AGAINST THIS SECTION, EVERY ONE CAUGHT.  Each is
+# a plausible implementation of "use engineering notation", not a strawman:
+#   SB-ONELINER   ruling DD-7's own rejected `[op_annot::eng_or_blank $v]` at
+#                 the call site                     -> EN2 EN3 EN4 (+ H4 F20)
+#   SB-UNGATED    `to_eng $v` with no `_finite` gate: the numbers are right and
+#                 ::en_canary FIRES - a raw file's string reaches
+#                 `uplevel #0 expr` - and `1e400` prints `infT`
+#                                                    -> EN2 EN3 EN4 (+ H4)
+#   SB-OWNFORMAT  rdw.tcl grows its own %.4g SI ladder, numerically IDENTICAL
+#                 to the sheet at the shipped ev_precision 4 - EN1, EN3, EN4
+#                 and EN5 all pass                            -> EN2 EN6
+#   SB-FLATTEN    right numbers, vocabulary flattened: an empty value blanks
+#                 instead of saying `(no value reported)`     -> EN5 (+ F19)
+# ⚠ SB-ONELINER PASSES EN5 and SB-OWNFORMAT PASSES EN1, EN3, EN4 AND EN5.
+# Neither row set is redundant with the other, and a section that had stopped
+# at "the numbers look right" would have shipped both.
+# AND SIXTEEN EXISTING GOLDENS MOVE WITH THEM, in this file (F1 F3 F4 F5 F7 F8
+# F14 F15 Q1 Q3 Q4 Q6 K8 BT0 RE4, both arms) and one in
+# tests/headless/test_op_param_store_1245.tcl (BE0). They are updated in the
+# same pass and for the same reason: they spell out what the window prints, and
+# what the window prints is what this item changes. Measured by running the
+# whole suite against the R5 prototype, not by reading.
+#
+# THE NUMBERS BELOW WERE MEASURED, NOT DERIVED. `to_eng` was driven on this
+# binary with the shipped `ev_precision` 4 (xschem.tcl:18540):
+#   1.11e-05 -> 11.1u   0.001 -> 1m     1e-15 -> 1f     1.2e9 -> 1.2G
+#   -1.11e-05 -> -11.1u 0.75 -> 0.75    0 -> 0          1.2e-05 -> 12u
+#   2.5e-3 -> 2.5m      4.7e-12 -> 4.7p 1.234567e-05 -> 12.35u (12.3457u at 6)
+#   1e400 -> infT       nan -> {}       abc -> {}
+
+set EN_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
+set EN_CTX [rw_ctx {M1:/xdut/xbg} {@m.x1.m1} op M1]
+
+# --- EN1  THE BEHAVIOUR THE USER ASKED FOR, AS THE PASTE SHAPE ---------------
+## Seven magnitudes across six decades, plus the genuine zero F12 protects and
+## a negative. The last leg is R2's machinery read back over the SAME block:
+## `rdw::_row_param` recovers a parameter name from a rendered line, and every
+## Up/Down, every re-slot and every cursor read goes through it - a value that
+## suddenly carries a unit suffix must not cost the window its rows.
+set EN1_ANS [rw_ansd [dict create {@m.x1.m1} \
+      {{id 1.11e-05} {gm 0.001} {cgs 1e-15} {ft 1.2e9} {vth 0.75} {is 0} \
+       {ibulk -1.11e-05}}] {} {} 0 ok]
+set EN1_B [rw_block $EN1_ANS $EN_CTX]
+set EN1_T [rw_text  $EN1_ANS $EN_CTX]
+set EN1_P {}
+if {![rw_bad $EN1_B]} {
+  foreach e $EN1_B { lappend EN1_P [rw_ans ::rdw::_row_param $e] }
+}
+check {EN1 every value in the block prints in engineering notation - microamps, millisiemens, femtofarads, gigahertz - the raw exponent form appears NOWHERE, a genuine 0 is still 0 and a negative keeps its sign, and R2's row reader still recovers every parameter name from the re-formatted lines} \
+  [list $EN1_T [rw_count $EN1_T {1.11e-05}] [rw_count $EN1_T {0.001}] \
+        [rw_count $EN1_T {1e-15}] [rw_count $EN1_T {1.2e9}] $EN1_P] \
+  [list [rw_lines {M1:/xdut/xbg} {@m.x1.m1} $RW_INC \
+                  {    id    : 11.1u} {    gm    : 1m} {    cgs   : 1f} \
+                  {    ft    : 1.2G} {    vth   : 0.75} {    is    : 0} \
+                  {    ibulk : -11.1u} {}] \
+        0 0 0 0 {{} {} {} id gm cgs ft vth is ibulk {}}]
+
+# --- EN2  THE SAME PROC AS THE SHEET, NOT A SECOND FORMATTER ----------------
+## The behavioural half is deliberately an equality with `op_annot::eng_or_blank`
+## rather than a second list of literals: EN1 already holds the literals, and
+## what this row adds is that the two surfaces cannot disagree ABOUT A VALUE
+## NOBODY WROTE A GOLDEN FOR. The structural half is the safety gate - to_eng
+## evaluates its argument at global scope, so a direct call from this file is a
+## code path out of a raw file and not a formatting choice.
+set EN2_V {1.11e-05 0.001 1e-15 1.2e9 -1.11e-05 0.75 0 2.5e-3 4.7e-12}
+set EN2_GOT {} ; set EN2_WANT {}
+foreach v $EN2_V {
+  lappend EN2_GOT  [rw_ans ::rdw::_value_text $v]
+  lappend EN2_WANT [rw_ans ::op_annot::eng_or_blank $v]
+}
+check {EN2 the window formats a finite value BYTE-IDENTICALLY to op_annot::eng_or_blank, the proc op_annot::text puts on the sheet, for nine values across nine decades - and src/rdw.tcl reaches it by name while calling the evaluating to_eng not once, which is what keeps a raw file's string out of `uplevel #0 expr`} \
+  [list $EN2_GOT [lindex $EN2_WANT 0] \
+        [expr {$EN_F eq {NOFILE} ? {NOFILE} : ([rw_count $EN_F {eng_or_blank}] >= 1 ? 1 : 0)}] \
+        [expr {$EN_F eq {NOFILE} ? {NOFILE} : [rw_count $EN_F {to_eng}]}]] \
+  [list $EN2_WANT 11.1u 1 0]
+
+# --- EN3  A NON-NUMERIC VALUE PASSES THROUGH UNCHANGED, AND IS NOT EVALUATED -
+## Ruling DD-7's rejected one-liner loses every one of these. They are not
+## exotic: a model name is what a `.op` save of a subcircuit parameter carries,
+## `-` is the placeholder a PDK writes for a column it declines to compute, a
+## geometry already written `1.5u` is the ordinary spelling in a netlist, and a
+## two-token value is what a backend returns for a swept pair.
+## THE LAST ONE IS THE SAFETY ROW. If anything on this path calls to_eng
+## without the finite gate, the bracket runs and ::en_canary exists.
+catch {unset ::en_canary}
+set EN3_ANS [rw_ansd [dict create {@m.x1.m1} [list \
+      [list model sg13g2_lv_nmos] \
+      [list corner {-}] \
+      [list w {1.5u}] \
+      [list pair {1.5 2.5}] \
+      [list note {50%}] \
+      [list expr_ {[set ::en_canary 1]}]]] {} {} 0 ok]
+set EN3_T [rw_text $EN3_ANS $EN_CTX]
+check {EN3 a model name, a `-` placeholder, a value already written 1.5u, a two-token value and a percent all pass through VERBATIM - none of them becomes the absent column's blank, whose footnote would then be false about it - and a value holding a command substitution is rendered, never run: ::en_canary does not exist} \
+  [list $EN3_T [rw_count $EN3_T {(no value reported)}] \
+        [expr {[info exists ::en_canary] ? {CANARY-FIRED} : 0}]] \
+  [list [rw_lines {M1:/xdut/xbg} {@m.x1.m1} $RW_INC \
+                  {    model  : sg13g2_lv_nmos} {    corner : -} \
+                  {    w      : 1.5u} {    pair   : 1.5 2.5} \
+                  {    note   : 50%} {    expr_  : [set ::en_canary 1]} {}] \
+        0 0]
+
+# --- EN4  A NON-FINITE VALUE IS NOT BLANKED, AND NEVER PRINTS AS A NUMBER ----
+## Ruling DD-7: "blanking them would silently undo issue 1272, which this
+## branch has already paid for once." `nan` used to print here verbatim, which
+## invariant I3 forbids for a different reason, so neither the old behaviour nor
+## eng_or_blank's blank is the answer: the words the window ALREADY HAS are.
+## The `1e400` leg is the one that catches a direct to_eng call - it answers
+## `infT`, and `infT` reads like a measurement.
+set EN4_ANS [rw_ansd [dict create {@m.x1.m1} \
+      {{id nan} {gm inf} {gds -inf} {ft 1e400} {vth 0.75}}] {} {} 0 ok]
+set EN4_T [rw_text $EN4_ANS $EN_CTX]
+check {EN4 a non-finite value arriving in the `devices` bucket renders the window's existing words, exactly as the nonfinite BUCKET does - never a blank, never `(no value reported)`, never the raw nan/inf text and never to_eng's `infT` - while the finite neighbour in the same block is untouched} \
+  [list $EN4_T [rw_count $EN4_T {nan}] [rw_count $EN4_T {inf}] \
+        [rw_count $EN4_T {(no value reported)}]] \
+  [list [rw_lines {M1:/xdut/xbg} {@m.x1.m1} $RW_INC \
+                  "    id  : $RW_NF" "    gm  : $RW_NF" "    gds : $RW_NF" \
+                  "    ft  : $RW_NF" {    vth : 0.75} {}] \
+        0 0 0]
+
+# --- EN5  ALL THREE OF THE WINDOW'S EXISTING WORDS SURVIVE, IN ONE BLOCK -----
+## The three distinctions this window makes - a column with no value reported,
+## a column that did not converge, and a column the raw names but the simulator
+## never computed - are the reason issue 1272 and issue 1284 were paid for. A
+## formatter is exactly the kind of change that flattens them, because every
+## one of them arrives at the renderer as "not a number".
+set EN5_ANS [rw_ansd [dict create {@m.x1.m1} {{ids 1.2e-05} {vth {}} {gm}}] \
+                     {{@m.x1.m1 gds}} {{@m.x1.m1 vbs nan}} 0 ok]
+set EN5_T [rw_text $EN5_ANS $EN_CTX]
+check {EN5 engineering notation costs the window none of its vocabulary: the measured value is engineered, an empty and a value-less pair still say `(no value reported)`, the nonfinite bucket still says `(did not converge)`, the absent column is still a BLANK with no trailing space, and the blank-value footnote still rides exactly once} \
+  [list $EN5_T [rw_count $EN5_T $RW_ABSN]] \
+  [list [rw_lines {M1:/xdut/xbg} {@m.x1.m1} $RW_INC \
+                  {    ids : 12u} {    vth : (no value reported)} \
+                  {    gm  : (no value reported)} "    vbs : $RW_NF" \
+                  {    gds :} $RW_ABSN {}] 1]
+
+# --- EN6  THE USER'S OWN PRECISION SETTING REACHES THE WINDOW ---------------
+## `to_eng` reads the global `ev_precision` at call time and the user can set it
+## (xschem.tcl:17740, "Enter precision (int)"). A second formatter in rdw.tcl
+## carrying a hard-coded %.4g would pass EN1 and EN5 and be wrong the first time
+## the user changed it - and the window and the sheet would then print DIFFERENT
+## numbers for the same value, which is the one thing this item exists to stop.
+set EN6_SAVE [expr {[info exists ::ev_precision] ? $::ev_precision : {NOVAR}}]
+set EN6_P4 [rw_ans ::rdw::_value_text 1.234567e-05]
+set ::ev_precision 6
+set EN6_P6 [rw_ans ::rdw::_value_text 1.234567e-05]
+if {$EN6_SAVE eq {NOVAR}} { catch {unset ::ev_precision} } else { set ::ev_precision $EN6_SAVE }
+set EN6_BACK [rw_ans ::rdw::_value_text 1.234567e-05]
+check {EN6 the window honours the user's ev_precision because it goes through the sheet's formatter and carries none of its own: the shipped default 4 prints 12.35u, 6 prints 12.3457u, and restoring the setting restores the number} \
+  [list $EN6_SAVE $EN6_P4 $EN6_P6 $EN6_BACK] \
+  [list 4 12.35u 12.3457u 12.35u]
+
+# --- EN7  THE VALUES NOBODY WROTE A GOLDEN FOR, ADDED BY THE IMPLEMENTING PASS
+## The implementing pass asked the brief's question - "write down the input most
+## likely to break your change, and check whether any row would see it" - and
+## found six that no row above sees, because they are values `to_eng`'s own SI
+## ladder does not cover.  MEASURED on this binary at ev_precision 4:
+##   1e-321   -> 9.98e-304a   (denormal, below atto: an exponent AND a suffix)
+##   1e20     -> 1e+08T       (above tera: the same mixed form at the top)
+##   0x10     -> 16           0b101 -> 5    +5 -> 5    5. -> 5    .5 -> 0.5
+## Two of those read oddly and one silently rebases a hex literal, and NONE of
+## it is this item's doing: it is `to_eng`, and the SHEET PRINTS THE SAME THING.
+## That is the row.  DD-7's promise is not "every value is pretty", it is "the
+## window and the sheet cannot disagree", so this row asks for the EQUALITY and
+## for the two invariants that must hold whatever to_eng answers - the value is
+## never blanked and never becomes `(did not converge)`.  Written as an
+## equality on purpose: pinning `9.98e-304a` as a literal would fence a libm
+## denormal this item does not own, and would red on the day someone fixes
+## to_eng's ladder - at which point BOTH surfaces move together, which is the
+## whole design.
+set EN7_V {1e-321 1e20 0x10 0b101 +5 5. .5}
+set EN7_GOT {} ; set EN7_WANT {} ; set EN7_BLANK 0 ; set EN7_NF 0
+foreach v $EN7_V {
+  set g [rw_ans ::rdw::_value_text $v]
+  lappend EN7_GOT  $g
+  lappend EN7_WANT [rw_ans ::op_annot::eng_or_blank $v]
+  if {$g eq {}} { incr EN7_BLANK }
+  if {$g eq $RW_NF} { incr EN7_NF }
+}
+check {EN7 a finite value outside to_eng's SI ladder - a denormal, a number above tera, a hex and a binary literal - still prints EXACTLY what the sheet prints for it, and is never blanked and never called a non-convergence: the guarantee this item buys is agreement, and it holds for the values nobody wrote a golden for} \
+  [list $EN7_GOT $EN7_BLANK $EN7_NF] \
+  [list $EN7_WANT 0 0]
+
+catch {unset ::en_canary}
 set ::rdw::blocks {}
 rw_ans ::rdw::set_row 0
 rw_ans ::rdw::status {}

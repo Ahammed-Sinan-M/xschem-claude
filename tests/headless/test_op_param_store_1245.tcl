@@ -4237,6 +4237,13 @@ set BE_OLDUCD2 $::USER_CONF_DIR
 set BE_HOME [file join $BE_ROOT home]
 file mkdir $BE_HOME
 
+## ⚠ THE TWO RENDERED LINES IN THIS ROW'S GOLDEN MOVED WITH ITEM R5 (issue
+## 1341) AND THE ROW'S SUBJECT DID NOT.  The RDW prints parameter values in
+## engineering notation now, through `op_annot::eng_or_blank`, the same proc
+## `op_annot::text` puts on the sheet - so the pane line that used to read
+## `    ids : 1.2e-05` reads `    ids : 12u`.  This row still asks only that the
+## fixture is live and that `ids` is on line 9 and `gds` on line 11; what the
+## values LOOK like is fenced in section EN of tests/headless/test_rdw_window_1245.tcl.
 be_reset
 be_blocks
 check {BE0 CONTROL the fixture is live: two type tokens in ONE class from two different cell files, an IHP-shaped seed whose first triple has label != param, a two-block pane whose older block puts `ids` on line 9 and `gds` on line 11, and three deck cards - without this every row below could pass by touching nothing} \
@@ -4249,7 +4256,7 @@ check {BE0 CONTROL the fixture is live: two type tokens in ONE class from two di
         [lindex [lindex [lindex $::rdw::blocks 1] 5] 1] \
         [ol_ans ::op_annot::_cards_for M1 {}]] \
   [list 0 b5ndev b5pdev b5cls b5cls $BE_SEED 0 1 2 \
-        {    ids : 1.2e-05} {    gds : 5.6e-06} $BE_CARDS3]
+        {    ids : 12u} {    gds : 5.6u} $BE_CARDS3]
 
 # --- BE1  THE REORDER SURVIVES SAVE AND RELOAD -------------------------------
 ## The acceptance sentence, in one process: two Up presses, the window's own

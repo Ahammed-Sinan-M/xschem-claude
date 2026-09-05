@@ -24,7 +24,7 @@ user's files.
 | R1 | 1337 | the line cursor | **DONE** 2026-09-05 |
 | R2 | 1338 | Up/Down move the row and the sheet follows | **DONE** 2026-09-05 |
 | R4 | 1340 | raise the window when something is sent to it | **DONE** 2026-09-05 |
-| R5 | 1341 | engineering notation | not started |
+| R5 | 1341 | engineering notation | **DONE** 2026-09-05 |
 | R3 | 1339 | select and copy | not started |
 
 Order is deliberate: R2 needs R1's cursor for its subject; R3 is last because it
@@ -305,3 +305,124 @@ reader is not misled by whichever of the two they happen to open first.
 focus finding, the creep question and the pick-mode cost. **Suites green, please
 look** — a raised window on VcXsrv is a pixel judgement no count can make, and
 `:99` provably cannot reproduce the defect that was reported.
+
+---
+
+### R5 — issue 1341, engineering notation — DONE 2026-09-05
+
+**What the user can now do:** read the Results Display Window and the schematic
+side by side and see **the same number in the same notation** — `id : 11.1u` in
+the pane where the sheet says `id = 11.1u`, instead of the raw `1.11e-05` the
+window used to print. It is not a lookalike: the window now formats through
+`op_annot::eng_or_blank`, *the sheet's own proc*, so the two surfaces cannot
+drift and the user's own `ev_precision` reaches both.
+
+**Files:** `src/rdw.tcl` (the only file under `src/` — one proc,
+`rdw::_value_text`), `tests/headless/test_rdw_window_1245.tcl` (new section EN,
+plus sixteen existing goldens re-measured), `tests/headless/test_op_param_store_1245.tcl`
+(row BE0's two rendered lines),
+`doc/claude/issues/1341-rdw-parameter-values-printed-raw-not-in-engineering-notation.md`,
+`doc/claude/issues/NUMBERING.md`.
+
+**Name+status diff, RE-MEASURED here, not taken on trust.** The RED state was
+reproduced by restoring the pre-R5 proc body into `src/rdw.tcl` (a `cp` copy
+taken first; restore verified by `md5sum` — `dbf54238604b7b2a90aa22d67fa924ab`
+before and after), running all five suites, then restoring. Every cell below
+printed a real RESULT line; none is an empty grep.
+
+| suite | how | RED | after | rows that moved |
+|---|---|---|---|---|
+| `test_rdw_window_1245` | `--nogui` | 21 FAILED (113) | **ALL PASS (134)** | F1 F3 F4 F5 F7 F8 F14 F15 Q1 Q3 Q4 Q6 K8 BT0 RE4 (goldens) + EN1 EN2 EN4 EN5 EN6 EN7 FAIL→ok. EN3 green throughout, deliberately. |
+| `test_rdw_window_1245` | `:99` | 21 FAILED (125) | **ALL PASS (146)** | the same twenty-one |
+| `test_op_param_store_1245` | `--nogui` | 1 FAILED (129) | **ALL PASS (130)** | BE0 FAIL→ok |
+| `test_rdw_keys_1245` | `:99` | ALL PASS (59) | **ALL PASS (59)** | none |
+| `test_op_annot` *(control)* | `--nogui` | ALL PASS (485) | **ALL PASS (485)** | none |
+| `test_annot_declutter_1244` | `:99` | — | **ALL PASS (134)** | none |
+| T1 `tclsh run_regression.tcl` | solo | — | **0 counted failures** | 57 cases all `Total num fail: 0`, exit 0, no `exit 127` |
+
+**The change, in full** — one proc, four arms, ruling **DD-7**'s wrapper and not
+its rejected one-liner:
+
+```tcl
+proc rdw::_value_text {v} {
+    if {[string trim $v] eq {}} { return {(no value reported)} }
+    if {![string is double -strict $v]} { return [rdw::_oneline $v] }
+    set e {NOFMT}
+    catch {set e [::op_annot::eng_or_blank $v]}
+    if {$e eq {NOFMT}} { return [rdw::_oneline $v] }
+    if {$e ne {}} { return [rdw::_oneline $e] }
+    return [rdw::_nonfinite_text $v]
+}
+```
+
+Nothing else under `src/` moved, and the three reasons PLAN.md gives all held:
+`rdw::_row_param` matches only the name before the colon (EN1's last leg reads
+every parameter name back out of the re-formatted block, so R2's Up/Down, the
+re-slot and the cursor are unaffected); the column width is computed from
+parameter **names** only, so alignment did not move; `_reslot_block` /
+`_reorder_shown` reuse already-rendered lines.
+
+**`string is double -strict` is doing two jobs.** It splits the non-finite arm
+from the verbatim arm, and it is a **second** lock on the safety gate
+`eng_or_blank` already carries: `to_eng` is `uplevel #0 expr [join $args]`, so a
+value that reached it unguarded would evaluate **at global scope**, on a string
+that came out of a raw file. `src/rdw.tcl` names `eng_or_blank` and names
+`to_eng` **zero** times, and row EN2's structural leg counts both in the
+comment-stripped file.
+
+**The sharpest input, measured on this binary:** `to_eng 1e400` returns the
+string **`infT`** — a plausible-looking engineering number that is not a number,
+and it would paste into a design review as one. `1e400` passes
+`string is double -strict`; `eng_or_blank`'s `_finite` catches it and answers
+`{}`, which is how it reaches the `(did not converge)` arm. EN4's fourth leg is
+that value.
+
+**One row the RED pass did not write, added by the implementing pass: EN7.** The
+crew brief asks for the input most likely to break the change and whether any row
+would see it. The answer was a value **outside `to_eng`'s SI ladder**, and none
+did. Measured at `ev_precision` 4: `1e-321` → `9.98e-304a`, `1e20` → `1e+08T`,
+`0x10` → `16`, `0b101` → `5`, `+5` → `5`, `5.` → `5`, `.5` → `0.5`. Two read
+oddly and one silently rebases a hex literal — and **none of it is this item's
+doing**: the *sheet* prints the same thing. So EN7 asks for the **equality** with
+`eng_or_blank` plus the two invariants that must survive whatever `to_eng`
+answers (never blanked, never `(did not converge)`), rather than pinning
+`9.98e-304a` as a literal — which would fence a libm denormal this item does not
+own and would red on the day someone improves the ladder, at which point both
+surfaces move together. EN7 is red before the change too, and reds in the RED
+run above.
+
+**The NOFMT sentinel is not decoration.** `catch` leaves it in place only when
+the call **raised** — an `op_annot` that never loaded — and that arm falls back
+to the raw text. Answering `(did not converge)` there would invent a
+non-convergence for a number the simulator computed perfectly well. Measured by
+renaming `eng_or_blank` away in a live interpreter: `1.11e-05` → `1.11e-05`,
+`nan` → `nan`, both back the moment it is renamed home. Its cost is in the
+comment: in that arm (unreachable as shipped — `src/xschem.tcl:16780` sources
+`op_annot.tcl` before `:16821` sources `rdw.tcl`) a `nan` prints raw again,
+exactly as it did before this item, because telling it apart without the sheet's
+proc means a second spelling of "is this finite" in this file — the drift the
+item exists to remove.
+
+**Decisions relied on:** **DD-7**, honoured as written and **not** found wrong —
+the wrapper is exactly what it describes, its rejected one-liner is sabotage
+variant SB-ONELINER and reds EN2 EN3 EN4, and the blank it forbids is EN4.
+
+**The E question, recorded not decided:** DD-7 forbids the blank and invariant I3
+forbids the raw `nan`, so the third option — the window's own
+`(did not converge)`, which PLAN.md's R5 bullet names — was the crew's choice,
+and it is **a behaviour change beyond notation**. Rule debt
+`1341_nonfinite_in_the_devices_bucket` (`--eyes`), with all three options and the
+note that (a) is lossy: `nan`, `inf` and an overflowing literal all read the
+same. Overruling it moves row EN4 and nothing else.
+
+**Still not fixed, said loudly:** issue **1331** (the narrow arm's refusal for a
+symbol path containing a space) is untouched — R5 changes no status line. Issue
+**1330** is R2's and is fixed in the code; its own issue file still opens
+*"Status: FILED, NOT FIXED"*, which is stale — recorded here and in the 1341
+write-up rather than edited from this item, the same way R4's row recorded it.
+
+**Look debt:** `the_RDW_engineering_notation`, updated **in place** (one debt for
+one formatter, not a second filing) with the counts, the ragged-value-column
+question and the lossy-nonfinite caveat. **Suites green, please look** — whether
+the numbers read the same as the schematic's is a judgement about a number's
+shape, and no count makes it.

@@ -1618,8 +1618,18 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   `rdw::push` raises through the half without it. The re-map takes the keyboard
   unless the existing one-shot hand-back is armed for it, which is the half of
   this the user forbade in the same sentence. **FIXED.**
-* **1341** — RDW parameter values print in engineering notation, through the
-  same proc the schematic annotation uses.
+* **1341** — **the RDW printed raw exponents where the schematic prints
+  engineering notation.** `rdw::_value_text` returned the seam's string as it
+  arrived, so the same transistor read `id : 1.11e-05` in the window and
+  `id = 11.1u` on the sheet two inches away. Item **R5**: that proc becomes a
+  WRAPPER around `op_annot::eng_or_blank` — the sheet's own proc, so the two
+  surfaces cannot drift and the user's `ev_precision` reaches both — with three
+  arms ruling DD-7 requires kept intact: `(no value reported)` for a blank
+  (1284), `rdw::_nonfinite_text` for a non-finite value (1272 — eng_or_blank
+  would blank it, and `to_eng 1e400` answers the plausible-looking `infT`), and
+  VERBATIM pass-through for a value that is not a number at all. `to_eng` is
+  named nowhere in the file: it is `uplevel #0 expr`, on strings from a raw.
+  **FIXED.**
 
 * **1342** — **the probe's own suite reddened when a third deck was added.**
   Row C5 of `test_ase_simcaps_0948` counted `.control` blocks against

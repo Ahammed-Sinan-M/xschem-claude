@@ -416,9 +416,77 @@ proc rdw::_line {tag text} { return [list $tag [rdw::_oneline $text]] }
 # simulator did not compute it") was then FALSE about them.  Words, in the same
 # family as `(did not converge)`, keep the blank glyph meaning exactly one
 # thing, and leave the footnote's "rides exactly once" golden where it is.
+#
+# ISSUE 1341 / RULING DD-7 -- ENGINEERING NOTATION, THROUGH THE SHEET'S OWN
+# PROC.  The user asked for "engineering notation - just like annotation on
+# the schematic", and "just like" is not "looks similar": `eng_or_blank`
+# (src/op_annot.tcl:1266) is the proc `op_annot::text` (:2125) puts on the
+# sheet, so calling THAT ONE here is what makes the two surfaces unable to
+# disagree about a value nobody wrote a golden for.  It also carries the
+# user's own `ev_precision`, which to_eng reads at call time (xschem.tcl:1902)
+# and a second %.4g ladder living in this file would not: at the shipped 4 the
+# two are numerically identical, and they part company the first time the user
+# sets it to 6 -- which is exactly the disagreement this item exists to stop.
+#
+# ⚠ IT IS A WRAPPER, NOT A SUBSTITUTION.  DD-7 rejects the one-liner
+# `set v [::op_annot::eng_or_blank $v]` at the call site, because that proc
+# returns EMPTY for everything that is not a finite double and this window's
+# values frequently are not one.  Four arms, and three of them are the reason:
+#
+#   BLANK      stays first and stays words (issue 1284, above).
+#   A NUMBER   is engineered by the sheet's proc.
+#   NOT A
+#   NUMBER     passes through VERBATIM.  A model name, a `-` placeholder for a
+#              column the PDK declines to compute, a geometry already written
+#              `1.5u`, a swept pair `1.5 2.5`: the one-liner blanks every one
+#              of them, and a blanked value here does not read as "not a
+#              number", it reads as the ABSENT column's blank -- whose footnote
+#              then says something FALSE about it.
+#   A NON-
+#   FINITE
+#   NUMBER     gets `_nonfinite_text`, the words the nonfinite BUCKET already
+#              gets.  eng_or_blank blanks `nan`, and an empty string where
+#              `nan` used to print is issue 1272's defect wearing engineering
+#              notation -- a silent loss of the one thing the user needed
+#              told.  Invariant I3 forbids painting the raw `nan` too, so the
+#              old pass-through was not the answer either.
+#
+# ⚠ THE `string is double -strict` GATE IS WHAT SPLITS THE LAST TWO, and it is
+# also a SECOND lock on the safety gate eng_or_blank already carries: to_eng is
+# `uplevel #0 expr [join $args]`, so a value that reached it unguarded would
+# EVALUATE at global scope -- and these values arrive from a raw file.  A
+# `devices` pair holding `[set ::whatever 1]` is not a double, so it never gets
+# near it.  This file therefore names eng_or_blank and never names to_eng; the
+# suite's row EN2 fences both halves by counting them in this file.
+#
+# ⚠ `1e400` IS THE INPUT THAT MADE THE NON-FINITE ARM WORTH ITS OWN BRANCH.
+# MEASURED on this binary: it passes `string is double -strict`, and `to_eng`
+# answers the string `infT` -- which reads like a measurement and would paste
+# into a design review as one.  eng_or_blank's `_finite` catches it (the
+# `$v*0.0 == 0.0` raise, op_annot.tcl:1179) and answers {}, which is how a
+# blank reaches the last arm below.
+#
+# ⚠ AND THE {} FROM A MISSING FORMATTER IS NOT THE {} FROM A NON-FINITE VALUE.
+# `catch` leaves the NOFMT sentinel in place only when the call RAISED -- an
+# op_annot that never loaded -- and that arm falls back to the raw text, which
+# is unformatted but true.  Answering `(did not converge)` there would invent a
+# non-convergence for a number the simulator computed perfectly well, which is
+# the plausible-wrong-number failure invariant I3 exists to prevent.  The cost
+# is that in THAT arm a `nan` prints raw again, exactly as it did before this
+# item; telling it apart without the sheet's proc would mean a second spelling
+# of "is this finite" in this file, which is the drift the item exists to
+# remove.  Unreachable as shipped -- xschem.tcl:16780 sources op_annot.tcl
+# before :16821 sources this file -- and MEASURED by renaming eng_or_blank
+# away: 1.11e-05 -> `1.11e-05`, nan -> `nan`, and both come straight back when
+# it is renamed home.
 proc rdw::_value_text {v} {
     if {[string trim $v] eq {}} { return {(no value reported)} }
-    return [rdw::_oneline $v]
+    if {![string is double -strict $v]} { return [rdw::_oneline $v] }
+    set e {NOFMT}
+    catch {set e [::op_annot::eng_or_blank $v]}
+    if {$e eq {NOFMT}} { return [rdw::_oneline $v] }
+    if {$e ne {}} { return [rdw::_oneline $e] }
+    return [rdw::_nonfinite_text $v]
 }
 
 # OBLIGATION 3.  The four non-`ok` states otherwise all arrive as the same
