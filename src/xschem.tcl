@@ -7023,7 +7023,28 @@ proc _remap_verify {top {tries 2}} {
   if {$tries > 1} { after 250 [list _remap_verify $top [expr {$tries - 1}]] }
 }
 
-proc raise_activate_toplevel {top} {
+# ⚠ SPLIT IN TWO, ISSUE 1340, RULING DD-6, AND THE SPLIT IS THE POINT.
+# The Results Display Window (src/rdw.tcl) needs everything above -- the WSLg
+# re-map, the creep note, issue 0843's deferred recovery -- and must NOT have
+# the last line. The user's words: "the RDW needs to be raised (no need to
+# focus, just raise), just as the Library Manager is raised when one does
+# Ctrl-Alt-S". `xschem activate_window` sets _NET_ACTIVE_WINDOW, which IS
+# activation: on a real EWMH WM it takes the keyboard off the schematic the
+# user is working on, and the grammar that fills the RDW (bare 1/2/3/4 and the
+# command mode's Escape) lives on the CANVAS, so a stolen focus leaves a mode
+# the user cannot leave (rdw::_focus_canvas records the same failure).
+#
+# ⚠ SO THE LAST LINE MOVED, IT WAS NOT DELETED. Deleting it satisfies every
+# RDW row and silently stops the Library Manager, the CIW, create_instance,
+# copy_form, save_as_form, the wave viewer, ASE and alt2_toggle_view taking the
+# focus they ARE entitled to -- fourteen call sites, on a path no RDW suite
+# walks. Rows RA5 (test_rdw_keys_1245, behavioural) and RH2
+# (test_rdw_window_1245, headless) are the fence.
+#
+# Callers that want the raise WITHOUT the activation call `raise_toplevel`
+# directly; every pre-existing caller keeps calling `raise_activate_toplevel`
+# and its behaviour is unchanged, line for line.
+proc raise_toplevel {top} {
   global has_x
   if { ![info exists has_x] || !$has_x } return
   if {![winfo exists $top]} return
@@ -7038,6 +7059,16 @@ proc raise_activate_toplevel {top} {
     after 150 [list _remap_verify $top]   ;# issue 0843: same request, same WM, same risk
   }
   raise $top
+}
+
+# The two guards are repeated rather than inherited from `raise_toplevel`'s
+# early returns: `winfo id` on a destroyed window RAISES, and the pre-split
+# proc never reached that line in either case.
+proc raise_activate_toplevel {top} {
+  global has_x
+  if { ![info exists has_x] || !$has_x } return
+  if {![winfo exists $top]} return
+  raise_toplevel $top
   catch { xschem activate_window [winfo id $top] }
 }
 

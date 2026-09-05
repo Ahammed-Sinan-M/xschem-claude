@@ -1610,7 +1610,14 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
 * **1339** — select + `Ctrl-C` does not copy (VcXsrv); double-click-then-drag
   extend is unreliable. PRIMARY is not CLIPBOARD.
 * **1340** — the RDW must RAISE when something is sent to it, like the Library
-  Manager on Ctrl-Alt-S — raise only, no focus.
+  Manager on Ctrl-Alt-S — raise only, no focus. `rdw::push` said nothing to the
+  window manager at all, and `rdw::open`'s plain `raise` is an inert no-op on
+  the server the user reported from (issue 0054). Item **R4**:
+  `raise_activate_toplevel` SPLIT (the shared body becomes `raise_toplevel`;
+  the activation line MOVED, not deleted — fourteen other callers keep it), and
+  `rdw::push` raises through the half without it. The re-map takes the keyboard
+  unless the existing one-shot hand-back is armed for it, which is the half of
+  this the user forbade in the same sentence. **FIXED.**
 * **1341** — RDW parameter values print in engineering notation, through the
   same proc the schematic annotation uses.
 

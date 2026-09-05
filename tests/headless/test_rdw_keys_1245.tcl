@@ -2435,6 +2435,354 @@ C \{$RD_SYMN\} 300 -300 0 0 \{name=M1\}"
     {0 0 0 0 1 0}
 }
 
+# ============================================================================
+# SECTION RA — ITEM R4, ISSUE 1340: A DUMP RAISES THE WINDOW AND TAKES NOTHING
+# ============================================================================
+# The user's words: "When user sends info to the Results Display Window (RDW),
+# the RDW needs to be raised (no need to focus, just raise), just as the
+# Library Manager is raised when one does Ctrl-Alt-S."
+#
+# `rdw::push` is the single door every dump goes through, so that is where the
+# rows drive it - and RA3 drives the SHIPPED key path on top, because a raise
+# wired only into a hand-called push would satisfy every row that calls push
+# and do nothing at all for a user pressing 1. That is this batch's own
+# recurring failure, met on the previous item.
+#
+# ⚠ WHY A DECOY TOPLEVEL AND `wm stackorder`. There is no way to ask a window
+# "are you on top" except relative to another one, so every row parks a second
+# toplevel over .rdw first and asserts the BEFORE state as a leg. `.radecoy` is
+# created once and re-parked per row by `ra_park`, which POLLS rather than
+# sleeping - issue 1332's lesson, three rows of section SD up this same file
+# arm a modal on a fixed `after 100` and flake for it.
+#
+# ⚠ THE TRAP THIS SECTION EXISTS FOR, MEASURED ON :99 BEFORE IT WAS WRITTEN.
+# Ruling DD-6 says to reuse `raise_activate_toplevel`'s body - `wm withdraw` +
+# `wm deiconify` - because a plain `raise` is an inert no-op on the window
+# manager issue 0054 was filed against. Measured here, openbox on :99, with
+# nothing else changed and the keyboard parked on the canvas first:
+#     plain raise            Map 0  Unmap 0   above 1   keyboard stays on .drw
+#     withdraw + deiconify   Map 1  Unmap 1   above 1   KEYBOARD MOVES TO .rdw
+# and it stays there through every later `update`. A window manager grants
+# focus to a newly MAPPED toplevel, and the one thing in this file that catches
+# that grant - `rdw::_arm_focus_handback` - returns 0 WITHOUT ARMING when .rdw
+# already exists and is mapped, which is exactly the case this item is about.
+# So the obvious implementation of R4 takes the keyboard off the schematic on
+# every dump into an open window, and the user forbade that in the same
+# sentence as the request. Every row below reads `focus` after settling.
+# ⚠ AND IT IS SATISFIABLE, measured the same way rather than assumed: with
+# `::rdw::focus_pending` set to 1 before the re-map, the keyboard is back on
+# .drw afterwards and the flag is cleared. The demand is met by ARMING the
+# existing hand-back, not by inventing a second focus path.
+#
+# ⚠ AND `:99` CANNOT SEE THE DEFECT THE USER REPORTED. A plain `raise` scores
+# `above 1` here and does nothing on their server. That is what the Map/Unmap
+# counters are for: they are read from real X events on .rdw and say the window
+# was really RE-MAPPED, which is the Library Manager's own idiom and the only
+# thing that works there. They cannot be satisfied by scheduling
+# `_remap_verify` alone, and `_remap_verify` cannot be satisfied by a re-map
+# that forgot issue 0843's recovery - so both are read, and neither alone.
+#
+# ⚠ AND ONE LEG HERE HAS NO TEETH ON THIS DISPLAY, SAID OUT LOUD RATHER THAN
+# LEFT TO BE TRUSTED. The `wm geometry` legs fence issue 0054's north-west
+# creep - a re-map that forgets to put the geometry back. Measured against a
+# prototype with the geometry restore DELETED: openbox on :99 puts the window
+# back by itself and the suite scores ALL PASS 59/59. So those legs are a fence
+# for the window manager the user actually runs, and this display cannot fail
+# them. They stay, because the cost is one comparison and the alternative is no
+# fence at all; what may not happen is anyone reading a green run here as
+# evidence that the geometry is safe.
+#
+# FIVE PROTOTYPES WERE RUN BEFORE THIS SECTION WAS COMMITTED, none of them
+# touching src/ - each redefines `rdw::push` in the running interpreter and
+# sources this file - and the table is what the rows are worth:
+#   the shipped tree, nothing added        RA1 RA2 RA3 RA4 red
+#   a plain `raise` (right on :99, inert
+#     on the server the user reported from) RA2 RA3 red
+#   the re-map with the hand-back NOT armed
+#     (the obvious implementation)          RA1 RA2 RA4 red, on `focus` = .rdw
+#   `raise_activate_toplevel` unchanged     RA1 RA2 RA3 RA4 red, on activation
+#   the geometry restore deleted            NOTHING red - see above
+#   the faithful DD-6 version               ALL PASS 59
+#
+# RED BEFORE R4, measured on this tree at HEAD 0122c9a7:
+#   RA1  nothing raises at all         got above-after 0, exp 1
+#   RA2  no re-map, no deferred verify  got 0 0 0 0, exp 1 1 1 1
+#   RA3  the key path raises by rdw::open's plain `raise` only - above is
+#        already 1, and the re-map legs are 0
+#   RA4  an iconified window stays iconic through a dump
+# GREEN BEFORE AND AFTER, and saying so is the point:
+#   RA5  the fence that says the SPLIT left the Library Manager, the CIW,
+#        create_instance and copy_form still ACTIVATING. Deleting the last line
+#        of `raise_activate_toplevel` instead of splitting it satisfies every
+#        other row in this section and silently stops four other windows taking
+#        the focus they are entitled to.
+#   RA6  hygiene.
+
+if {[kx_ans ::rdw::have_tk] eq {1}} {
+
+  ## ---- the settle, the spies and the parking ------------------------------
+  ## A real wait, not `update`: the window manager's map-time focus grant and
+  ## the `after 150` deferred re-map verify both arrive on a timer.
+  proc ra_settle {ms} {
+    set ::ra_tick 0
+    after $ms {set ::ra_tick 1}
+    vwait ::ra_tick
+    catch {update}
+    return {}
+  }
+  proc ra_w {args} {
+    set rc [catch {uplevel #0 $args} r]
+    if {$rc} { return "ERR:$r" }
+    return $r
+  }
+  ## Relative stacking, the only question X can answer. ERR while a window is
+  ## iconic, which row RA4 relies on and therefore does not read then.
+  proc ra_above {} {
+    set r ERR
+    catch {set r [wm stackorder .rdw isabove .radecoy]}
+    return $r
+  }
+  proc ra_zero {} {
+    set ::RA_MAP 0 ; set ::RA_UNMAP 0 ; set ::RA_RV 0 ; set ::RA_ACT 0
+    return {}
+  }
+  ## The Map/Unmap counters live on .rdw itself and must be re-armed every time
+  ## the window is rebuilt. `%W` is filtered because the toplevel's name is in
+  ## every child's bindtags, so a child's Map would otherwise count as the
+  ## window's own.
+  proc ra_watch {} {
+    if {![winfo exists .rdw]} { return 0 }
+    bind .rdw <Map>   {if {[string equal %W .rdw]} {incr ::RA_MAP}}
+    bind .rdw <Unmap> {if {[string equal %W .rdw]} {incr ::RA_UNMAP}}
+    return 1
+  }
+  ## POLL the fixture into place - decoy on top, keyboard on the canvas - and
+  ## SAY whether it got there. Every row asserts this answer as a leg, so a row
+  ## can never measure a raise against a window that was already on top.
+  proc ra_park {} {
+    for {set i 0} {$i < 20} {incr i} {
+      catch {raise .radecoy}
+      catch {focus -force .drw}
+      catch {update}
+      ra_settle 60
+      if {[ra_w focus] eq {.drw} && [ra_above] eq {0}} { return 1 }
+    }
+    return 0
+  }
+  proc ra_blk {} {
+    set ans [dict create devices [dict create {@m.x1.mra} {{id 1.234} {vth 0.5}}] \
+                         absent {} nonfinite {} complete 0 state ok]
+    set ctx [dict create header {MRA:/} devpath {@m.x1.mra} simtype op \
+                         instname MRA sim ngspice]
+    return [kx_ans ::rdw::format_answer $ans $ctx]
+  }
+  proc ra_panehas {needle} {
+    set t [ra_w .rdw.p.t get 1.0 end]
+    if {[string match {ERR:*} $t]} { return ERR }
+    return [expr {[string first $needle $t] >= 0 ? 1 : 0}]
+  }
+  ## .rdw open and mapped, the store empty, the decoy on top, the keyboard on
+  ## the canvas, the counters zeroed.  Answers ra_park's verdict.
+  proc ra_fixture {} {
+    set ::rdw::blocks {}
+    kx_ans ::rdw::set_row 0
+    kx_ans ::rdw::status {}
+    kx_ans ::rdw::open
+    catch {update}
+    ra_settle 150
+    ra_watch
+    set ok [ra_park]
+    ra_zero
+    return $ok
+  }
+
+  set ::RA_MAP 0 ; set ::RA_UNMAP 0 ; set ::RA_RV 0 ; set ::RA_ACT 0
+  ## The activation spy. An EXECUTION TRACE and not a rename: `xschem` is a C
+  ## command that every row in this file leans on, and a Tcl wrapper around it
+  ## would have to reproduce its result and error behaviour exactly. Measured:
+  ## `trace add execution` attaches to the C command and fires.
+  proc ra_spy_act {args} {
+    if {[string match {*activate_window*} [lindex $args 0]]} { incr ::RA_ACT }
+    return {}
+  }
+  proc ra_spy_rv {args} { incr ::RA_RV ; return {} }
+  set RA_TX [catch {trace add execution xschem enter ::ra_spy_act}]
+  set RA_TR [catch {trace add execution ::_remap_verify enter ::ra_spy_rv}]
+
+  catch {destroy .radecoy}
+  toplevel .radecoy
+  wm title .radecoy {RDW raise decoy}
+  wm geometry .radecoy 380x260+60+60
+  text .radecoy.t -width 20 -height 4
+  pack .radecoy.t
+  catch {update}
+  ra_settle 200
+
+  # --- RA1  THE DOOR RAISES, AND THE KEYBOARD DOES NOT MOVE -----------------
+  set RA1_OK  [ra_fixture]
+  set RA1_M0  [ra_w winfo ismapped .rdw]
+  set RA1_AB0 [ra_above]
+  set RA1_F0  [ra_w focus]
+  set RA1_G0  [ra_w wm geometry .rdw]
+  set RA1_R   [kx_ans ::rdw::push [ra_blk]]
+  catch {update}
+  ra_settle 500
+  check {RA1 A DUMP RAISES THE WINDOW: with .rdw open and mapped but parked UNDER another toplevel and the keyboard on the schematic, one push puts .rdw above that toplevel and leaves everything else exactly where it was - the other window still mapped, .rdw the same size and in the same place as before (issue 0054's north-west creep), the keyboard still on the canvas because the user said no need to focus, no _NET_ACTIVE_WINDOW asked for at all (ruling DD-6), and the block itself both stored and on screen} \
+    [list $RA1_OK $RA_TX $RA_TR $RA1_M0 $RA1_AB0 $RA1_F0 \
+          [kx_bad $RA1_R] \
+          [ra_above] [ra_w winfo ismapped .rdw] [ra_w winfo ismapped .radecoy] \
+          [expr {[ra_w wm geometry .rdw] eq $RA1_G0 ? 1 : 0}] \
+          [ra_w focus] $::RA_ACT [kx_nblocks] [ra_panehas MRA]] \
+    [list 1 0 0 1 0 .drw 0 1 1 1 1 .drw 0 1 1]
+
+  # --- RA2  IT IS THE LIBRARY MANAGER'S RAISE, NOT A BARE `raise` -----------
+  ## The row :99 cannot otherwise reach. A plain `raise` scores everything RA1
+  ## asks for on THIS display and nothing at all on the one the user reported
+  ## from, so this row reads the two receipts of the re-map idiom itself: real
+  ## Unmap+Map events on .rdw (issue 0054), and the deferred `_remap_verify`
+  ## that recovers a dropped re-map (issue 0843). Both, because either alone
+  ## can be faked by half the idiom.
+  set RA2_OK [ra_fixture]
+  set RA2_G0 [ra_w wm geometry .rdw]
+  set RA2_R  [kx_ans ::rdw::push [ra_blk]]
+  catch {update}
+  ra_settle 500
+  check {RA2 THE RAISE IS THE ONE THE USER NAMED - the Library Manager's, which does not trust a plain raise: the window is really RE-MAPPED, one Unmap and one Map arriving on .rdw itself, and issue 0843's deferred _remap_verify is scheduled and runs, so a window manager that drops the re-map still gets it back - and after all of that the window is mapped, on top, the same size and place, the keyboard is still on the canvas and nothing asked for activation} \
+    [list $RA2_OK [kx_bad $RA2_R] \
+          [expr {$::RA_UNMAP >= 1 ? 1 : 0}] [expr {$::RA_MAP >= 1 ? 1 : 0}] \
+          [expr {$::RA_RV >= 1 ? 1 : 0}] \
+          [ra_above] [ra_w winfo ismapped .rdw] \
+          [expr {[ra_w wm geometry .rdw] eq $RA2_G0 ? 1 : 0}] \
+          [ra_w focus] $::RA_ACT] \
+    [list 1 0 1 1 1 1 1 1 .drw 0]
+
+  # --- RA3  THE SHIPPED KEY PATH, NOT A HAND-CALLED push --------------------
+  ## A real bare 1 on the canvas over a selected device, the whole chain:
+  ## bind -> rdw::key -> rdw::show -> rdw::open -> rdw::dump -> dump_devpath
+  ## -> push. The list identity moving from summary to annotation is the
+  ## receipt that the key really arrived, so no leg here can pass by nothing
+  ## happening.
+  xschem load $KX_SCH
+  xschem zoom_full
+  catch {update idletasks}
+  set RA3_OK [ra_fixture]
+  kx_ans ::rdw::set_list summary
+  xschem unselect_all
+  xschem select instance M1
+  catch {update idletasks}
+  set RA3_SEL [expr {[llength [kx_sel]] > 0 ? 1 : 0}]
+  set RA3_LK0 [kx_listkind]
+  set RA3_N0  [kx_nblocks]
+  set RA3_AB0 [ra_above]
+  set RA3_G0  [ra_w wm geometry .rdw]
+  ra_zero
+  catch {focus -force .drw}
+  catch {update}
+  event generate .drw <Key-1> -when now
+  catch {update}
+  ra_settle 500
+  check {RA3 AND IT HAPPENS ON THE PATH THE USER'S HAND TAKES: a real bare 1 over a selected device runs the whole noun-verb chain and the window it dumps into is re-mapped to the front - the list identity moving from summary to annotation and the store gaining a block are the receipts that the key arrived, and afterwards the keyboard is back on the schematic, not in the window, which is where a raise wired without arming the hand-back leaves it} \
+    [list $RA3_OK $RA3_SEL $RA3_LK0 $RA3_N0 $RA3_AB0 \
+          [kx_listkind] [kx_nblocks] \
+          [expr {$::RA_UNMAP >= 1 ? 1 : 0}] [expr {$::RA_MAP >= 1 ? 1 : 0}] \
+          [expr {$::RA_RV >= 1 ? 1 : 0}] \
+          [ra_above] [ra_w winfo ismapped .rdw] \
+          [expr {[ra_w wm geometry .rdw] eq $RA3_G0 ? 1 : 0}] \
+          [ra_w focus] $::RA_ACT] \
+    [list 1 1 summary 0 0 annotation 1 1 1 1 1 1 1 .drw 0]
+
+  # --- RA4  A CLOSED WINDOW IS NOT CONJURED, AN ICONIFIED ONE COMES BACK ----
+  ## Two cases the raise must tell apart, and the first is the one an
+  ## `rdw::open` bolted onto push would break: `rdw::open` is this window's ONE
+  ## constructor (row N1 of the window suite), the dumps deliberately survive a
+  ## close, and a store push under a closed window must stay a store push.
+  ## The second is the Library Manager's own answer to Ctrl-Alt-S on an
+  ## iconified window: it comes back.
+  kx_ans ::rdw::close
+  catch {update}
+  ra_settle 150
+  set ::rdw::blocks {}
+  kx_ans ::rdw::set_row 0
+  ra_zero
+  set RA4_R1 [kx_ans ::rdw::push [ra_blk]]
+  catch {update}
+  ra_settle 150
+  set RA4_EX [expr {[winfo exists .rdw] ? 1 : 0}]
+  set RA4_N1 [kx_nblocks]
+  set RA4_OK [ra_fixture]
+  ra_w wm iconify .rdw
+  catch {update}
+  ra_settle 400
+  set RA4_M0  [ra_w winfo ismapped .rdw]
+  set RA4_ST0 [ra_w wm state .rdw]
+  ra_zero
+  set RA4_R2 [kx_ans ::rdw::push [ra_blk]]
+  catch {update}
+  ra_settle 600
+  check {RA4 A DUMP WITH NO WINDOW BUILDS NONE - rdw::open is the one constructor and the dumps survive a close, so a push into a closed window still just stores the block - and a dump into an ICONIFIED window brings it back the way Ctrl-Alt-S brings the Library Manager back: mapped again, in the normal state, on top, and still without taking the keyboard off the schematic} \
+    [list [kx_bad $RA4_R1] $RA4_EX $RA4_N1 \
+          $RA4_OK $RA4_M0 $RA4_ST0 \
+          [kx_bad $RA4_R2] \
+          [ra_w winfo ismapped .rdw] [ra_w wm state .rdw] [ra_above] \
+          [ra_w focus] $::RA_ACT] \
+    [list 0 0 1 1 0 iconic 0 1 normal 1 .drw 0]
+
+  # --- RA5  FENCE the four other callers still ACTIVATE ---------------------
+  ## GREEN BEFORE AND AFTER. Ruling DD-6 drops the LAST LINE of
+  ## `raise_activate_toplevel` for the RDW only - by splitting the proc or by
+  ## adding an argument, never by deleting the line. Deleting it satisfies
+  ## every row above and silently stops the Library Manager, the CIW,
+  ## create_instance and copy_form taking the focus they are entitled to, on a
+  ## path no row in this batch's four suites walks. This row is also the
+  ## NON-VACUITY control for the `$::RA_ACT 0` leg every row above carries: if
+  ## the trace never attached, those legs are worthless and this one reds.
+  ## ⚠ .rdw IS PUT BACK TO `normal` FIRST AND ra_park's ANSWER IS A LEG. Row
+  ## RA4 leaves the window ICONIC until R4 lands, and `wm stackorder` RAISES
+  ## against an iconic window rather than answering 0 - so without this the
+  ## fence would red for RA4's reason and say nothing about its own subject.
+  catch {wm deiconify .rdw}
+  catch {update}
+  ra_settle 250
+  set RA5_P [ra_park]
+  ra_zero
+  set RA5_R [kx_ans ::raise_activate_toplevel .radecoy]
+  catch {update}
+  ra_settle 400
+  check {RA5 FENCE the shared raise still ACTIVATES for its other four callers - the Library Manager, the CIW, create_instance and copy_form ask for the focus the RDW must not take, and this row is also the control that says the activation spy every row above trusts is really attached} \
+    [list $RA5_P [kx_bad $RA5_R] [expr {$::RA_ACT >= 1 ? 1 : 0}] \
+          [ra_w winfo ismapped .radecoy] [ra_above]] \
+    [list 1 0 1 1 0]
+
+  # --- RA6  HYGIENE ---------------------------------------------------------
+  catch {trace remove execution xschem enter ::ra_spy_act}
+  catch {trace remove execution ::_remap_verify enter ::ra_spy_rv}
+  set RA6_TX {}
+  catch {set RA6_TX [trace info execution xschem]}
+  set RA6_TR {}
+  catch {set RA6_TR [trace info execution ::_remap_verify]}
+  catch {destroy .radecoy}
+  kx_ans ::rdw::close
+  set ::rdw::blocks {}
+  kx_ans ::rdw::set_row 0
+  kx_ans ::rdw::set_list annotation
+  kx_ans ::rdw::status {}
+  xschem unselect_all
+  catch {focus -force .drw}
+  catch {update}
+  ra_settle 150
+  check {RA6 HYGIENE section RA leaves nothing behind: no decoy toplevel, no window, no stored dumps, no cursored row, neither execution trace still attached, the keyboard back on the canvas and no untitled* anywhere} \
+    [list [expr {[winfo exists .radecoy] ? 1 : 0}] \
+          [expr {[winfo exists .rdw] ? 1 : 0}] \
+          [llength $::rdw::blocks] \
+          [kx_ans ::rdw::_target_line] \
+          [expr {[string first ra_spy_act $RA6_TX] >= 0 ? 1 : 0}] \
+          [expr {[string first ra_spy_rv $RA6_TR] >= 0 ? 1 : 0}] \
+          [ra_w focus] \
+          [expr {[lsort [glob -nocomplain -directory $repo -tails untitled*]] eq $S1_ROOT0 ? 1 : 0}] \
+          [llength [glob -nocomplain -directory $scratch -tails untitled*]]] \
+    [list 0 0 0 0 0 0 .drw 1 0]
+}
+
 
 if {[llength [info commands kx_ciw_echo_real]]} { rename kx_ciw_echo_real ciw_echo }
 catch {xschem raw clear}
@@ -2481,7 +2829,13 @@ catch {xschem raw clear}
 ## after a real `.rdw.b.up` press.  That section is guarded by
 ## `[kx_ans ::rdw::have_tk] eq 1` too, so a display that fails to come up drops
 ## both silently - which is exactly what a floor is for.
-set KX_FLOOR 53
+## ⚠ AND RAISED 53 -> 59 BY ITEM R4 (issue 1340), IN THE SAME COMMIT AS THE
+## SIX ROWS IT COVERS: section RA's RA1..RA6, a dump raising the window the
+## way Ctrl-Alt-S raises the Library Manager, driven against a real decoy
+## toplevel on a real stacking order.  That section is guarded by
+## `[kx_ans ::rdw::have_tk] eq 1` too, so a display that fails to come up drops
+## all six silently - which is exactly what a floor is for.
+set KX_FLOOR 59
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\

@@ -903,6 +903,59 @@ proc rdw::block_subject {block} {
     return [lindex $e 2]
 }
 
+# ---------------------------------------------------------------------------
+# BRING THE WINDOW TO THE FRONT WHEN SOMETHING IS SENT TO IT (issue 1340).
+#
+# The user's words: "When user sends info to the Results Display Window (RDW),
+# the RDW needs to be raised (no need to focus, just raise), just as the
+# Library Manager is raised when one does Ctrl-Alt-S."
+#
+# ⚠ IT IS THE LIBRARY MANAGER'S OWN RAISE, REUSED AND NOT RE-DERIVED.  A plain
+# `raise` is an INERT NO-OP on the window manager the user reported from --
+# that WM applies stacking only at map time -- so `raise_toplevel`
+# (xschem.tcl) re-MAPs instead, and carries issue 0843's deferred
+# `_remap_verify` for the case that WM drops the re-map and loses the window
+# outright.  Re-deriving either would re-ship a known defect.  Ruling DD-6
+# also says which half of that helper is NOT wanted here: its sibling's last
+# line asks the window manager to make this window ACTIVE, and the user said
+# no need to focus, so this calls the split-off half.
+#
+# ⚠ AND THE RE-MAP TAKES THE KEYBOARD IF NOTHING CATCHES IT.  Measured on :99
+# under openbox, keyboard parked on the canvas first, nothing else changed:
+#     plain raise            no re-map          keyboard stays on .drw
+#     withdraw + deiconify   really re-mapped   KEYBOARD MOVES TO .rdw
+# and it stays there through every later event pump, because a window manager
+# grants focus to a newly MAPPED toplevel.  That is the one thing the user
+# forbade in the same sentence as the request, and it is worse here than
+# elsewhere: the grammar that fills this window -- bare 1/2/3/4 and the
+# command mode's Escape -- lives on the design CANVAS, so a stolen focus
+# leaves a mode the user cannot leave.
+#     rdw::_arm_focus_handback is the one-shot that already catches exactly
+# that grant, and it declines to arm for an ALREADY-MAPPED window -- correctly,
+# until now: no map was coming, and a flag left lying around is a bounce
+# waiting to happen (issue 1306).  A dump now re-maps a mapped window, so a
+# map IS coming, and the arm is told so.  That is a second caller of the
+# EXISTING hand-back, not a second focus path; rdw::show's synchronous
+# `_focus_canvas` is not enough on its own because the grant arrives later.
+#
+# ⚠ IT CONSTRUCTS NOTHING.  `rdw::open` is this window's one constructor (row
+# N1 of the window suite) and the dumps deliberately survive a close, so a
+# push into a closed window stays a store push and raises nothing.  Calling
+# rdw::open from here is the cheap implementation and would conjure a window
+# the user closed on the next dump; rows RA4 and RH1 are the fence.
+#
+# The raise is caught: by the time it runs the block is already stored and
+# already on screen, and a window manager that refuses a re-map is not a
+# reason to fail the dump the user asked for.  Rows RA1-RA4 are what say the
+# raise really happens, so the catch cannot hide a regression from the suite.
+proc rdw::_raise {} {
+    if {![rdw::have_tk]} { return 0 }
+    if {![winfo exists .rdw]} { return 0 }
+    rdw::_arm_focus_handback 1
+    catch {raise_toplevel .rdw}
+    return 1
+}
+
 # Add a block to the store and repaint.  The store is namespace state and
 # works headless; the pane is only its projection.
 #
@@ -938,6 +991,14 @@ proc rdw::push {block} {
     # screen) are the fence.
     rdw::set_row 0
     rdw::render_pane
+    ## ⚠ AND IT RAISES THE WINDOW -- ISSUE 1340, RULING DD-6.  This proc is the
+    ## SINGLE DOOR every dump goes through -- keys 1/2/3 and every pick-mode
+    ## click reach it through rdw::dump_devpath -- which is why the raise is
+    ## here and not in the key handlers: a raise wired into rdw::show alone
+    ## would do nothing for a dump that arrived by any other route.  AFTER the
+    ## repaint, so what comes to the front is the block that was just sent and
+    ## never the previous one.
+    rdw::_raise
     return $block
 }
 
@@ -1594,10 +1655,19 @@ proc rdw::_focus_canvas {} {
 # stays at `.rdw`) hands the keyboard back to the canvas exactly once.  A click
 # on the TEXT never does.  A timer disarm would remove that wart and
 # reintroduce the flakiness this fix exists to delete.
-proc rdw::_arm_focus_handback {} {
+#
+# ⚠ `remapping` IS THE SECOND NARROWING'S ESCAPE HATCH, NOT A HOLE IN IT
+# (issue 1340).  "Only when a map is actually coming" is a statement about the
+# window, and item R4 made it false: a dump into an ALREADY-MAPPED window now
+# re-maps it (rdw::_raise), so a grant IS coming and declining to arm would
+# leave the keyboard in this window -- the one thing the user forbade.  The
+# caller says so explicitly rather than this proc guessing, because every
+# other caller's window really is either absent or unmapped and their
+# behaviour must not move.
+proc rdw::_arm_focus_handback {{remapping 0}} {
     variable focus_pending
     if {![rdw::have_tk]} { return 0 }
-    if {[winfo exists .rdw] && [winfo ismapped .rdw]} { return 0 }
+    if {!$remapping && [winfo exists .rdw] && [winfo ismapped .rdw]} { return 0 }
     set focus_pending 1
     return 1
 }

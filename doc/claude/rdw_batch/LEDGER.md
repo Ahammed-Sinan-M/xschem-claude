@@ -23,7 +23,7 @@ user's files.
 |---|---|---|---|
 | R1 | 1337 | the line cursor | **DONE** 2026-09-05 |
 | R2 | 1338 | Up/Down move the row and the sheet follows | **DONE** 2026-09-05 |
-| R4 | 1340 | raise the window when something is sent to it | not started |
+| R4 | 1340 | raise the window when something is sent to it | **DONE** 2026-09-05 |
 | R5 | 1341 | engineering notation | not started |
 | R3 | 1339 | select and copy | not started |
 
@@ -186,3 +186,122 @@ symbol path containing a space) is untouched — it is not on R2's path.
 **Look debt:** `1338 R2: the row moves under your eyes`. **Suites green, please
 look** — a row moving and a shade landing on it is not something a count can
 accept.
+
+---
+
+### R4 — issue 1340, raise the window when something is sent to it — DONE 2026-09-05
+
+**What the user can now do:** send a dump to the Results Display Window while it
+is behind the schematic — key `1`, `2`, `3` or a pick-mode click — and the window
+comes to the front by itself, the way the Library Manager does on Ctrl-Alt-S.
+The keyboard stays on the canvas, so bare `1`/`2`/`3`/`4` and the command mode's
+Escape keep working without clicking back first.
+
+**Files:** `src/rdw.tcl`, `src/xschem.tcl` (the two under `src/`),
+`tests/headless/test_rdw_keys_1245.tcl` (section RA, `:99`, floor 53 → 59),
+`tests/headless/test_rdw_window_1245.tcl` (section RH + RH3, both arms, floor 124 → 127),
+`doc/claude/issues/1340-the-rdw-does-not-raise-when-something-is-sent-to-it.md`,
+`doc/claude/issues/NUMBERING.md`.
+
+⚠ **`src/xschem.tcl` is not on R4's PLAN.md file list, and the edit is
+unavoidable.** DD-6 says to reuse `raise_activate_toplevel`'s body and drop only
+its last line, *by splitting the proc or adding an argument, never by copying the
+body* — and that proc lives there. Nothing else in `src/xschem.tcl` was touched.
+
+**Name+status diff, every suite asserted to have printed a RESULT line.** The
+baseline was RE-MEASURED, not taken from this file's header: the header's 109 and
+41 are stale, because R1 and R2 landed after it was written.
+
+| suite | how | before | after | rows that moved |
+|---|---|---|---|---|
+| `test_rdw_keys_1245` | `:99` | 4 FAILED (55) | **ALL PASS (59)** | RA1 RA2 RA3 RA4 FAIL→ok; RA5 RA6 already green; the 53 pre-existing rows unmoved |
+| `test_rdw_window_1245` | `--nogui` | ALL PASS (126) | **ALL PASS (127)** | RH3 added by the implementing pass |
+| `test_rdw_window_1245` | `:99` | ALL PASS (138) | **ALL PASS (139)** | RH3 added |
+| `test_op_param_store_1245` | `--nogui` | ALL PASS (130) | **ALL PASS (130)** | none |
+| `test_op_annot` *(control)* | `--nogui` | ALL PASS (485) | **ALL PASS (485)** | none |
+
+Because the split touches a proc fourteen other windows call, every suite that
+names `raise_activate_toplevel` or `_remap_verify` was run too, on `:99`:
+`test_remap_verify` **ALL PASS**, `test_ase_plot` **ALL PASS (150)**,
+`test_wave_sigbrowser_i11` **ALL PASS (74)**, `i12` **ALL PASS (126)**,
+`test_wave_viewer_geometry` **ALL PASS**. `test_ase_window` is **1 FAILED (227)**
+before *and* after — row W7, *"simulator produced output before Stop"*, measured
+red on the HEAD sources restored into the tree by `git show HEAD:… >` with the
+restore verified by `md5sum`. Unrelated to the raise.
+
+The keys suite was run **five** times after the fix, ALL PASS 59 each time —
+issue 1332's SD flake did not appear.
+
+**T1 is at ZERO, run solo** (issue 0990) after the change: `tclsh
+run_regression.tcl`, exit 0, **57 cases all `Total num fail: 0`**, zero lines
+matching `FAIL$` / `GOLD?` / `RESULT?` / `^FATAL`, and zero `exit 127` or
+`couldn't execute "xschem"`. The only non-zero lines are the three documented
+`NOGOLD` notices (`create_save`, `open_close`, `netlisting` have no committed
+baseline).
+
+**What was actually wrong:** `rdw::push` said nothing to the window manager at
+all. `rdw::open` does raise, but only on the `rdw::show`/`rdw::key` route, and
+its plain `raise` is **an inert no-op on the server the user reported from**
+(issue 0054: that WM applies stacking only at map time).
+
+**What changed:** `raise_activate_toplevel` split in two. The body — issue 0054's
+`wm withdraw` + `wm deiconify` re-map, the north-west creep note, issue 0843's
+deferred `_remap_verify` — becomes `raise_toplevel`. **The `xschem
+activate_window` line MOVED, it was not deleted**: `raise_activate_toplevel`
+keeps its name, its two guards and that line, and delegates the body, so the
+Library Manager, the CIW, `create_instance`, `copy_form`, `save_as_form`, the
+wave viewer, ASE and `alt2_toggle_view` are unmoved. `rdw::push` calls the other
+half, through `rdw::_raise`, behind `rdw::have_tk` **and** `winfo exists .rdw` —
+`rdw::open` stays the one constructor and a push into a closed window stays a
+store push.
+
+**THE THING DD-6 DID NOT ANTICIPATE, and it is a user-visible decision:** the
+re-map takes the keyboard. Measured on `:99`/openbox, keyboard parked on the
+canvas first — plain `raise`: no re-map, focus stays on `.drw`; `wm withdraw` +
+`wm deiconify`: really re-mapped, **focus moves to `.rdw` and stays there**. A WM
+grants focus to a newly mapped toplevel. So the faithful DD-6 implementation
+takes the keyboard off the schematic on every dump, which the user forbade in the
+same sentence as the request. Fixed by arming the **existing** one-shot hand-back
+(`rdw::_arm_focus_handback`, issue 1306) before the re-map — it declined to arm
+for an already-mapped window, correctly until now, and a new `remapping`
+argument tells it a map really is coming. Rule debt
+`1340_R4_the_remap_hands_the_keyboard_back` (`--eyes`).
+
+**Decisions relied on:** DD-6, honoured as written and **not** found wrong — the
+split is implementable exactly as it says, and a prototype of it scores ALL PASS
+59. Its *stated cost* is incomplete (see above), which is what the new rule debt
+records; the ruling itself stands.
+
+**Teeth, each sabotage on a COPY, restored by `cp` and verified with `md5sum`:**
+un-forcing the arm reds RA1 RA2 (on `focus` = `.rdw`); a plain `raise` instead of
+`raise_toplevel` reds RA2 RA3 RA4; **re-deriving `raise_activate_toplevel` as
+`raise $top` + the activation reds RH3 and nothing else** — the keys suite stays
+ALL PASS 59. That last variant is why the implementing pass added **RH3**: RH1
+and RH2 fence what the split must not *do*, and neither says the two halves are
+still *joined*, which is the regression this item actually creates.
+
+**The first open does not flicker, measured** (the obvious worry about raising
+from `push`): probed with a `<Map>`/`<Unmap>` counter armed inside `rdw::build`
+itself, the first-of-session open+dump gives `Map=1 Unmap=0`, because `.rdw` is
+not yet mapped when `push` runs and `raise_toplevel` takes its plain-deiconify
+arm. A second dump into that window gives `Map=1 Unmap=1`. Both end with `focus`
+on `.drw` and the one-shot spent.
+
+⚠ **What `:99` cannot judge, said out loud.** The `wm geometry` legs have no
+teeth here: measured against a prototype with the geometry restore DELETED, the
+suite still scores ALL PASS 59, because openbox puts the window back by itself.
+And `:99` cannot reproduce the reported defect at all — a plain `raise` is green
+here and inert there — so the Map/Unmap and `_remap_verify` receipts are a
+**proxy**, not the thing.
+
+**Still not fixed, said loudly:** issue **1331** (the narrow arm's refusal for a
+symbol path containing a space) is untouched — it is not on R4's path. Issue
+**1330** belongs to R2's channel and NUMBERING.md records it **FIXED by 1338**,
+but `doc/claude/issues/1330-*.md` still opens *"Status: FILED, NOT FIXED"* — R2's
+residue, left for its owner rather than edited from here, and flagged so the next
+reader is not misled by whichever of the two they happen to open first.
+
+**Look debt:** `the_RDW_raise_behaviour`, updated in place with the counts, the
+focus finding, the creep question and the pick-mode cost. **Suites green, please
+look** — a raised window on VcXsrv is a pixel judgement no count can make, and
+`:99` provably cannot reproduce the defect that was reported.

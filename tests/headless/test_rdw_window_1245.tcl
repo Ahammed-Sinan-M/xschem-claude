@@ -4721,6 +4721,88 @@ catch {xschem raw clear}
 
 
 # ============================================================================
+# SECTION RH — ITEM R4, ISSUE 1340: THE TWO FENCES ROUND THE RAISE
+# ============================================================================
+# The user's words: "When user sends info to the Results Display Window (RDW),
+# the RDW needs to be raised (no need to focus, just raise), just as the
+# Library Manager is raised when one does Ctrl-Alt-S."
+#
+# ⚠ BOTH ROWS HERE ARE GREEN BEFORE R4 AND SAYING SO IS THE POINT. The
+# behaviour the user asked for cannot be measured on an arm with no window
+# manager, no stacking order and no keyboard focus, so R4's RED rows are
+# section RA of tests/headless/test_rdw_keys_1245.tcl, which parks a decoy
+# toplevel over the window and reads `wm stackorder`, real Map/Unmap events
+# and `focus`. What is left for THIS file is the two ways R4 can break
+# something that has nothing to do with raising, and neither of them is
+# visible over there:
+#
+#   RH1  THE DOOR MUST STAY USABLE WITH NO Tk AT ALL. `rdw::push` is the store's
+#        own entry point and the whole reason the pure layer exists: this suite,
+#        test_op_param_store_1245 and every --nogui dump call it with no
+#        display, and `winfo` and `wm` are not merely absent there, they are
+#        UNDEFINED COMMANDS. A raise that is not behind `rdw::have_tk` turns
+#        every headless dump into an error, and the row also holds ruling
+#        DD-6's letter: the shared helper's body is REUSED, not copied into
+#        this file, and this window never asks for activation.
+#        ⚠ `rdw::open` STAYS THE ONE CONSTRUCTOR (row N1). A push into a closed
+#        window must remain a store push - the dumps deliberately survive a
+#        close (rdw::close's own comment) - so the cheap way to raise, calling
+#        `rdw::open` from `push`, is fenced here as well as in row RA4.
+#
+#   RH2  THE SPLIT MUST LEAVE THE OTHER FOUR CALLERS ACTIVATING. Ruling DD-6
+#        drops `raise_activate_toplevel`'s LAST line for the RDW by splitting
+#        the proc or adding an argument - never by deleting the line. Deleting
+#        it satisfies every RED row in section RA and silently stops the
+#        Library Manager, the CIW, create_instance and copy_form taking the
+#        focus they are entitled to. Row RA5 is the behavioural twin of this
+#        one; this is the arm that runs when there is no display at all.
+set RH_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
+if {$live_tk} { rw_ans ::rdw::close ; catch {update} }
+set ::rdw::blocks {}
+rw_ans ::rdw::set_row 0
+set RH1_R [rw_ans ::rdw::push \
+  [rw_block [rw_ansd [dict create {@m.x1.mrh} {{id 1.5}}] {} {} 0 ok] \
+            [rw_ctx {MRH:/} {@m.x1.mrh}]]]
+check {RH1 FENCE the dump door survives with no Tk and copies nothing: a push with no display still stores its block and returns it, builds no window - rdw::open is this window's one constructor and the dumps survive a close - and src/rdw.tcl neither copies the shared raise helper's wm withdraw body nor ever asks for activation, which is ruling DD-6 in one line} \
+  [list [rw_bad $RH1_R] \
+        [llength $::rdw::blocks] \
+        [expr {$live_tk ? [rw_w winfo exists .rdw] : 0}] \
+        [expr {$RH_F eq {NOFILE} ? {NOFILE} : [rw_count $RH_F {wm withdraw}]}] \
+        [rw_count $RH_F {activate_window}]] \
+  {0 1 0 0 0}
+
+set RH2_B [rw_body ::raise_activate_toplevel]
+set RH2_LM [rw_slurp [file join $repo src library_manager.tcl]]
+set RH2_CIW [rw_slurp [file join $repo src ciw.tcl]]
+check {RH2 FENCE the shared raise is still the Library Manager's: raise_activate_toplevel is a live command whose body still asks for activation, issue 0843's _remap_verify is still there to recover a dropped re-map, and the two windows the user named the analogy after still call it - a split that deleted the last line instead of moving it would pass every other row this item adds} \
+  [list [rw_bad $RH2_B] \
+        [expr {[rw_bad $RH2_B] ? 0 : [rw_has $RH2_B {activate_window}]}] \
+        [expr {[llength [info commands ::_remap_verify]] > 0 ? 1 : 0}] \
+        [expr {[rw_count $RH2_LM {raise_activate_toplevel}] >= 1 ? 1 : 0}] \
+        [expr {[rw_count $RH2_CIW {raise_activate_toplevel}] >= 1 ? 1 : 0}]] \
+  {0 1 1 1 1}
+
+## RH3 IS THE IMPLEMENTING PASS'S OWN ROW, for the question RH1 and RH2 do not
+## ask. Those two fence what the split must NOT do: rdw.tcl must not copy the
+## body, raise_activate_toplevel must not lose the activation. Neither of them
+## says the two halves are still JOINED -- and that is the regression this item
+## actually creates. Rewrite `raise_activate_toplevel` as a plain `raise $top`
+## plus the activation and RH1, RH2 and every RED row in section RA stay green
+## while the Library Manager quietly loses issue 0054's re-map and issue 0843's
+## recovery on the one window manager they were written for. The row is
+## structural on purpose: the behaviour needs a WM that DROPS a re-map, which
+## no display here has (tests/headless/test_remap_verify.tcl simulates the drop
+## and is the behavioural half).
+set RH3_RT [rw_body ::raise_toplevel]
+set RH3_RA [rw_body ::raise_activate_toplevel]
+check {RH3 STRUCTURAL the two halves of the split are still joined: raise_toplevel exists and holds the shared body - issue 0054's wm withdraw re-map and issue 0843's deferred _remap_verify - and asks for no activation, while raise_activate_toplevel DELEGATES to it rather than carrying a second copy of that body. A rewrite that re-derived either half would pass RH1, RH2 and every row of section RA}   [list [rw_bad $RH3_RT]         [expr {[rw_bad $RH3_RT] ? 0 : [rw_has $RH3_RT {wm withdraw}]}]         [expr {[rw_bad $RH3_RT] ? 0 : [rw_has $RH3_RT {_remap_verify}]}]         [expr {[rw_bad $RH3_RT] ? 1 : [rw_count $RH3_RT {activate_window}]}]         [expr {[rw_bad $RH3_RA] ? 0 : [rw_has $RH3_RA {raise_toplevel}]}]         [expr {[rw_bad $RH3_RA] ? 1 : [rw_count $RH3_RA {wm withdraw}]}]]   {0 1 1 0 1 0}
+
+set ::rdw::blocks {}
+rw_ans ::rdw::set_row 0
+rw_ans ::rdw::status {}
+
+
+# ============================================================================
 # SECTION S — THE STRUCTURAL FENCES, AND HYGIENE
 # ============================================================================
 # S1 is the seam's whole point stated as a fence: "nothing above it changes
@@ -4810,7 +4892,14 @@ if {$live_tk} { rw_ans ::rdw::close ; catch {destroy .rdwctl} }
 ## THE EIGHT ROWS IT COVERS: section RE's RE0..RE7, Up and Down moving the row
 ## in the window and the sheet following.  All eight run on BOTH arms.  A floor
 ## is raised when rows are added and NEVER lowered to make a run pass.
-set RW_FLOOR 124
+## ⚠ AND RAISED 124 -> 127 BY ITEM R4 (issue 1340), IN THE SAME COMMIT AS THE
+## THREE ROWS IT COVERS: section RH's RH1 and RH2, the two fences round the
+## raise, plus RH3, which the implementing pass added for the question those
+## two do not ask -- that the two halves of the split are still JOINED.  All
+## three run on BOTH arms.  R4's RED rows are section RA of
+## test_rdw_keys_1245.tcl, which needs a stacking order and a keyboard.  A
+## floor is raised when rows are added and NEVER lowered to make a run pass.
+set RW_FLOOR 127
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\
