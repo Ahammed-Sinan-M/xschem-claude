@@ -4267,7 +4267,14 @@ be_blocks
 ol_ans ::rdw::set_list annotation
 ol_ans ::rdw::set_row 11
 ol_ans ::rdw::button up
-ol_ans ::rdw::set_row 11
+## ⚠ THE ROW IS CURSORED ONCE AND PRESSED TWICE, WHICH IS THE USER'S ACTUAL
+## GESTURE (item R2, issue 1338).  This used to re-`set_row 11` before the
+## second press, because until R2 an accepted reorder left ::rdw::blocks
+## byte-identical and `gds` stayed on line 11.  The pane follows the store now
+## and the cursor follows the ROW, so `gds` is on line 10 after the first press
+## and a second `set_row 11` would press Up on `gm` instead -- MEASURED, it
+## produced {ids gm gds} and this row's own expectation is what caught it.
+## The assertion below is unchanged.
 ol_ans ::rdw::button up
 set BE1_ORDER [be_eff annotation]
 set BE1_SAY [be_press save]

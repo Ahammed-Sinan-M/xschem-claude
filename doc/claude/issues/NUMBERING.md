@@ -1538,7 +1538,11 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   bare `catch` and which returns `{}` unconditionally (measured
   `APPLY_NOW_RC=0`, `APPLY_NOW_RES=''`, `EDIT_BEFORE_APPLY=1`). A silent-failure
   channel, not a live defect — the only measured route to an `apply` failure is
-  issue 1326's descriptor, which **DD-15** now refuses. **FILED, NOT FIXED.**
+  issue 1326's descriptor, which **DD-15** now refuses. **FIXED by issue 1338**
+  (item R2, 2026-09-05): `_apply_now` answers `{}` on success and a sentence on
+  failure — a raise quoted, a `_say` read as the store's own report — and both
+  `rdw::button` call sites append it. Measured: an ordinary accepted press adds
+  nothing to `said`, so no success sentence moved.
 
 * **1331** — **the narrow arm refuses a symbol path containing a space, in the
   store's own internal jargon.** A cell name with whitespace matches neither of
@@ -1592,8 +1596,17 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   #202020 -> #484848 dark, where a 0.88 multiply gives #1c1c1c and is
   invisible), a full-width `cursor` tag lowered below `sel`, a `<Button-1>`
   that does not `break`, and DD-1's clear on `rdw::push`. **FIXED.**
-* **1338** — Up/Down move the cursored row in the window AND re-render the
-  schematic annotation when the edited list is the annotation or summary list.
+* **1338** — **Up and Down moved the store and the sheet, and not the window.**
+  Measured at HEAD `27122ca4`: an accepted press moved `effective`, rewrote
+  `shown` for both type tokens, and bumped `annot_overlay_flushes` by 1 — while
+  `::rdw::blocks` came back byte-identical, so the pane kept showing the order
+  the user had just changed. PLAN.md's premise that the SCHEMATIC half was the
+  missing one is wrong, and `xschem annotate_op` (what key `6` calls) RELOADS
+  THE RAW, so calling it would destroy a 1-point op. Item **R2**: the block is
+  RE-SLOTTED (never an adjacent-display-line swap — the pane's row order is not
+  the list's), no row crosses a `  <rawdev>` sub-header, an undeclared row keeps
+  its slot, every block of the edited class follows, and the cursor follows the
+  ROW. Carries the fix for **1330**. **FIXED.**
 * **1339** — select + `Ctrl-C` does not copy (VcXsrv); double-click-then-drag
   extend is unreliable. PRIMARY is not CLIPBOARD.
 * **1340** — the RDW must RAISE when something is sent to it, like the Library

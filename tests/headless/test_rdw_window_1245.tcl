@@ -3205,6 +3205,24 @@ proc b5_lists_reset {} {
   catch {op_annot::register b5ndev $::B5_DESC}
   catch {op_annot::register b5pdev $::B5_DESC}
   rw_ans ::op_param_lists::said_clear
+  ## ⚠ AND IT REBUILDS THE BLOCKS, FOR ISSUE 1312'S OWN REASON ONE LAYER OUT
+  ## (item R2, issue 1338).  Until R2 an accepted reorder left ::rdw::blocks
+  ## byte-identical, so a per-row reset that reset only the STORE was enough.
+  ## It is not any more: the pane now follows the store, so the first accepted
+  ## Up in this section really does move M1's rows, and every row after it that
+  ## names a LINE NUMBER would be pointing at a different parameter than the
+  ## layout above documents -- reading a pane an earlier row reordered, which
+  ## is exactly what the paragraph above says about a descriptor an earlier row
+  ## wrote.  MEASURED: without this, BT8's Up moved `gm` to line 9 and nine
+  ## later rows (BT10, BT13, BT14, BT16, BT17, BT21, BT25, BT26, BT27) then
+  ## edited the wrong parameter and failed.  ⚠ A store reset with no pane reset
+  ## also leaves the two DISAGREEING, which is the one state R2 exists to
+  ## prevent -- so this is not merely tidiness, it is the section refusing to
+  ## assert from a window the store no longer explains.  Section RE's `re_reset`
+  ## was written this way from the start; this one predates it.
+  ## The cursor goes with them: `rdw::push` clears it (ruling DD-1), and every
+  ## row below already sets its own row before it presses anything.
+  b5_fixture_blocks
   return {}
 }
 
@@ -4088,6 +4106,621 @@ check {CU17 the cursor is dropped when the line it points at is thrown away, WIT
   [list 1 2 $CU17_TGT $CU17_TGT 0 1 1 1]
 
 # ============================================================================
+# SECTION RE — ITEM R2, ISSUE 1338: UP AND DOWN MOVE THE ROW IN THE WINDOW,
+# AND THE SHEET FOLLOWS. THE HALF THAT NEEDS NO Tk.
+# ============================================================================
+# The user's words: "Promote/demote using Up/Down arrow should be reflected in
+# the Results Display Window as well as the schematic annotation - if applied
+# to annotation params (1 key) or summary list (2 key)."  Driver decisions DD-3
+# (Up and Down act on R1's cursored row) and DD-4 (only lists 1 and 2 re-render
+# the schematic; list 3 has no presence on the sheet).
+#
+# ⚠ HALF OF THIS IS ALREADY TRUE AND THE SUITE MUST SAY WHICH HALF.  MEASURED
+# on this binary at HEAD 27122ca4, driving a real `rdw::button up`:
+#   the STORE moves            `effective` goes {id ids 0} {gm gm 1} {gds gds 1}
+#                              -> {gm gm 1} {id ids 0} {gds gds 1}
+#   the DESCRIPTOR moves       `shown` is rewritten for BOTH type tokens
+#   the SHEET is re-rendered   `xschem get annot_overlay_flushes` +1, and
+#                              op_annot::text answers in the new order
+#   the WINDOW does not move   ::rdw::blocks is byte-identical afterwards, so
+#                              the pane keeps showing the OLD order until the
+#                              user presses 1 or 2 again
+# So rows RE3 and RE7 are FENCES on behaviour that already works, and rows RE1,
+# RE2, RE4 and RE5 are the item: the pane must show the reorder it just made.
+# RE6 is the third thing, and it is a DEFECT, not a feature - see below.
+#
+# ============================================================================
+# THE CONTRACT R2 ADDS, SPELLED HERE BECAUSE THIS FILE IS WHERE IT IS LOCKED
+# ============================================================================
+# After an ACCEPTED Up or Down, for every stored block whose subject resolves
+# to the CLASS whose list was edited:
+#
+#   * the block's rows that the edited list DECLARES are re-filled, in the
+#     list's new order, into the slots those declared rows already occupied;
+#   * every other row keeps its own slot - the header, the device path, the
+#     notes, the separator, a "  <rawdev>" sub-header, and a parameter row the
+#     run published that no list declares;
+#   * a row NEVER crosses a "  <rawdev>" sub-header, so a value stays with the
+#     primitive that published it;
+#   * the block's stamped subject (issue 1322) survives the rewrite;
+#   * the CURSOR follows the ROW, not the line number, so a second press moves
+#     the same parameter again.
+#
+# A block whose subject does not resolve, or resolves to another class, is not
+# touched at all: nothing says which list its rows belong to.
+#
+# ============================================================================
+# THE INPUT MOST LIKELY TO BREAK THIS, AND THE ROW THAT SEES IT
+# ============================================================================
+# ⚠ THE PANE'S ROW ORDER IS NOT THE LIST'S ROW ORDER, AND THE OBVIOUS
+# IMPLEMENTATION - SWAP THE TWO ADJACENT DISPLAY LINES - IS WRONG.
+# rdw::format_answer emits, per primitive, the `devices` pairs FIRST, then
+# `nonfinite`, then `absent`.  So a list of {id ids 0} {gm gm 1} {gds gds 1}
+# whose `gm` came back non-finite renders as
+#       ids : 1.2e-05          list index 0
+#       gds : 5.6e-06          list index 2
+#       gm  : (did not converge)   list index 1
+# and an Up on `gds` swaps list entries 2 and 1 - which leaves the DISPLAY
+# order exactly as it was.  A swap of the two adjacent display lines would put
+# `gds` above `ids` and the window would then be showing an order the store
+# does not hold.  Row RE1 presses Up on that very row and requires the block to
+# come back UNCHANGED, then presses again and requires it to change; a blind
+# adjacent swap reds the first press and the shipped code reds the second.
+#
+# THREE MORE, EACH WITH A ROW:
+#   * a MULTI-PRIMITIVE block.  One XR1 resolves to several primitives, each
+#     with its own "  <rawdev>" sub-header and its own copy of every parameter
+#     (ruling D-3).  An implementation that collects the block's parameter rows
+#     and re-lays them in list order moves rows across the sub-headers, and a
+#     number then sits under a device that never published it - a plausible
+#     wrong NUMBER, which is invariant I3 exactly.                     -> RE4
+#   * a row NO LIST DECLARES.  `vgs` is published by the run and declared by
+#     nothing; row BT6 already refuses to reorder it, and it must not be
+#     re-slotted by somebody else's reorder either.                    -> RE4
+#   * a BLANK-VALUED row.  The `absent` bucket renders after the computed
+#     pairs, so a declared row with no value can sit BELOW an undeclared one -
+#     and it must still travel with the list.                          -> RE4
+#   * THREE OTHER BLOCKS: a second one of the SAME class, one with NO SUBJECT,
+#     and one of a DIFFERENT class.  The store is class-wide, so a window that
+#     reorders only the block the cursor is in shows the same class list in two
+#     different orders at once; a block whose device could not be resolved at
+#     dump time has no class, so nothing says which of its rows the edited list
+#     declares; and a block of another class carries a list nobody edited.
+#                                                                      -> RE5
+#
+# ⚠ RE5 IS AN E QUESTION THIS SUITE ANSWERS ONE WAY.  Neither DD-3 nor DD-4
+# says whether an OLDER block of the edited class follows.  It is written here
+# as "every block of that class follows" because the alternative - only the
+# cursored block - puts two different orders for one class on the screen at the
+# same time, which is a statement the store cannot support.  It is the one row
+# below that a ruling could delete without touching the item, and it is on the
+# owed ledger as rule debt 1338_R2_every_block_of_the_class_follows for exactly
+# that reason.
+#
+# ============================================================================
+# ISSUE 1330 IS THE THIRD THING THIS ITEM OWES, AND ROW RE6 IS WHY
+# ============================================================================
+# `rdw::_apply_now` wraps every call in a bare `catch` and returns nothing, so
+# an `apply` that fails is invisible: MEASURED on this binary, with
+# `op_param_lists::apply` renamed to a proc that raises, an Up press still
+# reports "Up: moved gm up in the annotation list for class ..." - the full
+# success sentence, with no hint that the sheet did not follow.  Until this
+# item that channel carried nothing anybody was promised; R2 is the item that
+# promises the schematic follows, so a silent failure to re-render is now a
+# false statement on a screen the user is reading.  Row RE6 fences the SHAPE of
+# the correction and not its prose: the edit itself still stands, the message
+# still names the parameter, it is still one line, it is NOT the sentence the
+# same press produces when the apply succeeds, and it says something did not
+# happen.  The wording goes on the same rule debt as every other sentence in
+# this window.
+#
+# ============================================================================
+# WHICH ROWS ARE RED BEFORE R2, MEASURED 2026-09-05 AT HEAD 27122ca4
+# ============================================================================
+#   RED    RE1 RE2 RE4 RE5   the store moves and the block does not
+#          RE6               the failure is reported as a success
+#   GREEN  RE0               the fixture's own control
+#          RE3               a refusal already changes nothing
+#          RE7               the sheet is already re-rendered on an accepted
+#                            edit and already is not on a refusal or on list 3
+# RE3 and RE7 are evidence of nothing except that R2 broke neither; they are
+# here because DD-4 is a decision and an undefended decision is one refactor
+# from being undone.
+
+set RE_ROOT [file join $scratch r2re]
+file mkdir $RE_ROOT
+proc re_mksym {path type} {
+  set fd [open $path w]
+  puts $fd "v {xschem version=3.4.5 file_version=1.2}"
+  puts $fd "G {}"
+  puts $fd "K {type=$type"
+  puts $fd {format="@spiceprefix@name @pinlist @model"}
+  puts $fd "template=\"name=M1 model=$type spiceprefix=X\""
+  puts $fd "}"
+  puts $fd "V {}"
+  puts $fd "S {}"
+  puts $fd "E {}"
+  puts $fd "L 4 -20 -20 20 -20 {}"
+  puts $fd "B 5 -22.5 -12.5 -17.5 -7.5 {name=d dir=inout}"
+  puts $fd "T {@name} 0 -40 0 0 0.2 0.2 {}"
+  close $fd
+}
+set RE_SYMN [file join $RE_ROOT re2n.sym]
+set RE_SYMP [file join $RE_ROOT re2p.sym]
+set RE_SYMR [file join $RE_ROOT re2r.sym]
+re_mksym $RE_SYMN re2ndev
+re_mksym $RE_SYMP re2pdev
+re_mksym $RE_SYMR re2rdev
+set RE_SCH [file join $RE_ROOT re2.sch]
+set fd [open $RE_SCH w]
+puts $fd "v {xschem version=3.4.5 file_version=1.2}
+G {}
+V {}
+S {}
+E {}
+C \{$RE_SYMN\} 300 -300 0 0 \{name=M1\}
+C \{$RE_SYMP\} 300 -120 0 0 \{name=M2\}
+C \{$RE_SYMR\} 300 -60 0 0 \{name=R1\}"
+close $fd
+catch {xschem raw clear}
+set RE_LOAD [catch {xschem load $RE_SCH}]
+catch {update idletasks}
+## The IHP shape again: label `id`, param `ids`, kind 0.  A button column that
+## looks a row up BY LABEL round-trips sky130 and gf180 and silently misses
+## this one, which is the whole reason section BT uses it too.
+set RE_DESC [list devpath {\@m.@path@name} \
+                  params {{id ids 0} {gm gm 1} {gds gds 1}}]
+set RE_SEEDP {ids gm gds}
+
+## --- the section's own readers ---------------------------------------------
+proc re_flat {} {
+  set out {}
+  if {![info exists ::rdw::blocks]} { return {} }
+  foreach b $::rdw::blocks { foreach e $b { lappend out $e } }
+  return $out
+}
+## The PARAMETER NAMES of one block's parameter rows, in pane order.  Read
+## through rdw::_row_param, which row BT3 already golds, so this reader cannot
+## invent a row the pane does not have.
+proc re_params {bi} {
+  set out {}
+  foreach e [lindex $::rdw::blocks $bi] {
+    set p [rw_ans ::rdw::_row_param $e]
+    if {![rw_bad $p] && $p ne {}} { lappend out $p }
+  }
+  return $out
+}
+## Tag and text of every entry of one block, the STAMP dropped - so a shape
+## golden is about what is on the screen and not about issue 1322's record,
+## which its own leg asserts separately.
+proc re_shape {bi} {
+  set out {}
+  foreach e [lindex $::rdw::blocks $bi] {
+    lappend out [list [lindex $e 0] [lindex $e 1]]
+  }
+  return $out
+}
+## The RAW param names the store's list holds, in store order.
+proc re_lparams {ln} {
+  set l [rw_ans ::op_param_lists::effective re2cls $ln]
+  if {[rw_bad $l]} { return $l }
+  set out {}
+  foreach t $l { lappend out [lindex $t 1] }
+  return $out
+}
+## The parameter the CURSOR is on, resolved the way rdw::button resolves it.
+proc re_cursor_param {} {
+  set l [rw_ans ::rdw::_target_line]
+  if {[rw_bad $l]} { return $l }
+  if {![string is integer -strict $l] || $l <= 0} { return NOROW }
+  set loc [rw_ans ::rdw::_locate $l]
+  if {[rw_bad $loc]} { return $loc }
+  if {$loc eq {}} { return NOLINE }
+  set p [rw_ans ::rdw::_row_param \
+           [lindex [lindex $::rdw::blocks [lindex $loc 0]] [lindex $loc 1]]]
+  if {[rw_bad $p]} { return $p }
+  if {$p eq {}} { return NOTPARAM }
+  return $p
+}
+proc re_say {} {
+  return [expr {[info exists ::rdw::statusmsg] ? $::rdw::statusmsg : {NOVAR}}]
+}
+proc re_press {id} {
+  rw_ans ::rdw::status {}
+  rw_ans ::rdw::button $id
+  return [re_say]
+}
+proc re_ok1 {m needle} {
+  if {$m eq {} || $m eq {NOVAR} || [string match {NOPROC*} $m]} { return 0 }
+  if {[string first "\n" $m] >= 0} { return 0 }
+  return [expr {[string first $needle $m] >= 0 ? 1 : 0}]
+}
+## Does this sentence say something did NOT happen?  ⚠ `not` alone is useless:
+## it is a substring of `annotation`, which every success sentence in this
+## window already carries.  Three whole phrases instead, none of which can
+## appear by accident in a plain success line.
+proc re_negated {m} {
+  if {$m eq {} || $m eq {NOVAR}} { return 0 }
+  foreach n {{could not} {did not} {failed} {was not}} {
+    if {[string first $n $m] >= 0} { return 1 }
+  }
+  return 0
+}
+## The C overlay cache's flush counter - the ONE seam that says the schematic
+## was actually asked to re-render, on the arm that has no pixels.  -1 when the
+## binary cannot answer at all, so a row REDS rather than passing on nothing.
+proc re_flush {} {
+  set v -1
+  catch {set v [xschem get annot_overlay_flushes]}
+  return $v
+}
+
+## THE THREE-BLOCK FIXTURE, AND EVERY LINE OF IT IS DELIBERATE.
+##   MZZ  newest, NO SUBJECT at all - the instance is not on this sheet, so
+##        rdw::push stamps nothing and no class can be resolved for it.  Its
+##        rows are spelled gm then ids, which is the order a class-wide
+##        reorder WOULD produce, so "left alone" and "reordered" are
+##        distinguishable on it.
+##   M2   same private class as M1, rows gm then ids - the sibling block of
+##        row RE5.
+##   M1   the order-divergence block: `gm` is NON-FINITE, so the pane shows
+##        ids / gds / gm while the list holds ids / gm / gds.
+## MEASURED PANE LAYOUT, driven out of rdw::format_answer on this binary:
+##      1 hdr  MZZ:/          7 hdr  M2:/         13 hdr  M1:/
+##      2 dim  @m.mzz         8 dim  @m.m2        14 dim  @m.m1
+##      3 note (incomplete)   9 note (incomplete) 15 note (incomplete)
+##      4      gm  : 2.0     10      gm  : 3.4e-05 16     ids : 1.2e-05
+##      5      ids : 1.0     11      ids : 9.9e-06 17     gds : 5.6e-06
+##      6      (separator)   12      (separator)   18     gm  : (did not converge)
+##                                                 19     (separator)
+proc re_ansd {devices nonfinite} {
+  return [dict create devices $devices absent {} nonfinite $nonfinite \
+                      complete 0 state ok]
+}
+proc re_ctx {inst dp} {
+  return [dict create header "$inst:/" devpath $dp simtype op instname $inst \
+                      sim ngspice]
+}
+proc re_blk {inst dp devices nonfinite} {
+  return [rw_block [re_ansd $devices $nonfinite] [re_ctx $inst $dp]]
+}
+proc re_fixture {} {
+  set ::rdw::blocks {}
+  rw_ans ::rdw::set_row 0
+  rw_ans ::rdw::push [re_blk M1 @m.m1 \
+      {@m.m1 {{ids 1.2e-05} {gds 5.6e-06}}} {{@m.m1 gm nan}}]
+  rw_ans ::rdw::push [re_blk M2 @m.m2 {@m.m2 {{gm 3.4e-05} {ids 9.9e-06}}} {}]
+  rw_ans ::rdw::push [re_blk MZZ @m.mzz {@m.mzz {{gm 2.0} {ids 1.0}}} {}]
+  return {}
+}
+## ONE block, TWO primitives, a BLANK-VALUED row in each of them and a
+## parameter no list declares in one of them.  Ruling D-3's sub-header is what
+## makes the groups real; the `absent` bucket renders AFTER the `devices` pairs,
+## so `vgs` - which the list does not declare - sits BETWEEN two rows that do,
+## which is what makes "the declared rows re-fill the slots the declared rows
+## occupied" a different answer from "the block's rows are sorted".
+## MEASURED PANE LAYOUT, driven out of rdw::format_answer on this binary:
+##      1 hdr  M1:/           6      gm  : 2.2e-05   11      vgs : 0.55
+##      2 dim  x1             7      gds :           12      gds :
+##      3 note (incomplete)   8 dev    @m.x1.mb      13 note (blank footnote)
+##      4 dev    @m.x1.ma     9      ids : 3.3e-05   14      (separator)
+##      5      ids : 1.1e-05 10      gm  : 4.4e-05
+proc re_fixture_multi {} {
+  set ::rdw::blocks {}
+  rw_ans ::rdw::set_row 0
+  rw_ans ::rdw::push [rw_block \
+      [dict create devices {@m.x1.ma {{ids 1.1e-05} {gm 2.2e-05}}
+                            @m.x1.mb {{ids 3.3e-05} {gm 4.4e-05} {vgs 0.55}}} \
+                   absent {{@m.x1.ma gds {}} {@m.x1.mb gds {}}} \
+                   nonfinite {} complete 0 state ok] \
+      [re_ctx M1 x1]]
+  return {}
+}
+## THE FOUR-BLOCK FIXTURE ROW RE5 NEEDS: the three above plus a device of a
+## DIFFERENT private class, newest and therefore on top.  Its rows are spelled
+## `gm` then `ids` too, so "left alone" and "re-ordered by somebody else's
+## list" are distinguishable on it - and so are "re-ordered by its OWN class's
+## list", which nobody asked for either.
+##      1 hdr  R1:/     7 hdr  MZZ:/    13 hdr  M2:/     19 hdr  M1:/
+##      2 dim  @m.r1    8 dim  @m.mzz   14 dim  @m.m2    20 dim  @m.m1
+##      3 note ...      9 note ...      15 note ...      21 note ...
+##      4      gm      10      gm       16      gm       22      ids
+##      5      ids     11      ids      17      ids      23      gds
+##      6      (sep)   12      (sep)    18      (sep)    24      gm
+##                                                       25      (separator)
+proc re_fixture_cls {} {
+  re_fixture
+  rw_ans ::rdw::push [re_blk R1 @m.r1 {@m.r1 {{gm 7.0} {ids 8.0}}} {}]
+  return {}
+}
+## ⚠ IT RE-REGISTERS THE DESCRIPTOR, for section BT's own measured reason
+## (issue 1312): an accepted press calls `op_param_lists::apply`, which
+## rewrites `params` and `shown`, and a per-row reset that only reset the STORE
+## would leave every row after the first reading a descriptor an earlier row
+## wrote.
+proc re_reset {} {
+  rw_ans ::op_param_lists::reset
+  rw_ans ::op_param_lists::set_class re2ndev re2cls
+  rw_ans ::op_param_lists::set_class re2pdev re2cls
+  rw_ans ::op_param_lists::set_class re2rdev re2rcls
+  catch {op_annot::register re2ndev $::RE_DESC}
+  catch {op_annot::register re2pdev $::RE_DESC}
+  catch {op_annot::register re2rdev $::RE_DESC}
+  rw_ans ::op_param_lists::said_clear
+  re_fixture
+  rw_ans ::rdw::set_list annotation
+  rw_ans ::rdw::status {}
+  return {}
+}
+
+re_reset
+
+# --- RE0  THE CONTROL --------------------------------------------------------
+## GREEN BEFORE THE CHANGE.  It says the fixture is live AND that the pane's
+## order and the store's order really do disagree, so no row below can pass by
+## asserting something about nothing.
+check {RE0 CONTROL the fixture is live: two type tokens of ONE private class and a third in a class of its own, an IHP-shaped seed whose first triple has label != param, three stacked blocks of which the newest has no resolvable subject at all - and the M1 block's displayed parameter order really does DIFFER from the store's list order, which is what makes an adjacent-line swap distinguishable from a re-order} \
+  [list $RE_LOAD [rw_ans ::op_annot::type M1] [rw_ans ::op_annot::type M2] \
+        [rw_ans ::op_annot::type R1] \
+        [rw_ans ::op_param_lists::class re2ndev] \
+        [rw_ans ::op_param_lists::class re2pdev] \
+        [rw_ans ::op_param_lists::class re2rdev] \
+        [llength $::rdw::blocks] [llength [re_flat]] \
+        [re_params 2] [re_params 1] [re_params 0] \
+        [re_lparams annotation] \
+        [expr {[re_params 2] ne [re_lparams annotation] ? 1 : 0}] \
+        [expr {[rw_ans ::rdw::block_subject [lindex $::rdw::blocks 0]] eq {} ? 1 : 0}] \
+        [expr {[rw_ans ::rdw::block_subject [lindex $::rdw::blocks 2]] ne {} ? 1 : 0}]] \
+  [list 0 re2ndev re2pdev re2rdev re2cls re2cls re2rcls 3 19 \
+        {ids gds gm} {gm ids} {gm ids} $RE_SEEDP 1 1 1]
+
+# --- RE1  THE WINDOW SHOWS THE ORDER THE STORE HOLDS -------------------------
+## THREE PRESSES ON ONE CURSORED ROW, AND EACH ONE ANSWERS A DIFFERENT
+## QUESTION.
+##   press 1  the store swaps `gds` past `gm`, which the pane ALREADY shows in
+##            that order - so the block must come back UNCHANGED.  An
+##            adjacent-display-line swap reds here.
+##   press 2  the store swaps `gds` past `ids`, which the pane does NOT already
+##            show - so the block must change.  HEAD reds here: the store moves
+##            and ::rdw::blocks is byte-identical.
+##   press 3  `gds` is now the first row, so the press must be REFUSED BY NAME.
+##            If the cursor had stayed on its LINE NUMBER instead of following
+##            the row, it would now be sitting on `ids` and this press would
+##            silently move a parameter the user did not choose - which is
+##            DD-1's own argument, one item later.
+re_reset
+rw_ans ::rdw::set_row 17
+set RE1_C0 [re_cursor_param]
+set RE1_M1 [re_press up]
+set RE1_P1 [re_params 2] ; set RE1_L1 [re_lparams annotation]
+set RE1_C1 [re_cursor_param]
+set RE1_M2 [re_press up]
+set RE1_P2 [re_params 2] ; set RE1_L2 [re_lparams annotation]
+set RE1_C2 [re_cursor_param]
+set RE1_M3 [re_press up]
+set RE1_P3 [re_params 2] ; set RE1_L3 [re_lparams annotation]
+set RE1_SUBJ [rw_ans ::rdw::block_subject [lindex $::rdw::blocks 2]]
+set RE1_SUBJOK 0
+catch {set RE1_SUBJOK [expr {[dict get $RE1_SUBJ instname] eq {M1} ? 1 : 0}]}
+check {RE1 the pane shows the order the STORE holds, never a swap of two adjacent display lines: a reorder the display already agreed with leaves the block untouched, the next one really moves the row, the cursor follows the ROW and not the line number so the third press is refused BY NAME at the top of the list, and the block keeps the subject it was stamped with} \
+  [list $RE1_C0 \
+        $RE1_P1 $RE1_L1 $RE1_C1 [re_ok1 $RE1_M1 gds] \
+        $RE1_P2 $RE1_L2 $RE1_C2 \
+        [re_ok1 $RE1_M3 gds] [re_ok1 $RE1_M3 first] $RE1_P3 $RE1_L3 \
+        $RE1_SUBJOK] \
+  [list gds \
+        {ids gds gm} {ids gds gm} gds 1 \
+        {gds ids gm} {gds ids gm} gds \
+        1 1 {gds ids gm} {gds ids gm} \
+        1]
+
+# --- RE2  DOWN IS THE MIRROR, AND THE CURSOR WALKS ---------------------------
+## The same three questions from the other end.  The third press is the fence
+## on the walk: after two Downs `ids` is the LAST row and the press must be
+## refused naming it - a cursor left on line 16 would be sitting on `gm`, which
+## is the FIRST row, and would be refused with a different word about a
+## different parameter.
+re_reset
+rw_ans ::rdw::set_row 16
+set RE2_C0 [re_cursor_param]
+set RE2_M1 [re_press down]
+set RE2_P1 [re_params 2] ; set RE2_L1 [re_lparams annotation]
+set RE2_C1 [re_cursor_param]
+set RE2_M2 [re_press down]
+set RE2_P2 [re_params 2] ; set RE2_L2 [re_lparams annotation]
+set RE2_C2 [re_cursor_param]
+set RE2_M3 [re_press down]
+check {RE2 Down is the mirror of Up in the window as well as in the store - two presses walk the same parameter down two places, the cursor stays on the parameter and not on the line, and the third press is refused BY NAME at the BOTTOM of the list rather than moving whatever slid under the old line number} \
+  [list $RE2_C0 \
+        $RE2_P1 $RE2_L1 $RE2_C1 \
+        $RE2_P2 $RE2_L2 $RE2_C2 \
+        [re_ok1 $RE2_M3 ids] [re_ok1 $RE2_M3 last] [re_params 2]] \
+  [list ids \
+        {gm ids gds} {gm ids gds} ids \
+        {gm gds ids} {gm gds ids} ids \
+        1 1 {gm gds ids}]
+
+# --- RE3  FENCE: A REFUSED REORDER CHANGES NOTHING AT ALL --------------------
+## GREEN TODAY AND IT MUST STAY GREEN.  A repaint on the refusal arm would be a
+## visible change reporting a command that did not happen - item B4's own rule,
+## and the reason rdw::key resolves before it moves any state.
+re_reset
+rw_ans ::rdw::set_row 16
+set RE3_SH0 [re_shape 2]
+set RE3_F0  [re_flush]
+set RE3_M   [re_press up]
+set RE3_D   [expr {[re_flush] - $RE3_F0}]
+check {RE3 FENCE a refused reorder changes NOTHING: the block is byte-identical, the cursor is still where the user put it, the list has not moved, and the schematic is not re-rendered - a refusal that repainted would be a visible change reporting a command that did not happen} \
+  [list [re_ok1 $RE3_M ids] [re_ok1 $RE3_M first] \
+        [expr {[re_shape 2] eq $RE3_SH0 ? 1 : 0}] \
+        [rw_ans ::rdw::_target_line] [re_cursor_param] \
+        [re_lparams annotation] $RE3_D] \
+  [list 1 1 1 16 ids $RE_SEEDP 0]
+
+# --- RE4  NOTHING CROSSES A DEVICE SUB-HEADER, AND AN UNDECLARED ROW STAYS ---
+## Ruling D-3's block: one instance, two primitives, each with its own
+## "  <rawdev>" sub-header and its own copy of every parameter - including a
+## BLANK-VALUED one, which rdw::format_answer emits after the computed ones -
+## plus a `vgs` the run published and no list declares, sitting BETWEEN two
+## rows that the list does declare.
+##
+## An Up on the second primitive's blank `gds` must re-order BOTH groups (they
+## draw the same list), must move the blank row past `vgs` without moving
+## `vgs`, and must leave every value under the device that published it.  Three
+## implementations red here and one passes:
+##   sort the block's parameter rows by list order   -> rows cross the
+##                                                      sub-headers and 4.4e-05
+##                                                      lands under @m.x1.ma
+##   permute ALL parameter rows of a group           -> `vgs` moves, and it is
+##                                                      in no list at all
+##   swap the two adjacent display lines             -> the blank row swaps
+##                                                      with `vgs`
+## A plausible wrong number under the wrong device is invariant I3 exactly, and
+## this is the block a designer pastes into a review document.
+re_reset
+re_fixture_multi
+rw_ans ::rdw::set_list annotation
+rw_ans ::rdw::set_row 12
+set RE4_C0 [re_cursor_param]
+set RE4_M  [re_press up]
+set RE4_EXP [list [list hdr {M1:/}] [list dim x1] [list note $RW_INC] \
+                  [list dev {  @m.x1.ma}] \
+                  [list {} {    ids : 1.1e-05}] \
+                  [list {} {    gds :}] \
+                  [list {} {    gm  : 2.2e-05}] \
+                  [list dev {  @m.x1.mb}] \
+                  [list {} {    ids : 3.3e-05}] \
+                  [list {} {    gds :}] \
+                  [list {} {    vgs : 0.55}] \
+                  [list {} {    gm  : 4.4e-05}] \
+                  [list note $RW_ABSN] \
+                  [list {} {}]]
+check {RE4 in a multi-primitive block both primitives re-order because both draw the same list, no row crosses a device sub-header so every value stays under the device that published it, a BLANK-valued row re-orders with the rest, the parameter the run published and no list declares keeps its own slot even when a declared row moves past it, and the cursor is on the moved row of the primitive the user clicked} \
+  [list $RE4_C0 [re_ok1 $RE4_M gds] [re_lparams annotation] \
+        [re_shape 0] [rw_ans ::rdw::_target_line] [re_cursor_param]] \
+  [list gds 1 {ids gds gm} $RE4_EXP 10 gds]
+
+# --- RE5  EVERY BLOCK OF THE EDITED CLASS FOLLOWS; NO OTHER BLOCK MOVES -----
+## ⚠ THE E QUESTION.  DD-3 and DD-4 are silent on the OTHER blocks; this row
+## answers "every block whose subject resolves to the EDITED class", because
+## the store is class-wide and the alternative puts two orders for one class on
+## the screen at once.  Recorded as rule debt 1338_R2_every_block_of_the_class
+## _follows so the user can overrule it; overruling deletes this row and
+## nothing else.
+##
+## THE OTHER TWO BLOCKS ARE THE GUARD THAT KEEPS IT HONEST, and both are
+## spelled `gm` then `ids` so that "left alone" is distinguishable from
+## "re-ordered":
+##   MZZ  no subject at all - the instance is not on this sheet, so nothing
+##        says which list its rows belong to;
+##   R1   a device of a DIFFERENT private class, whose own list nobody edited.
+##        Its rows disagree with its own class list too, so an implementation
+##        that re-orders every block by whatever class it belongs to reds here
+##        while passing every other row in this section.
+re_reset
+re_fixture_cls
+rw_ans ::rdw::set_list annotation
+rw_ans ::rdw::set_row 23
+set RE5_C0   [re_cursor_param]
+set RE5_P3_0 [re_params 3]
+set RE5_P2_0 [re_params 2]
+set RE5_P1_0 [re_params 1]
+set RE5_P0_0 [re_params 0]
+set RE5_M    [re_press up]
+set RE5_RCLS [re_ok1 [rw_ans ::op_param_lists::class re2rdev] re2rcls]
+check {RE5 a class-wide reorder is reflected in EVERY block of that class, so the window never shows one class list in two different orders at once - while a block whose device could not be resolved at dump time carries no class, and a block of a DIFFERENT class carries a list nobody edited, and neither is touched, rows spelled the same way included} \
+  [list $RE5_C0 $RE5_P3_0 $RE5_P2_0 $RE5_P1_0 $RE5_P0_0 $RE5_RCLS \
+        [re_ok1 $RE5_M gds] [re_lparams annotation] \
+        [re_params 3] [re_params 2] [re_params 1] [re_params 0] \
+        [expr {[rw_ans ::rdw::block_subject [lindex $::rdw::blocks 1]] eq {} ? 1 : 0}]] \
+  [list gds {ids gds gm} {gm ids} {gm ids} {gm ids} 1 \
+        1 {ids gds gm} \
+        {ids gds gm} {ids gm} {gm ids} {gm ids} 1]
+
+# --- RE6  ISSUE 1330: AN APPLY THAT FAILS IS NOT A SUCCESS ------------------
+## ⚠ `rename`, NEVER `proc` - test_ase_bus_bits_0159.tcl:129-132's idiom, the
+## same one section BT's dialog stub uses: a bare `proc` overwrites the real
+## command and the `rename ... {}` that puts it back then DELETES it.  The
+## restore is asserted as a leg, because a suite that left the store unable to
+## apply would quietly re-colour every row after it.
+re_reset
+rw_ans ::rdw::set_row 17
+set RE6_OKM [re_press up]
+re_reset
+rw_ans ::rdw::set_row 17
+set RE6_REN 0
+if {[llength [info commands ::op_param_lists::apply]]} {
+  rename ::op_param_lists::apply ::re_real_apply
+  proc ::op_param_lists::apply {args} {
+    return -code error {the store cannot apply today}
+  }
+  set RE6_REN 1
+}
+set RE6_BADM [re_press up]
+set RE6_LIST [re_lparams annotation]
+set RE6_REST 0
+if {$RE6_REN} {
+  catch {rename ::op_param_lists::apply {}}
+  rename ::re_real_apply ::op_param_lists::apply
+  set RE6_REST [expr {[llength [info commands ::op_param_lists::apply]] ? 1 : 0}]
+}
+check {RE6 issue 1330 an apply that FAILS is not reported as a success: the edit itself still stands and the message still names the parameter on one line, but it is not the sentence the identical press produces when the apply succeeds and it says something did not happen - R2 is the item that promises the schematic follows, so a silent failure to re-render is a false statement on a screen the user is reading} \
+  [list $RE6_REN $RE6_REST \
+        [re_ok1 $RE6_OKM gds] [re_negated $RE6_OKM] \
+        [re_ok1 $RE6_BADM gds] [re_negated $RE6_BADM] \
+        [expr {$RE6_BADM ne $RE6_OKM ? 1 : 0}] \
+        $RE6_LIST] \
+  [list 1 1 1 0 1 1 1 {ids gds gm}]
+
+# --- RE7  FENCE: DD-4, WHO GETS A RE-RENDER AND WHO DOES NOT ----------------
+## GREEN TODAY, AND IT IS THE ONLY THING DEFENDING DD-4.  The counter is the C
+## overlay cache's own flush count, which moves when and only when the epoch
+## does - the first leg proves that by redrawing twice and watching it stand
+## still, so a "+1" below is a statement about this edit and not about the fact
+## that a redraw happened at all.
+re_reset
+catch {xschem redraw}
+set RE7_A [re_flush]
+catch {xschem redraw}
+set RE7_B [re_flush]
+rw_ans ::rdw::set_row 17
+set RE7_F1 [re_flush] ; set RE7_M1 [re_press up]
+set RE7_D1 [expr {[re_flush] - $RE7_F1}]
+re_reset
+rw_ans ::rdw::set_row 16
+set RE7_F2 [re_flush] ; set RE7_M2 [re_press up]
+set RE7_D2 [expr {[re_flush] - $RE7_F2}]
+re_reset
+rw_ans ::rdw::set_list summary
+rw_ans ::rdw::set_row 17
+set RE7_F3 [re_flush] ; set RE7_M3 [re_press up]
+set RE7_D3 [expr {[re_flush] - $RE7_F3}]
+re_reset
+rw_ans ::rdw::set_list all
+rw_ans ::rdw::set_row 17
+set RE7_F4 [re_flush] ; set RE7_M4 [re_press up]
+set RE7_D4 [expr {[re_flush] - $RE7_F4}]
+rw_ans ::rdw::set_list annotation
+check {RE7 FENCE DD-4 the schematic is asked to re-render for an ACCEPTED reorder of the annotation list and of the summary list, and is not asked at all for a refusal or for list 3 - the counter stands still across two plain redraws first, so a move below is a statement about the edit and not about redrawing} \
+  [list [expr {$RE7_A >= 0 ? 1 : 0}] [expr {$RE7_B == $RE7_A ? 1 : 0}] \
+        [re_ok1 $RE7_M1 gds] [expr {$RE7_D1 >= 1 ? 1 : 0}] \
+        [re_ok1 $RE7_M2 first] $RE7_D2 \
+        [re_ok1 $RE7_M3 gds] [expr {$RE7_D3 >= 1 ? 1 : 0}] \
+        [re_ok1 $RE7_M4 {list 3}] $RE7_D4] \
+  [list 1 1 1 1 1 0 1 1 1 0]
+
+# --- the section leaves the tree as it found it ------------------------------
+rw_ans ::op_param_lists::reset
+catch {op_annot::register re2ndev {}}
+catch {op_annot::register re2pdev {}}
+set ::rdw::blocks {}
+rw_ans ::rdw::set_row 0
+rw_ans ::rdw::set_list annotation
+rw_ans ::rdw::status {}
+catch {xschem raw clear}
+
+
+# ============================================================================
 # SECTION S — THE STRUCTURAL FENCES, AND HYGIENE
 # ============================================================================
 # S1 is the seam's whole point stated as a fence: "nothing above it changes
@@ -4173,7 +4806,11 @@ if {$live_tk} { rw_ans ::rdw::close ; catch {destroy .rdwctl} }
 ## the stale-target sweep on the arm with no Tk to repaint.  All seven run on
 ## BOTH arms.  A floor is raised when rows are added and NEVER lowered to make a
 ## run pass.
-set RW_FLOOR 116
+## ⚠ AND RAISED 116 -> 124 BY ITEM R2 (issue 1338), IN THE SAME COMMIT AS
+## THE EIGHT ROWS IT COVERS: section RE's RE0..RE7, Up and Down moving the row
+## in the window and the sheet following.  All eight run on BOTH arms.  A floor
+## is raised when rows are added and NEVER lowered to make a run pass.
+set RW_FLOOR 124
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\

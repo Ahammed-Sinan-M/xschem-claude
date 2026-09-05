@@ -2245,6 +2245,197 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
 }
 
 
+# ============================================================================
+# SECTION RD — ITEM R2, ISSUE 1338: THE PANE REALLY REPAINTS, ON A MAPPED
+# WINDOW, WITH A REAL BUTTON PRESS
+# ============================================================================
+# The user's words: "Promote/demote using Up/Down arrow should be reflected in
+# the Results Display Window as well as the schematic annotation."  The store
+# half, the block-model half and DD-4 are section RE of
+# tests/headless/test_rdw_window_1245.tcl and run on both arms; what needs a
+# MAPPED pane is the last step of the chain, and it is exactly the step this
+# batch keeps shipping green and wrong.
+#
+# ⚠ ::rdw::blocks IS NOT THE PANE.  `rdw::render_pane` is what projects the
+# store onto `.rdw.p.t`, and it returns early with no Tk - so an implementation
+# that re-orders the block model and forgets to repaint passes EVERY row of
+# section RE, on both arms, while the window on screen still shows the order
+# the user just changed.  That is the same shape as issue 1283's three gaps and
+# as B2c's 79 green checks over deleted rows: the fence saw the model, not the
+# screen.  This section reads `.rdw.p.t get` and the `cursor` tag's own range,
+# and drives the reorder through the REAL `.rdw.b.up` widget rather than
+# through `rdw::button`, so the command the user's finger reaches is the one
+# under test.
+#
+# RED BEFORE R2, MEASURED 2026-09-05 AT HEAD 27122ca4: a real `.rdw.b.up
+# invoke` moves the store, re-renders the sheet and leaves the pane text byte
+# for byte as it was, with the shading still on the line the parameter has
+# LEFT.
+#
+# ⚠ The floor below is raised by the two rows this section adds.  A display
+# that fails to come up drops the whole section silently, which is what the
+# floor is for.
+
+if {[kx_ans ::rdw::have_tk] eq {1}} {
+  set RD_ROOT [file join $scratch r2rd]
+  file mkdir $RD_ROOT
+  proc rd_mksym {path type} {
+    set fd [open $path w]
+    puts $fd "v {xschem version=3.4.5 file_version=1.2}"
+    puts $fd "G {}"
+    puts $fd "K {type=$type"
+    puts $fd {format="@spiceprefix@name @pinlist @model"}
+    puts $fd "template=\"name=M1 model=$type spiceprefix=X\""
+    puts $fd "}"
+    puts $fd "V {}"
+    puts $fd "S {}"
+    puts $fd "E {}"
+    puts $fd "L 4 -20 -20 20 -20 {}"
+    puts $fd "B 5 -22.5 -12.5 -17.5 -7.5 {name=d dir=inout}"
+    puts $fd "T {@name} 0 -40 0 0 0.2 0.2 {}"
+    close $fd
+  }
+  set RD_SYMN [file join $RD_ROOT rdn.sym]
+  rd_mksym $RD_SYMN rdndev
+  set RD_SCH [file join $RD_ROOT rd.sch]
+  set _fd [open $RD_SCH w]
+  puts $_fd "v {xschem version=3.4.5 file_version=1.2}
+G {}
+V {}
+S {}
+E {}
+C \{$RD_SYMN\} 300 -300 0 0 \{name=M1\}"
+  close $_fd
+  catch {xschem raw clear}
+  set RD_LOAD [catch {xschem load $RD_SCH}]
+  update idletasks
+  set RD_DESC [list devpath {\@m.@path@name} \
+                    params {{id ids 0} {gm gm 1} {gds gds 1}}]
+  catch {op_annot::register rdndev $RD_DESC}
+  kx_ans ::op_param_lists::reset
+  kx_ans ::op_param_lists::set_class rdndev rdcls
+
+  proc rd_w {args} {
+    set rc [catch {uplevel #0 $args} r]
+    if {$rc} { return "ERR:$r" }
+    return $r
+  }
+  proc rd_span {n} { return [list $n.0 [expr {$n + 1}].0] }
+  proc rd_ranges {} {
+    set r {}
+    if {[catch {.rdw.p.t tag ranges cursor} r]} { return ERR }
+    return $r
+  }
+  ## The pane's own text, one line per element, the trailing empty line the
+  ## widget always carries dropped.  READ FROM THE WIDGET, never from the
+  ## store: that is this section's whole purpose.
+  proc rd_panelines {} {
+    set t {}
+    if {[catch {.rdw.p.t get 1.0 {end - 1c}} t]} { return ERR }
+    return [split $t "\n"]
+  }
+  ## The parameter names the PANE shows, in pane order - scraped out of the
+  ## rendered text with rdw::format_answer's own row shape.
+  proc rd_paneparams {} {
+    set out {}
+    set l [rd_panelines]
+    if {$l eq {ERR}} { return ERR }
+    foreach line $l {
+      if {[regexp {^[ ]+(\S+)[ ]+:} $line -> p]} { lappend out $p }
+    }
+    return $out
+  }
+  proc rd_lparams {} {
+    set l [kx_ans ::op_param_lists::effective rdcls annotation]
+    if {[kx_bad $l]} { return $l }
+    set out {}
+    foreach t $l { lappend out [lindex $t 1] }
+    return $out
+  }
+  proc rd_blk {} {
+    set ans [dict create devices {@m.m1 {{ids 1.2e-05} {gds 5.6e-06}}} \
+                         absent {} nonfinite {{@m.m1 gm nan}} complete 0 state ok]
+    set ctx [dict create header {M1:/} devpath {@m.m1} simtype op \
+                         instname M1 sim ngspice]
+    return [kx_ans ::rdw::format_answer $ans $ctx]
+  }
+  ## ONE block, six lines plus the separator, and the SAME order-divergence the
+  ## other suite's section RE uses: `gm` is non-finite, so the pane shows
+  ##      4  ids : 1.2e-05      5  gds : 5.6e-06      6  gm  : (did not converge)
+  ## while the list holds ids / gm / gds.
+  proc rd_fixture {} {
+    kx_ans ::op_param_lists::reset
+    kx_ans ::op_param_lists::set_class rdndev rdcls
+    catch {op_annot::register rdndev $::RD_DESC}
+    set ::rdw::blocks {}
+    kx_ans ::rdw::set_row 0
+    kx_ans ::rdw::push [rd_blk]
+    kx_ans ::rdw::set_list annotation
+    kx_ans ::rdw::status {}
+    kx_ans ::rdw::render_pane
+    catch {update idletasks}
+    return {}
+  }
+
+  kx_ans ::rdw::open
+  catch {update idletasks}
+  rd_fixture
+
+  # --- RD1  THE PANE ITSELF, AND THE SHADING WITH IT ------------------------
+  ## Two presses of the REAL widget, for section RE's own reason: the first
+  ## re-order is one the pane already agrees with and must leave the text
+  ## alone, the second is one it does not and must change it.  The shading is
+  ## read from the widget's tag ranges both times, so a repaint that dropped
+  ## the cursor - or left it on the line the parameter has left - reds here.
+  rd_fixture
+  set RD1_P0   [rd_paneparams]
+  set RD1_L0   [rd_lparams]
+  kx_ans ::rdw::set_row 5
+  catch {update idletasks}
+  set RD1_R0   [rd_ranges]
+  set RD1_TXT0 [rd_w .rdw.p.t get 1.0 end]
+  rd_w .rdw.b.up invoke
+  catch {update idletasks}
+  set RD1_P1   [rd_paneparams]
+  set RD1_L1   [rd_lparams]
+  set RD1_R1   [rd_ranges]
+  set RD1_SAME [expr {[rd_w .rdw.p.t get 1.0 end] eq $RD1_TXT0 ? 1 : 0}]
+  rd_w .rdw.b.up invoke
+  catch {update idletasks}
+  set RD1_P2   [rd_paneparams]
+  set RD1_L2   [rd_lparams]
+  set RD1_R2   [rd_ranges]
+  set RD1_T2   [kx_ans ::rdw::_target_line]
+  check {RD1 the PANE repaints, not just the block model: a real .rdw.b.up press re-orders the store and the text in the widget follows it - a re-order the pane already agreed with leaves the text byte-identical, the next one really moves the line, and the cursor shading lands on the row the parameter moved TO, not on the line it left} \
+    [list $RD1_P0 $RD1_L0 $RD1_R0 \
+          $RD1_P1 $RD1_L1 $RD1_SAME $RD1_R1 \
+          $RD1_P2 $RD1_L2 $RD1_R2 $RD1_T2 \
+          [rd_w .rdw.p.t cget -state]] \
+    [list {ids gds gm} {ids gm gds} [rd_span 5] \
+          {ids gds gm} {ids gds gm} 1 [rd_span 5] \
+          {gds ids gm} {gds ids gm} [rd_span 4] 4 \
+          disabled]
+
+  # --- RD2  HYGIENE ---------------------------------------------------------
+  kx_ans ::op_param_lists::reset
+  catch {op_annot::register rdndev {}}
+  set ::rdw::blocks {}
+  kx_ans ::rdw::set_row 0
+  kx_ans ::rdw::set_list annotation
+  kx_ans ::rdw::status {}
+  kx_ans ::rdw::close
+  catch {update idletasks}
+  check {RD2 HYGIENE section RD leaves nothing behind: no window, no stored dumps, no cursored row, no owned list and no untitled* anywhere} \
+    [list [expr {[winfo exists .rdw] ? 1 : 0}] \
+          [llength $::rdw::blocks] \
+          [kx_ans ::rdw::_target_line] \
+          [kx_ans ::op_param_lists::owns class rdcls annotation] \
+          [expr {[lsort [glob -nocomplain -directory $repo -tails untitled*]] eq $S1_ROOT0 ? 1 : 0}] \
+          [llength [glob -nocomplain -directory $scratch -tails untitled*]]] \
+    {0 0 0 0 1 0}
+}
+
+
 if {[llength [info commands kx_ciw_echo_real]]} { rename kx_ciw_echo_real ciw_echo }
 catch {xschem raw clear}
 
@@ -2285,7 +2476,12 @@ catch {xschem raw clear}
 ## clicks on a mapped pane. The whole section is guarded by
 ## `[kx_ans ::rdw::have_tk] eq 1`, so a display that fails to come up drops all
 ## ten silently - which is exactly what a floor is for.
-set KX_FLOOR 51
+## ⚠ AND RAISED 51 -> 53 BY ITEM R2 (issue 1338), IN THE SAME COMMIT AS THE
+## TWO ROWS IT COVERS: section RD's RD1 and RD2, the pane itself repainting
+## after a real `.rdw.b.up` press.  That section is guarded by
+## `[kx_ans ::rdw::have_tk] eq 1` too, so a display that fails to come up drops
+## both silently - which is exactly what a floor is for.
+set KX_FLOOR 53
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\

@@ -2256,6 +2256,193 @@ proc rdw::_subject {blockindex} {
 }
 
 # ---------------------------------------------------------------------------
+# THE WINDOW FOLLOWS THE STORE (item R2, issue 1338).
+#
+# The user's words: "Promote/demote using Up/Down arrow should be reflected in
+# the Results Display Window as well as the schematic annotation."  The sheet
+# half already worked -- `rdw::_apply_now` rewrites the descriptors and
+# redraws, MEASURED at HEAD 27122ca4 as a `xschem get annot_overlay_flushes`
+# of +1 per accepted press -- and the WINDOW half is what was missing: the
+# store moved, `::rdw::blocks` came back byte-identical, and the pane kept
+# showing the order the user had just changed until they pressed 1 or 2 again.
+#
+# ⚠ THE PANE'S ROW ORDER IS NOT THE LIST'S ROW ORDER, so "swap the two adjacent
+# display lines" is the obvious implementation and it is WRONG.
+# `rdw::format_answer` emits, per primitive, the `devices` pairs FIRST, then
+# the `nonfinite` ones, then the `absent` ones.  So a list holding
+# {id ids 0} {gm gm 1} {gds gds 1} whose `gm` came back non-finite renders as
+#       ids : 1.2e-05      gds : 5.6e-06      gm  : (did not converge)
+# and an Up on `gds` swaps LIST entries 2 and 1 while leaving the DISPLAY
+# exactly as it was.  MEASURED on the IHP-shaped seed row RE0 builds -- label
+# != param, which is a shipped PDK shape and not a synthetic one.  A blind
+# display swap would put `gds` above `ids` and the window would then be showing
+# an order the store does not hold, which is the one thing this item exists to
+# prevent.
+#
+# So a block is RE-SLOTTED, never swapped: the rows the list DECLARES are
+# re-filled, in the list's order, into the slots those declared rows already
+# occupied, and every other row keeps its own slot.
+
+# The RAW param names the store's list holds for this class and cell, in store
+# order, deduped.
+#
+# ⚠ `::op_param_lists::effective` IS THE ORDER AND NOTHING HERE RE-DERIVES ONE.
+# A second opinion about what the sheet draws is invariant I1's two-builders
+# drift, and this window's whole promise in R2 is that the two agree.
+#
+# ⚠ THE CELL IS PASSED, so each block is re-slotted into the order that governs
+# IT.  A device-flavor entry legitimately governs one block and not another
+# (`rdw::_scope_for` asks exactly this question before the write), so a block
+# the flavor entry does not match must keep the class order it is actually
+# drawn in.  With no flavor entry in the settings file -- the ordinary case --
+# `effective` falls through to the class entry and then to the PDK seed, so the
+# extra argument changes nothing at all.
+#
+# Deduped because `order` is used as a fill sequence below: a list carrying two
+# triples with the same RAW param would otherwise place that row twice and drop
+# another.  (`op_annot::register` refuses two triples sharing a LABEL as of
+# ruling DD-15, but nothing refuses two sharing a param.)
+proc rdw::_list_params {cls listname cell} {
+    set l {}
+    catch {set l [::op_param_lists::effective $cls $listname $cell]}
+    set out {}
+    foreach t $l {
+        set p {}
+        if {[catch {lindex $t 1} p]} { continue }
+        if {$p eq {}} { continue }
+        if {[lsearch -exact $out $p] >= 0} { continue }
+        lappend out $p
+    }
+    return $out
+}
+
+# Re-fill one block's declared parameter rows into `order`.  Returns
+# {newblock map}, where `map` is a dict from the entry index a row HAD to the
+# entry index it now HAS -- the cursor is moved with it, so a second press
+# moves the same parameter again instead of whatever slid under the old line
+# number.  That is ruling DD-1's own argument, one item later.
+#
+# ⚠ A MAXIMAL RUN OF PARAMETER ROWS IS ONE PRIMITIVE, AND THAT IS WHAT KEEPS A
+# NUMBER UNDER THE DEVICE THAT PUBLISHED IT (ruling D-3).  One XR1 resolves to
+# several primitives; `rdw::format_answer` emits a "  <rawdev>" sub-header and
+# then that primitive's rows, contiguously, so a permutation confined to one
+# run can never cross a sub-header.  An implementation that collected the
+# block's parameter rows and re-laid them all in list order moves a value under
+# a device that never published it -- a plausible wrong NUMBER in the block a
+# designer pastes into a review document, which is invariant I3 exactly.
+# Row RE4 is the fence.
+#
+# ⚠ AND A ROW NO LIST DECLARES KEEPS ITS OWN SLOT.  The `absent` bucket renders
+# after the computed pairs, so a parameter the run published and no list
+# declares can sit BETWEEN two rows that a list does declare.  Permuting every
+# row of the run would move it; the button column already refuses to reorder it
+# by name (row BT6), and somebody else's reorder must not do it either.
+#
+# The block's FIRST entry carries the subject stamp as a third element (issue
+# 1322, `rdw::push`), and it is never a parameter row, so it is never rewritten
+# here -- row RE1's last leg is the fence on that.
+proc rdw::_reslot_block {block order} {
+    set map [dict create]
+    set n 0
+    if {[catch {llength $block} n]} { return [list $block $map] }
+    set out $block
+    set i 0
+    while {$i < $n} {
+        if {[rdw::_row_param [lindex $block $i]] eq {}} { incr i ; continue }
+        set j $i
+        while {$j < $n && [rdw::_row_param [lindex $block $j]] ne {}} { incr j }
+        ## [$i, $j-1] is one primitive's rows.
+        set slots {}
+        for {set k $i} {$k < $j} {incr k} {
+            if {[lsearch -exact $order \
+                    [rdw::_row_param [lindex $block $k]]] < 0} { continue }
+            lappend slots $k
+        }
+        ## The declared rows of this run, in the LIST's order.  Walked
+        ## list-first rather than sorted by rank so that the result does not
+        ## depend on `lsort`'s stability, and so two rows of one run spelled
+        ## the same way keep their run order.
+        set filled {}
+        foreach p $order {
+            foreach k $slots {
+                if {[rdw::_row_param [lindex $block $k]] eq $p} {
+                    lappend filled $k
+                }
+            }
+        }
+        ## A re-slot is a PERMUTATION: same rows, same slots.  If the two
+        ## disagree the block is left exactly as it was rather than half
+        ## rewritten -- the least-destructive reading, and the same one
+        ## `rdw::pane_click` takes for a refused click.
+        if {[llength $filled] == [llength $slots]} {
+            set x 0
+            foreach k $slots {
+                set src [lindex $filled $x]
+                lset out $k [lindex $block $src]
+                dict set map $src $k
+                incr x
+            }
+        }
+        set i $j
+    }
+    return [list $out $map]
+}
+
+# Re-slot EVERY stored block that draws the list just edited, and answer the
+# pane line the cursor should move to.  `loc` is the {blockindex entryindex}
+# the cursor was at and `line` its flat pane line.
+#
+# ⚠ EVERY BLOCK OF THE CLASS, NOT JUST THE ONE THE CURSOR IS IN.  The store is
+# class-wide, so a window that reordered only the cursored block would show the
+# SAME class list in two different orders at once -- a statement the store
+# cannot support, and one the user would have to reconcile by hand.  This is an
+# E question neither DD-3 nor DD-4 answers; it is on the owed ledger as rule
+# debt 1338_R2_every_block_of_the_class_follows for the user to overrule, and
+# row RE5 is what an overrule would delete.
+#
+# ⚠ A BLOCK WITH NO SUBJECT IS NOT TOUCHED, and neither is one of another
+# class.  A block whose device could not be resolved at dump time carries no
+# subject at all (`rdw::_capture_subject` refuses), so nothing says which of
+# its rows the edited list declares; a block of a different class carries a
+# list nobody edited.  Row RE5's other two blocks are spelled in the order a
+# class-wide reorder WOULD produce, so "left alone" and "reordered" are
+# distinguishable on them.
+proc rdw::_reorder_shown {cls listname loc line} {
+    variable blocks
+    set out {}
+    set bi 0
+    set newline $line
+    foreach b $blocks {
+        set s [rdw::_subject $bi]
+        set c {}
+        catch {set c [dict get $s class]}
+        if {$s eq {} || $c eq {} || $c ne $cls} {
+            lappend out $b ; incr bi ; continue
+        }
+        set cell {}
+        catch {set cell [dict get $s cellname]}
+        set ord [rdw::_list_params $cls $listname $cell]
+        if {[llength $ord] == 0} { lappend out $b ; incr bi ; continue }
+        lassign [rdw::_reslot_block $b $ord] nb map
+        lappend out $nb
+        if {[llength $loc] == 2 && [lindex $loc 0] == $bi} {
+            set ei [lindex $loc 1]
+            ## A re-slot is length-preserving and confined to ONE block, so
+            ## every line above this block is unchanged and the flat pane line
+            ## moves by exactly the entry-index delta.  That also means
+            ## `rdw::render_pane`'s stale-target sweep (item R1) cannot fire on
+            ## a reorder: `rdw::_locate` still resolves the same line count.
+            if {[dict exists $map $ei]} {
+                set newline [expr {$line + [dict get $map $ei] - $ei}]
+            }
+        }
+        incr bi
+    }
+    set blocks $out
+    return $newline
+}
+
+# ---------------------------------------------------------------------------
 # THE LIST HELPERS.  Every one of them reads a list the STORE handed over;
 # none builds one.
 
@@ -2668,9 +2855,45 @@ proc rdw::_apply_now {subject} {
     ## the class map does not name is unreachable from the bare call (issue
     ## 1279), and the class's mapped SIBLINGS must follow, or `apply nmos`
     ## alone leaves every pmos on the sheet drawing the old list.
-    catch {::op_param_lists::apply}
-    if {$t ne {}} { catch {::op_param_lists::apply $t} }
-    catch {xschem redraw}
+    ##
+    ## ⚠ AND IT ANSWERS NOW, WHICH IS ISSUE 1330 (item R2).  This proc used to
+    ## be three bare `catch`es and a bare `return {}`, so an `apply` that
+    ## FAILED was invisible and both call sites reported the full success
+    ## sentence.  MEASURED at HEAD 27122ca4 with `op_param_lists::apply`
+    ## renamed to a proc that raises: an Up press still said "Up: moved gm up
+    ## in the annotation list for class ...", with no hint that the sheet had
+    ## not followed.
+    ##
+    ## That was harmless while nobody had been promised anything: until item R2
+    ## this channel carried no claim about the schematic.  R2 is the item whose
+    ## whole promise is that the annotation follows the reorder, so a swallowed
+    ## failure is now a FALSE STATEMENT on a screen the user is reading -- the
+    ## same class of defect as a refusal that repainted.  The caller decides
+    ## what to do with the answer; this proc only stops eating it.
+    ##
+    ## TWO WAYS TO FAIL AND BOTH ARE REPORTED.  A RAISE is an exception and is
+    ## quoted; a `_say` is the store's own worded report and is read as the
+    ## TAIL of `said`, `rdw::_store_tail`'s rule exactly -- the store's wording
+    ## and never a second one for the same fact.  MEASURED: an ordinary
+    ## accepted press adds NOTHING to `said` across both applies, so the
+    ## success sentence is byte-identical to the one this file emitted before
+    ## (row RE6's third leg golds that it is not negated).
+    set before 0
+    catch {set before [llength [::op_param_lists::said]]}
+    set err {}
+    if {[catch {::op_param_lists::apply} err]} {
+        return "The schematic annotation was not updated: $err"
+    }
+    if {$t ne {} && [catch {::op_param_lists::apply $t} err]} {
+        return "The schematic annotation was not updated: $err"
+    }
+    set told [rdw::_store_tail $before {}]
+    if {$told ne {}} {
+        return "The schematic annotation was not updated: $told"
+    }
+    if {[catch {xschem redraw} err]} {
+        return "The schematic annotation was not redrawn: $err"
+    }
     return {}
 }
 
@@ -2931,7 +3154,31 @@ proc rdw::button {id} {
         # FIXED issue as its reason is a false statement on a screen the user
         # is reading.  Rows BT8 and BE7 assert the display key moves now, for
         # every type token of the class.
-        rdw::_apply_now $subj
+        #
+        # ⚠ AND THE WINDOW FOLLOWS TOO, WHICH IS ITEM R2 (issue 1338).  The
+        # SHEET half already worked -- MEASURED at HEAD 27122ca4 as a
+        # `xschem get annot_overlay_flushes` of +1 per accepted press -- but
+        # `::rdw::blocks` came back byte-identical, so the pane kept showing
+        # the order the user had just changed until they pressed 1 or 2 again.
+        # `rdw::_reorder_shown` re-slots every block that draws this class's
+        # list and answers the pane line the cursored ROW moved to.
+        #
+        # ⚠ THE CURSOR IS RE-POINTED BEFORE THE REPAINT, NOT AFTER.
+        # `rdw::render_pane` paints the shading from `::rdw::targetrow` on its
+        # way out (`rdw::_paint_cursor`), so setting the row afterwards would
+        # paint twice and, in between, shade the line the parameter has LEFT.
+        # Row RD1 reads the `cursor` tag's own ranges off the live widget and
+        # is the fence.
+        #
+        # ⚠ AND IT RUNS BEFORE `_apply_now`, so a sheet that cannot be
+        # re-rendered still leaves the WINDOW agreeing with the store the user
+        # just changed -- the edit stood, and the sentence below says which
+        # half did not follow (issue 1330).
+        set line [rdw::_reorder_shown [dict get $subj class] $ln $loc $line]
+        rdw::set_row $line
+        rdw::render_pane
+        set why [rdw::_apply_now $subj]
+        if {$why ne {}} { return [rdw::status "$label: $sentence $why"] }
         return [rdw::status "$label: $sentence"]
     }
     set deflist [expr {$id eq {add} ? {annotation} : $listkind}]
@@ -2947,6 +3194,17 @@ proc rdw::button {id} {
     if {$ln ne {annotation} && $ln ne {summary}} { set ln $deflist }
     lassign [rdw::_edit $id $subj $ln $scope $param] verdict sentence
     if {$verdict ne {ok}} { return [rdw::status "$label: $sentence"] }
-    rdw::_apply_now $subj
+    ## ISSUE 1330 REACHES THIS DOOR TOO.  Delete and Add have always relied on
+    ## `_apply_now` to put the change on the sheet, so a swallowed failure was
+    ## just as false here; it was only never fenced because no row asked.
+    ##
+    ## ⚠ AND THE BLOCKS ARE NOT RE-SLOTTED ON THIS ARM.  A Delete or an Add
+    ## changes WHICH rows the list holds, and the pane's rows are what THIS RUN
+    ## published -- a re-slot could neither add the new row (no run published
+    ## it) nor remove the deleted one (the run still did).  Ruling DD-3 gives
+    ## item R2 the reorder and nothing else; a window that dropped a row the
+    ## simulator really reported would be inventing a dump.
+    set why [rdw::_apply_now $subj]
+    if {$why ne {}} { return [rdw::status "$label: $sentence $why"] }
     return [rdw::status "$label: $sentence"]
 }
