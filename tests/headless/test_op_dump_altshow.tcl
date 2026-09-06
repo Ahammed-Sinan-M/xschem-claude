@@ -807,12 +807,21 @@ check {N5 the netlist-time line does not tell the user what the deck carries. It
         [expr {[string length $N_CAP_D] > 0}]] \
   {1 0 1}
 
-check {N6 and it carries BOTH numbers -- the cards it built and the devices they\
- cover -- because on shape d the card count is a category error and the device\
- count is the one that still means something} \
-  [list [regexp {(^|[^0-9])3([^0-9]|$)} $N_CAP_D] \
-        [regexp {(^|[^0-9])2([^0-9]|$)} $N_CAP_D]] \
-  {1 1}
+## ⚠ EACH NUMBER IN ITS OWN CLAUSE, BECAUSE THE ROW COULD NOT TELL THEM APART.
+## The spelling this replaces asked only that a standalone `3` and a standalone
+## `2` appeared SOMEWHERE in the echo, so a line printing the two counts SWAPPED
+## -- 2 cards covering 3 devices, which is arithmetically impossible and exactly
+## the mistake an edit here would make -- satisfied it. The fixture is built with
+## three cards over two devices for that reason (see $N_BLK); the last two legs
+## are the swap itself, asserted absent.
+check {N6 and it carries BOTH numbers, each in its own clause -- the cards it\
+ built and the devices they cover -- because on shape d the card count is a\
+ category error and the device count is the one that still means something} \
+  [list [regexp {(^|[^0-9])3 device OP save card\(s\) prepared} $N_CAP_D] \
+        [regexp {covering 2 device\(s\)} $N_CAP_D] \
+        [regexp {(^|[^0-9])2 device OP save card\(s\) prepared} $N_CAP_D] \
+        [regexp {covering 3 device\(s\)} $N_CAP_D]] \
+  {1 1 0 0}
 
 catch {ase::sim_caps_clear} ; catch {ase::sim_clear}
 

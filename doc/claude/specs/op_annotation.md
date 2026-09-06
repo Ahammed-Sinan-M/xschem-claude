@@ -1474,6 +1474,28 @@ earlier, so the measurement is paid on a Run, where a simulator starting is what
 the user expects. It would bite immediately if this call were moved onto a path
 that renders a deck with no Run behind it.
 
+⚠ **AND A RUN ASKS IT EXACTLY ONCE (issue 1366).** `ase::run_deck` used to ask
+three times — for the SENTENCE (`ase::op_tier_report`), for the DECK
+(`render_deck`) and for the RUN RECORD (`meta optier`) — and pinned the three
+answers to nothing. Since `ase::sim_capabilities` never remembers a `known 0`
+answer (issue 0950) and re-measures on a stamp change, one probe timeout between
+two of those calls made them differ: MEASURED, a run that said shape `d` over a
+deck rendered `c`, and a record on `d` over a deck on `c` that then sent
+`ase::op_report_missing` down its dump branch and told the user to rename a run
+folder that was already correctly named, about a run that worked.
+
+`ase::run_deck` now **arms a pin** and all three readers go through
+`ase::op_tier_now`. The renderer is **bound** to the run's one answer rather than
+asked first — it runs second, so letting it measure would move the disagreement
+rather than delete it — which is what keeps the deck on disk the ground truth
+*and* makes it equal to what was said and recorded. The pin's lifetime is
+strictly one `ase::run_deck` call: armed immediately above the first consumer,
+released as soon as the record is taken and on the one statement between them
+that can raise (the render). **With nothing armed, `ase::op_tier_now` IS
+`ase::op_save_tier`, call for call** — which is what every suite that drives the
+decision or `render_deck` directly depends on, and why a re-run after the user
+registers a different simulator is never pinned to the old shape.
+
 | form | what the deck carries | cost |
 |---|---|---|
 | **a — wildcard** | `.save all`, then `save all @dev1[*] @dev2[*] …` **inside `.control`, immediately before `op`** — one request per device, wildcarded over that device's own parameters. The exact shape the capability probe measures. | O(devices) |

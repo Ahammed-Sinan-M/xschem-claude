@@ -4170,6 +4170,122 @@ proc ase::op_save_tier {state} {
   return [dict create tier $tier reason $reason ndev $ndev ncards $ncards]
 }
 
+# ============================================================================
+# ISSUE 1366 -- ONE RUN, ONE ANSWER ABOUT THE SHAPE
+# ============================================================================
+# ase::run_deck asks the shape question THREE times and used to pin the three
+# answers to nothing: once for the SENTENCE (ase::op_tier_report), once for the
+# DECK (render_deck), once for the RUN RECORD (`meta optier`).
+#
+# ⚠ AND ase::op_save_tier IS NOT A CONSTANT FUNCTION, DELIBERATELY. It goes
+# through ase::sim_capabilities, which never remembers a `known 0` answer --
+# "an answer nobody worked out is never remembered", issue 0950 -- and
+# ase::cap_stale re-measures the moment the resolved binary's stamp moves. ONE
+# probe timeout, or ONE mtime change, between two of those three calls is
+# enough to make them differ, and MEASURED it drove both directions: a report
+# saying shape d over a deck carrying 468 `@` cards, and a report saying shape
+# c over a shape-d deck.
+#
+# ⚠ AND A THIRD SENTENCE WENT FALSE IN THE SAME RUN, WHICH IS THE WORST FACE OF
+# IT. With `meta optier` on `d` over a deck that was rendered `c`,
+# ase::op_report_missing takes its shape-d branch, finds no sidecar -- correctly,
+# because a shape-c deck writes none -- and tells the user "Rename the run
+# folder in lower case with no spaces" about a folder that was already all lower
+# case with no spaces, over a 69.6 MB raw that held the numbers perfectly. That
+# is issue 0975's rule, "a run that worked must not be told it failed", broken
+# by a different route. Row Z4 fences that face by name.
+#
+# THE FIX IS AN ORDERING AND THREADING CHANGE, NOT A NEW POLICY. The run arms a
+# pin; the first of the three consumers to ask decides; every later consumer in
+# that run is handed the same answer.
+#
+# ⚠ THE RENDERER IS BOUND, NOT ASKED FIRST, AND THAT IS THE POINT. The renderer
+# is the one whose answer becomes physical -- the deck on disk is the ground
+# truth about what ran -- but it runs SECOND, after the sentence is already out,
+# so letting it measure would only move the disagreement rather than delete it.
+# What makes the deck the ground truth is that it now OBEYS the run's one
+# answer: the deck, the sentence and the record are the same letter by
+# construction, and a reader who checks the deck is checking all three.
+#
+# ⚠ WHERE THE PIN'S LIFETIME BEGINS AND ENDS, because a pin that outlived its
+# run would be a worse defect than the one it deletes. It begins at
+# ase::op_tier_arm, called by ase::run_deck immediately above the first
+# consumer, and ends at ase::op_tier_disarm, called as soon as the record is
+# taken -- and on the one statement between them that can raise, the render,
+# whose error is re-raised unchanged. NOTHING OUTSIDE A RUN IS EVER HANDED A
+# REMEMBERED ANSWER: with nothing armed, ase::op_tier_now IS ase::op_save_tier,
+# call for call, which is what every suite that asks the decision directly
+# depends on. So a re-run in the same session after the user registers a
+# different simulator re-measures: the previous run released its arm before it
+# returned, and this run's arm starts empty. Rows Z1, Z2, Z5 and Z6.
+namespace eval ase { variable op_tier_pin {} }
+
+# Arm the pin for one run. Always CLEARS first, so a run can never inherit an
+# answer -- not from a previous run, not from a run that died between the two
+# calls below.
+proc ase::op_tier_arm {} {
+  variable op_tier_pin
+  set op_tier_pin [dict create armed 1]
+  return {}
+}
+
+# Release it. Idempotent: disarming when nothing is armed is not an error.
+proc ase::op_tier_disarm {} {
+  variable op_tier_pin
+  set op_tier_pin {}
+  return {}
+}
+
+# What the pin holds, for a row that wants to assert the LIFETIME rather than
+# infer it from behaviour: {} = nothing armed, `armed` = a run holds it and
+# nobody has asked yet, otherwise the letter this run decided on.
+proc ase::op_tier_pin_state {} {
+  variable op_tier_pin
+  if {$op_tier_pin eq {}} { return {} }
+  if {![dict exists $op_tier_pin tier]} { return armed }
+  return [dict get [dict get $op_tier_pin tier] tier]
+}
+
+# THE SHAPE FOR THIS CALLER, and the only door the three consumers use.
+#
+# ⚠ LAZY, NOT EAGER, AND FOR A MEASURED REASON. ase::op_save_tier is not
+# side-effect free: on a capability cache MISS it makes a scratch folder and
+# STARTS THE USER'S SIMULATOR (see its own header). Deciding at the arm would
+# start it for every run, including the many runs whose three gates refuse
+# device numbers and which ask the question exactly zero times today. So the arm
+# costs nothing and the first consumer that genuinely needs an answer pays for
+# it -- and, because the answer is then kept, the run as a whole pays once
+# instead of three times.
+proc ase::op_tier_now {state} {
+  variable op_tier_pin
+  if {$op_tier_pin eq {}} { return [ase::op_save_tier $state] }
+  if {[dict exists $op_tier_pin tier]} { return [dict get $op_tier_pin tier] }
+  set d [ase::op_save_tier $state]
+  dict set op_tier_pin tier $d
+  return $d
+}
+
+# THE PROGRAM TO NAME IN A SENTENCE, AND NEVER AN EMPTY ONE (issue 1366).
+# ase::sim_status's `resolved` field is EMPTY BY DESIGN whenever the user's own
+# entry cannot be honoured -- a registered simulator whose file was deleted, or
+# which lost its executable bit -- and a sentence that interpolated it then read
+#
+#     xschem was not able to find out anything about what  can do
+#
+# with no name and a double space, about a simulator the user can name in one
+# word. `exe` still carries the path the entry points at, which is the thing
+# they would recognise; the backend name is the last resort and is never empty.
+proc ase::sim_named_path {backend} {
+  set st {}
+  if {[catch {ase::sim_status $backend} st]} { return $backend }
+  foreach k {resolved exe} {
+    if {[dict exists $st $k] && [string trim [dict get $st $k]] ne {}} {
+      return [dict get $st $k]
+    }
+  }
+  return $backend
+}
+
 # SAY WHICH SHAPE THE RUN USED, ONCE, IN THE USER'S OWN WORDS. Called from
 # ase::run_deck; returns the kind that was said, or {} when there was nothing
 # to say — a real answer, not an absence.
@@ -4188,9 +4304,12 @@ proc ase::op_tier_report {sim state netlist_text} {
   if {![ase::op_gate_on [ase::state_get $state save_op_params {}]]} { return {} }
   if {![ase::op_analysis_enabled $state]} { return {} }
   if {[ase::op_cards_for $netlist_text] eq {}} { return {} }
-  set d [ase::op_save_tier $state]
-  set path {}
-  catch {set path [dict get [ase::sim_status $sim] resolved]}
+  ## THE RUN'S ONE ANSWER, NOT A SECOND MEASUREMENT (issue 1366). Inside a run
+  ## this is the same letter the deck was rendered with and the same letter the
+  ## record keeps; called directly, as the suites call it, it is
+  ## ase::op_save_tier and nothing else.
+  set d [ase::op_tier_now $state]
+  set path [ase::sim_named_path $sim]
   ## ⚠ EVERY SHAPE NEEDS AN ARM, AND THE DEFAULT IS NOT A SPARE ONE (issue
   ## 1354). `d` had none, so it took the per-device kind by falling through --
   ## and the per-device sentence is a claim about a deck with a `.save` card
@@ -4745,24 +4864,6 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   ## reads its answer. The suite calls ase::cap_report directly, uncaught, so
   ## a defect in it is still loud where it should be.
   catch {ase::cap_report $sim [ase::n_enabled_analyses $state]}
-  ## 0963: AND SAY, IN PLAIN WORDS, HOW THIS RUN ASKED FOR DEVICE
-  ## OPERATING-POINT NUMBERS AND WHY. Until this line the probe's answer had one
-  ## reader (cap_report, one line up) that never touched the deck, and the whole
-  ## of what a user was told about the strategy was a count of cards emitted at
-  ## netlist time. The sentence names no capability, no internal word and no
-  ## letter for the shape -- ase::sim_why mints all four of them.
-  ##
-  ## HERE AND NOT IN run_cmd, for cap_report's reason one line up: run_cmd's
-  ## returned command and its echo behaviour are pinned byte for byte by row D4
-  ## of tests/headless/test_ase_simreg_0931.tcl. The report belongs to the RUN.
-  ##
-  ## CAUGHT, for cap_report's reason too: everything it says is advisory and
-  ## nothing downstream reads it, so a defect in it must never stop a run. The
-  ## suite calls ase::op_tier_report and ase::op_save_tier directly, uncaught.
-  ##
-  ## SILENT when this deck asks for no device numbers at all -- op_tier_report
-  ## re-checks render_deck's own two gates and the captured block.
-  catch {ase::op_tier_report $sim $state $netlist_text}
   if {[llength $cosim]} {
     foreach r [ase::cosim_build $state $cosim] {
       lassign $r cm cstatus cdetail
@@ -4781,7 +4882,91 @@ proc ase::run_deck {state netlistfile {callback {}}} {
     }
   }
 
-  set deck [$render_deck $state $netlist_text]
+  ## --- 1366: ONE SHAPE, ASKED ONCE, OBEYED BY ALL THREE OF ITS READERS -----
+  ## The three readers below -- the sentence, the deck and the record -- used to
+  ## ask ase::op_save_tier separately and pin the three answers to nothing, and
+  ## that function is deliberately not constant (see the pin's own header). The
+  ## arm makes the first ask the run's answer and hands it to the other two.
+  ##
+  ## ⚠ THE ARM IS BELOW THE COSIM BLOCK ON PURPOSE. ase::cosim_build raises out
+  ## of this proc on a failed model build, and everything between the arm and
+  ## the disarm has to be either non-raising or caught, or a dead run would
+  ## leave its answer lying about for the next direct render_deck call to pick
+  ## up. Moving the sentence down here also puts it immediately above the deck
+  ## it describes, which is the only deck it was ever about.
+  ase::op_tier_arm
+
+  ## 0963: SAY, IN PLAIN WORDS, HOW THIS RUN ASKED FOR DEVICE OPERATING-POINT
+  ## NUMBERS AND WHY. Until this line the probe's answer had one reader
+  ## (cap_report, above) that never touched the deck, and the whole of what a
+  ## user was told about the strategy was a count of cards emitted at netlist
+  ## time. The sentence names no capability, no internal word and no letter for
+  ## the shape -- ase::sim_why mints all four of them.
+  ##
+  ## HERE AND NOT IN run_cmd, for cap_report's reason: run_cmd's returned
+  ## command and its echo behaviour are pinned byte for byte by row D4 of
+  ## tests/headless/test_ase_simreg_0931.tcl. The report belongs to the RUN.
+  ##
+  ## CAUGHT, for cap_report's reason too: everything it says is advisory and
+  ## nothing downstream reads it, so a defect in it must never stop a run. The
+  ## suite calls ase::op_tier_report and ase::op_save_tier directly, uncaught.
+  ##
+  ## SILENT when this deck asks for no device numbers at all -- op_tier_report
+  ## re-checks render_deck's own two gates and the captured block, so a run that
+  ## asks for nothing still asks the shape question zero times.
+  catch {ase::op_tier_report $sim $state $netlist_text}
+
+  ## ⚠ CAUGHT ONLY TO RELEASE THE PIN, AND RE-RAISED UNCHANGED -- message,
+  ## stack and error code. This is the one statement between the arm and the
+  ## disarm that can raise, and a run that dies here must not bequeath its
+  ## answer to whatever asks next.
+  if {[catch {$render_deck $state $netlist_text} deck]} {
+    set ei $::errorInfo
+    set ec $::errorCode
+    ase::op_tier_disarm
+    return -code error -errorinfo $ei -errorcode $ec $deck
+  }
+
+  ## 0965: WHAT THIS DECK ASKED FOR, CARRIED TO THE ONLY PLACE THAT CAN SEE
+  ## WHAT CAME BACK. ase::run_done fires from execute_fileevent on EOF and is
+  ## handed the state and this metadata, never the netlist text -- so the
+  ## captured block has to travel with the run. Taken HERE, immediately after
+  ## the deck was rendered from it, so the record is what this run really asked,
+  ## including anything a caller put into the block between netlisting and
+  ## rendering.
+  ##
+  ## The two gates are render_deck's own: without the user's tick and an enabled
+  ## operating point the deck carries no device requests, and a report about
+  ## requests that were never made is a claim about a deck that does not exist.
+  ## Empty means "nothing to compare", which is what every run that asks for no
+  ## device numbers leaves behind.
+  set opblock {}
+  if {[ase::op_gate_on [ase::state_get $state save_op_params {}]] &&
+      [ase::op_analysis_enabled $state]} {
+    catch {set opblock [ase::op_cards_for $netlist_text]}
+  }
+  ## WHICH SHAPE THE DECK ACTUALLY USED (issue 1335). The block above says what
+  ## was ASKED FOR; this says HOW, and they are not the same question. Shape d
+  ## puts its numbers in a sidecar dump rather than in the raw, so a reporter
+  ## that only knows the block looks in the wrong file -- and finds the one free
+  ## `i(@dev[id])` that `.options savecurrents` leaves there, calls the device
+  ## answered, and goes silent while every row on the sheet is blank.
+  ##
+  ## ⚠ THIS IS THE RUN'S PINNED ANSWER, WHICH IS WHAT MAKES IT THE DECK'S
+  ## (issue 1366). The comment that stood here claimed it was "computed under
+  ## render_deck's own two gates so the two cannot disagree", and they could:
+  ## the gates were the same, the MEASUREMENT was not. A record that says `d`
+  ## over a shape-c deck sends ase::op_report_missing down its dump branch and
+  ## tells the user to rename a run folder that is already correctly named,
+  ## about a run that worked.
+  set optier {}
+  if {$opblock ne {}} {
+    catch {set optier [dict get [ase::op_tier_now $state] tier]}
+  }
+  ## THE RUN'S ANSWER IS SPENT. Everything below reads $optier, never the pin,
+  ## and nothing outside a run may be handed a remembered shape.
+  ase::op_tier_disarm
+
   set deckpath [ase::deck_file $state]      ;# ONE owner of this path (issue 0838)
   set f [open $deckpath w]
   puts -nonewline $f $deck
@@ -4812,23 +4997,7 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   ## `2>@1` included and argv0 unresolved. auto_execok-resolving it would be a
   ## SECOND source of truth about which binary ran, computed at a different
   ## instant from the exec that ran it.
-  ## 0965: WHAT THIS DECK ASKED FOR, CARRIED TO THE ONLY PLACE THAT CAN SEE
-  ## WHAT CAME BACK. ase::run_done fires from execute_fileevent on EOF and is
-  ## handed the state and this metadata, never the netlist text -- so the
-  ## captured block has to travel with the run. Taken HERE, after the deck was
-  ## rendered from it, so the record is what this run really asked, including
-  ## anything a caller put into the block between netlisting and rendering.
   ##
-  ## The two gates are render_deck's own: without the user's tick and an enabled
-  ## operating point the deck carries no device requests, and a report about
-  ## requests that were never made is a claim about a deck that does not exist.
-  ## Empty means "nothing to compare", which is what every run that asks for no
-  ## device numbers leaves behind.
-  set opblock {}
-  if {[ase::op_gate_on [ase::state_get $state save_op_params {}]] &&
-      [ase::op_analysis_enabled $state]} {
-    catch {set opblock [ase::op_cards_for $netlist_text]}
-  }
   ## `casenote` is `fluid-editing`'s casemode batch item 8, section 3b: "report
   ## in the log AND the CIW". The CIW half already happened in
   ## ase::run_precheck, before the simulator started; the log half can only
@@ -4837,17 +5006,6 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   ## that parameter for the metadata and two callbacks disagreeing about what
   ## argument four means is the defect neither branch would have caught alone.
   ## ase::run_log_header renders it; empty writes nothing.
-  ## WHICH SHAPE THE DECK ACTUALLY USED (issue 1335). The block above says what
-  ## was ASKED FOR; this says HOW, and they are not the same question. Shape d
-  ## puts its numbers in a sidecar dump rather than in the raw, so a reporter
-  ## that only knows the block looks in the wrong file -- and finds the one free
-  ## `i(@dev[id])` that `.options savecurrents` leaves there, calls the device
-  ## answered, and goes silent while every row on the sheet is blank. Computed
-  ## under render_deck's own two gates so the two cannot disagree.
-  set optier {}
-  if {$opblock ne {}} {
-    catch {set optier [dict get [ase::op_save_tier $state] tier]}
-  }
   set meta [dict create cell $cell simulator $sim cmd $cmd dir $rd \
                         deck $deckpath started [clock seconds] \
                         opblock $opblock casenote $casenote optier $optier \
@@ -8104,7 +8262,12 @@ namespace eval ase::backend::ngspice {
         [ase::op_analysis_enabled $state]} {
       set opblk [ase::op_cards_for $netlist_text]
       if {$opblk ne {}} {
-        set optier [dict get [ase::op_save_tier $state] tier]
+        ## THE RUN'S ONE ANSWER (issue 1366). Rendering is where the shape
+        ## becomes physical, so this is the reading that has to be obeyed --
+        ## and inside a run it is the one the sentence already said and the one
+        ## the record will keep. Outside a run (every suite that calls this
+        ## hook with a fixture string) it is a fresh ase::op_save_tier.
+        set optier [dict get [ase::op_tier_now $state] tier]
         lappend lines \
           "* op_annot device operating-point save cards (Outputs > Save All)"
         switch -- $optier {

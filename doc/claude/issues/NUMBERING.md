@@ -2060,4 +2060,50 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   golded is gone. `RW_FLOOR` 165 -> 166 in-commit; `KX_FLOOR` unchanged at 88.
   Seven sabotages, each row red where another is green.
 
-**The next free number is 1366.**
+- **1366** — **one run asked which shape it was using THREE times and pinned the
+  three answers to nothing.** `ase::run_deck` called `ase::op_save_tier` once for
+  the SENTENCE (`ase::op_tier_report`), once for the DECK (`render_deck`'s shape
+  switch) and once for the RUN RECORD (`meta optier`) — and that function is
+  **deliberately not constant**: `ase::sim_capabilities` never remembers a
+  `known 0` answer (issue 0950, `src/ase.tcl:1863`) and `ase::cap_stale`
+  re-measures on any change to the resolved binary's stamp, so **one** probe
+  timeout or **one** mtime change between two of those calls makes them differ.
+  Commit `6a55d626`'s adversary drove both directions; MEASURED again here with
+  the decision replaced by a scripted stand-in: `flap {d c d}` gave
+  `calls=3 said=op_tier_dump deck=c record=d` — the run telling the user the
+  fast path worked when the deck on disk did not take it. **And a third sentence
+  went false in the same run**: with the record on `d` over a shape-`c` deck,
+  `ase::op_report_missing` took its dump branch, found no sidecar (correctly — a
+  shape-`c` deck writes none) and told the user to **"Rename the run folder in
+  lower case with no spaces"** for a folder already all lower case with no
+  spaces, over a run that worked — issue **0975**'s rule broken by another
+  route. `run_deck`'s own comment claimed the record was "computed under
+  render_deck's own two gates so the two cannot disagree"; the *gates* were the
+  same, the *measurement* was not. **FIXED** by an ordering and threading change,
+  not a new policy: `ase::run_deck` **arms a pin** (`ase::op_tier_arm` /
+  `op_tier_disarm` / `op_tier_pin_state` / `op_tier_now`), the first of the three
+  consumers decides, and the other two are handed the same answer — so the
+  renderer is **bound** rather than asked first, and the deck on disk stays the
+  ground truth *and* now equals what was said and recorded. The pin's lifetime
+  **begins** at the arm, immediately above the first consumer, and **ends** as
+  soon as the record is taken, plus on the one statement between them that can
+  raise (the render, re-raised unchanged); `op_tier_report` moved below the cosim
+  block so `ase::cosim_build`'s raise cannot escape the armed span. **With
+  nothing armed `op_tier_now` IS `op_save_tier`, call for call**, so every suite
+  that drives the decision or the hook directly is untouched, and a **re-run
+  after the user registers a different simulator re-measures** (row `Z6`, driven
+  through the real capability store). Two smaller pre-existing defects taken in
+  the same pass: a registered simulator whose file is gone left `resolved` empty
+  and the run said *"…anything about what&nbsp;&nbsp;can do"* — no name, double
+  space — now `ase::sim_named_path` falls back `resolved` → `exe` → backend name
+  (`Z8`); and row `N6` of `test_op_dump_altshow.tcl` asserted only that a
+  standalone `3` and a standalone `2` appeared *somewhere* in the netlist-time
+  echo, so the two counts printed **swapped** passed it — re-spelled to anchor
+  each number to its own clause, with the swap asserted absent (SAB7: old
+  spelling `{1 1}` = pass on the swapped line, new spelling reds). Fenced by
+  **Z1–Z8** of `tests/headless/test_ase_optier_0963.tcl`, **all eight RED on the
+  unmodified source** (`RESULT: 8 FAILED (94 passed)`, red set exactly
+  `Z1..Z8`), and nine sabotages. Neither suite carries a check-count floor, so
+  none was raised.
+
+**The next free number is 1367.**
