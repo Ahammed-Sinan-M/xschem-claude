@@ -1,7 +1,31 @@
 # 1359 — `run_regression.tcl`'s display arm overwrites the user's `/tmp/Xschem.log.*`
 
-**Status: FILED, NOT FIXED.** Measured and *caused* on 2026-09-05 by the pass
-that filed it, which says so rather than hiding it.
+**Status: FIXED.** Measured and *caused* on 2026-09-05 by the pass that filed
+it, which said so rather than hiding it; fixed by the driver the same day,
+after it destroyed `/tmp/Xschem.log.5` a **second** time — the log the whole
+RDW batch was diagnosed from, and one that had already been restored by hand
+once.
+
+## The fix
+
+`tests/run_regression.tcl`'s display arm now makes
+`tests/results/.actionlogs/` and passes `--logdir $dlogdir` on the one launch
+line that starts a GUI child. Under the results directory rather than a temp
+dir, because a display-arm case that *wants* its action log can then read it,
+and a stray log left behind is then a test artifact where a reader expects
+test artifacts.
+
+**Fenced by row V57 of `tests/headless/test_op_annot.tcl`**, which already owned
+the claim "what this launch line must contain" — an eighth leg rather than a
+second reader of the same line. Proved non-vacuous: removing ` --logdir
+$dlogdir` gives `RESULT: 1 FAILED (484 passed)` with V57 answering
+`{1 1 1 1 1 1 1 0}`, and the tree was restored by `cp` with the md5 verified
+(`21d1a3fd26670f6fca594bca4b01fcf9`).
+
+**Verified end to end**: md5 of every `/tmp/Xschem.log.*` taken before and
+after one solo `tclsh run_regression.tcl` — `rc=0`, zero counted failures, and
+the diff of the two md5 listings is **empty**. The arm's own logs landed in
+`tests/results/.actionlogs/` instead.
 
 ## What happens
 

@@ -14258,15 +14258,31 @@ foreach _l57 [split $V57_LOOP \n] {
 ## display. Registering them and leaving nothing to notice the registration
 ## being removed would put issue 0891's trap straight back: the everyday runner
 ## would go on saying zero failures while the acceptance rows stopped running.
-check {V57 issue 0891 STRUCTURAL the everyday regression runner also runs this suite AND the menu suite on the persistent dev display, and says so when that display is not there} \
+## ⚠ AND THE EIGHTH LEG IS ISSUE 1359, WHICH COST THE USER REAL FILES TWICE.
+## This arm is the ONE place in the tree that starts a GUI xschem in a loop.
+## A GUI xschem with no `--logdir` writes its action log to /tmp/Xschem.log.N,
+## taking the lowest free N -- which is exactly where the USER'S OWN
+## interactive sessions put theirs. With ~20 display cases, one run of this
+## runner claims the first ~20 slots. MEASURED on 2026-09-05: a single solo
+## run destroyed five of the nine /tmp/Xschem.log.* files on this machine, and
+## a later one destroyed /tmp/Xschem.log.5 -- the log an entire batch had been
+## diagnosed from, twice, the second time after it had been restored by hand.
+## The --nogui arms are safe (a headless run with no --logdir creates no log at
+## all, test_action_log.sh case 4), so this launch line is the whole defect and
+## the whole fix. The leg is HERE rather than in a suite of its own because
+## V57 already owns the claim "what this launch line must contain", and a
+## second reader of the same line is the two-builders drift this tree keeps
+## paying for.
+check {V57 issue 0891 STRUCTURAL the everyday regression runner also runs this suite AND the menu suite on the persistent dev display, says so when that display is not there, and (issue 1359) gives its GUI children a --logdir of their own so a test run cannot overwrite the user's action logs in /tmp} \
   [list [regexp {headless/test_op_annot} [opa_v_block $V57_RR {set\s+hcases} "\[" "\]"]] \
         [regexp {set\s+dcases[^\n]*headless/test_op_annot} $V57_RR] \
         [expr {$V57_LOOP ne {} ? 1 : 0}] \
         [expr {$V57_LAUNCH ne {} && [regexp {(devdisplay\.sh|\$dd)\s+exec} $V57_LAUNCH] ? 1 : 0}] \
         [expr {$V57_LOOP ne {} && ![regexp -- {--nogui} $V57_LOOP] ? 1 : 0}] \
         [regexp {NOGOLD\|NODISPLAY} $V57_SUM] \
-        [regexp {set\s+dcases[^\n]*headless/test_annot_show_menu} $V57_RR]] \
-  [list 1 1 1 1 1 1 1]
+        [regexp {set\s+dcases[^\n]*headless/test_annot_show_menu} $V57_RR] \
+        [expr {$V57_LAUNCH ne {} && [regexp -- {--logdir} $V57_LAUNCH] ? 1 : 0}]] \
+  [list 1 1 1 1 1 1 1 1]
 
 # ===========================================================================
 # V58 .. V63 — ITEM A13 / ISSUES 0896 + 0895: ONE CONFLATION, THREE FACES
