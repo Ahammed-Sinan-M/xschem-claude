@@ -508,15 +508,27 @@ set F3_REARM [kx_pending]
 ## unconditionally (/usr/share/tcltk/tk8.6/text.tcl:579), so a real press is
 ## the faithful gesture even on a `-state disabled` pane -- which this one is,
 ## deliberately, so nobody can type into a record of a simulation.
+##
+## ⚠ AND THE LAST LEG MOVED 1 -> 0 WITH ISSUE 1369's FIX, DELIBERATELY. The
+## hand-back's landing test now asks whether the keyboard is IN this window
+## rather than ON its toplevel -- it has to, because after a click like this
+## one Tk resolves every later grant to the child, so the old equality
+## declined the window manager's grant for ever. That widened test can no
+## longer tell this click from a grant, so the discriminator moved to the
+## gesture: `rdw::_focus_click`, bound to <ButtonPress> on the toplevel tag,
+## SPENDS the one-shot here. THE BEHAVIOUR THIS ROW EXISTS FOR IS UNCHANGED
+## and is legs 6 and (through F4) the clipboard: the keyboard is still on the
+## pane after the click. What moved is the flag, and it moved from "left armed
+## for ever" to "spent by the gesture that made it ambiguous".
 event generate .rdw.p.t <ButtonPress-1>   -x 4 -y 4 -when now
 event generate .rdw.p.t <ButtonRelease-1> -x 4 -y 4 -when now
 for {set _f 0} {$_f < 20} {incr _f} { update ; after 25 }
 set F3_FOCUS1 [focus]
 set F3_PEND1 [kx_pending]
-check {F3 ISSUE 1306, THE USER'S HEADLINE REQUIREMENT: with the pointer parked off every window, a real first-of-session dump made, its post-dump focus read back on the CANVAS and the one-shot RE-ARMED ON PURPOSE - so the state the row names is guaranteed to exist rather than inherited - a real click into the text pane leaves the keyboard ON THE PANE and does not spend the one-shot. The %W guard cannot tell that click from the window manager's own grant, because X delivers a FocusIn to .rdw for both} \
+check {F3 ISSUE 1306, THE USER'S HEADLINE REQUIREMENT: with the pointer parked off every window, a real first-of-session dump made, its post-dump focus read back on the CANVAS and the one-shot RE-ARMED ON PURPOSE - so the state the row names is guaranteed to exist rather than inherited - a real click into the text pane leaves the keyboard ON THE PANE, and (issue 1369) SPENDS the one-shot rather than leaving it armed, because a landing test that can see the whole window can no longer tell this click from the window manager's grant and the press is what tells them apart. The %W guard can tell neither, because X delivers a FocusIn to .rdw for both} \
   [list [expr {![string match {.drw*} $F3_PARK] && ![string match {.rdw*} $F3_PARK] ? 1 : 0}] \
         $F3_PRE0 $F3_PANE $F3_FOCUS0 $F3_REARM $F3_FOCUS1 $F3_PEND1] \
-  {1 0 1 .drw 1 .rdw.p.t 1}
+  {1 0 1 .drw 1 .rdw.p.t 0}
 
 ## F4 RUNS ON THE STATE F3 LEFT, DELIBERATELY: this is the user's requirement
 ## stated as the gesture they actually make. <<Copy>> is delivered to WHATEVER
@@ -546,9 +558,109 @@ check {F4 ISSUE 1306, THE GESTURE THE FEATURE EXISTS FOR: with the pane holding 
         [focus]] \
   {1 1 1 .rdw.p.t 1 .rdw.p.t}
 
-## LEAVE NOTHING BEHIND. The one-shot was re-armed by hand and a deliberate
-## landing does not spend it, so it is cleared explicitly here rather than left
-## for the next row to inherit.
+## LEAVE NOTHING BEHIND. The one-shot is cleared explicitly rather than left
+## for the next row to inherit -- F3's own click spends it since issue 1369,
+## but a row that depends on a previous row's side effect is the ordering trap
+## this file's header is about.
+catch {set ::rdw::focus_pending 0}
+
+# ---------------------------------------------------------------------------
+# F5 / F6 — ISSUE 1369: ONE CLICK IN THIS WINDOW USED TO STOP EVERY LATER DUMP
+# HANDING THE KEYBOARD BACK
+# ---------------------------------------------------------------------------
+# THE USER'S WORDS: "When user is in print to RDW mode (1,2,3 key) and then
+# clicks on an instance, RDW needs to be raised, but focus should return to the
+# schematic window. Else, another click to look at another device's OP info
+# does not have intended effect - it just focuses the schematic window and
+# doesn't send the OP info for that device to RDW".
+#
+# WHAT IS REALLY WRONG, AND IT IS NOT THE MACHINERY -- IT IS ITS DECISION. Tk
+# keeps a focus record PER TOPLEVEL. Once any window INSIDE .rdw has held the
+# Tk focus, every later grant to .rdw is resolved by Tk to THAT CHILD: the
+# toplevel receives a FocusIn with detail NotifyVirtual while [focus] already
+# reads the child. rdw::_focus_handback decided on EXACT equality against
+# `.rdw`, so from the first click in this window onwards it declined every
+# grant, the one-shot stayed armed for ever, and the window kept the keyboard
+# after every dump. MEASURED on :99 under openbox in a minimal two-toplevel Tk
+# program, keyboard parked in the other window before each re-map:
+#     record clean           re-map -> FocusIn .t d=NotifyAncestor [focus] .t
+#     after one pane click   re-map -> FocusIn .t d=NotifyVirtual  [focus] .t.p
+# and with the shipped decision in that program the dump left the keyboard on
+# .t.p, which is the user's sentence.
+#
+# ⚠ ONE ORDINARY GESTURE WRITES THAT RECORD, and it is the gesture the Add and
+# Delete buttons ask for -- "I put cursor on cgs and the clicked Add button"
+# (item 1372) IS this click. tk::TextButton1 calls `focus $w` UNCONDITIONALLY
+# (/usr/share/tcltk/tk8.6/text.tcl:579), unlike tk::EntryButton1, which skips a
+# `disabled` widget (entry.tcl:356), so `-state disabled` keeps the keyboard
+# out of NEITHER text widget in this window. F5 uses the pane and F6 the status
+# surface, because both pollute and only one of them is obvious: .rdw.s.msg is
+# `-takefocus 0` as well and still takes the keyboard on a press.
+#
+# ⚠ THE GRANT IS SYNTHESISED, AND HERE IS WHY IT HAS TO BE. On :99 the dump
+# path's own `focus -force` BEATS the window manager's map-time grant -- also
+# measured in that minimal program: a bare re-map moves the keyboard to the
+# re-mapped toplevel, the same re-map followed at once by the client's own
+# `focus -force` leaves it where it was and no FocusIn ever arrives at all. So
+# the grant cannot be provoked end to end on this display, and a row that
+# waited for one would pass while the defect is live. What CAN be reproduced
+# exactly is the DECISION, and these rows reproduce all three of its inputs
+# verbatim: %W is `.rdw`, [focus] is the child the user's own click left the
+# keyboard on, and the one-shot is armed. The detail is NotifyVirtual because
+# that is the one Tk itself delivers to the toplevel when a grant is re-routed
+# to the record.
+#
+# RED AT HEAD, MEASURED, both rows: focus stays on the child and pending stays
+# 1 -- the window keeps the keyboard and the flag is never spent again.
+
+kx_reset
+catch {destroy .rdw}
+update idletasks
+xschem unselect_all
+xschem select instance M1
+kx_ans ::rdw::key annotation
+for {set _f 0} {$_f < 20} {incr _f} { update ; after 25 }
+set F5_PANE [expr {[winfo exists .rdw.p.t] ? 1 : 0}]
+focus -force .drw
+for {set _f 0} {$_f < 6} {incr _f} { update ; after 25 }
+## THE USER'S OWN GESTURE, and what it does to the keyboard is leg 2 rather
+## than an assumption: a real press in a `-state disabled` text pane takes it.
+event generate .rdw.p.t <ButtonPress-1>   -x 4 -y 4 -when now
+event generate .rdw.p.t <ButtonRelease-1> -x 4 -y 4 -when now
+for {set _f 0} {$_f < 20} {incr _f} { update ; after 25 }
+set F5_LAND [focus]
+## AND NOW THE DUMP: the one-shot armed exactly as rdw::_raise arms it, then
+## the grant, delivered as the toplevel FocusIn Tk itself delivers.
+catch {set ::rdw::focus_pending 1}
+set F5_ARM [kx_pending]
+event generate .rdw <FocusIn> -detail NotifyVirtual -when now
+for {set _f 0} {$_f < 8} {incr _f} { update ; after 25 }
+set F5_FOCUS [focus]
+set F5_PEND [kx_pending]
+check {F5 ISSUE 1369, THE USER'S OWN SEQUENCE: after ONE real Button-1 in the results pane - the click the Add and Delete buttons require - a dump's focus grant must still hand the keyboard back to the CANVAS and spend the one-shot. Tk resolves that grant to the child the click focused, so a hand-back that compares the landing against the exact toplevel declines it for ever and the window keeps the keyboard, which is why the user's next canvas click only re-focuses the schematic and sends no dump} \
+  [list $F5_PANE $F5_LAND $F5_ARM $F5_FOCUS $F5_PEND] \
+  {1 .rdw.p.t 1 .drw 0}
+
+## F6 RUNS ON THE WINDOW F5 LEFT, and clicks the OTHER text widget. The status
+## surface is `-takefocus 0` and `-state disabled`, which is exactly why it
+## reads as harmless and is not: it writes the same record.
+focus -force .drw
+for {set _f 0} {$_f < 6} {incr _f} { update ; after 25 }
+set F6_MSG [expr {[winfo exists .rdw.s.msg] ? 1 : 0}]
+event generate .rdw.s.msg <ButtonPress-1>   -x 4 -y 4 -when now
+event generate .rdw.s.msg <ButtonRelease-1> -x 4 -y 4 -when now
+for {set _f 0} {$_f < 20} {incr _f} { update ; after 25 }
+set F6_LAND [focus]
+catch {set ::rdw::focus_pending 1}
+set F6_ARM [kx_pending]
+event generate .rdw <FocusIn> -detail NotifyVirtual -when now
+for {set _f 0} {$_f < 8} {incr _f} { update ; after 25 }
+set F6_FOCUS [focus]
+set F6_PEND [kx_pending]
+check {F6 ISSUE 1369, THE SURFACE NOBODY SUSPECTS: a real Button-1 on the status line - takefocus 0, state disabled - takes the keyboard just as the pane does, because tk::TextButton1 does not check the state, and a dump after it must still hand the keyboard back to the CANVAS and spend the one-shot} \
+  [list $F6_MSG $F6_LAND $F6_ARM $F6_FOCUS $F6_PEND] \
+  {1 .rdw.s.msg 1 .drw 0}
+
 catch {set ::rdw::focus_pending 0}
 kx_ans ::rdw::pick_end
 kx_ans ::rdw::close
@@ -2336,10 +2448,12 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
 # is already the LOWEST-priority tag in the pane and a new one lands above it.
 #
 # THE THREE OTHER INPUTS MOST LIKELY TO BREAK THIS CHANGE, EACH WITH A ROW:
-#   * a WRAPPED line.  The pane is `-wrap word` and the incompleteness sentence
-#     really does wrap — measured, `count -displaylines` over line 3 of the
-#     fixture is 1, i.e. two display rows.  A cursor computed in display rows
-#     shades half a line, or the wrong one.                            -> CU11
+#   * a WRAPPED line.  The pane is `-wrap word` and the fixture's line 3 really
+#     does wrap — measured, `count -displaylines` over line 3 is >= 1, i.e. two
+#     display rows or more.  A cursor computed in display rows shades half a
+#     line, or the wrong one.  (The wrapping note was DD-1's incompleteness
+#     sentence until issue 1374 cut it to 57 characters; it is ruling DD-5's
+#     analysis sentence now.  See `cu_block`.)                          -> CU11
 #   * a click BELOW THE TEXT.  `index @x,y` CLAMPS: measured, a click in the
 #     pane's empty lower half answers line 13 of a 12-line render — the
 #     widget's own trailing artifact, a line no block owns.  `rdw::_locate`
@@ -2400,13 +2514,24 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
     }
     return [expr {$r eq [cu_span $t] ? 1 : 0}]
   }
-  ## TWO DUMPS, SIX LINES EACH: hdr / devpath / the incompleteness sentence /
-  ## two parameter rows / the separator.  Lines 1-6 are the newest block and
+  ## TWO DUMPS, SIX LINES EACH: hdr / devpath / ONE LONG NOTE THAT REALLY WRAPS
+  ## / two parameter rows / the separator.  Lines 1-6 are the newest block and
   ## 7-12 the older one, which is what row CU14 needs.
+  ##
+  ## ⚠ THE WRAPPING NOTE IS RULING DD-5's ANALYSIS SENTENCE (~236 characters),
+  ## AND IT USED TO BE DD-1's INCOMPLETENESS SENTENCE.  Issue 1374 cut that one
+  ## to 57 characters on the user's ruling ("This is too verbose!"), so it no
+  ## longer wraps at this pane's width and the fixture stopped exercising the
+  ## thing rows CU11 and CP1 exist for.  The pane is STILL `-wrap word` and the
+  ## long sentences still wrap, so the fixture keeps a wrapping line by
+  ## swapping WHICH long note it carries -- `simtype dc` raises the analysis
+  ## line and `complete 1` drops the incompleteness line, which is six lines
+  ## again with a note on line 3.  Deleting the wrap instead would have left
+  ## CU11 and CP1 passing over a fixture that cannot fail them.
   proc cu_block {} {
     set ans [dict create devices [dict create {@m.x1.mcu} {{id 1.234} {vth 0.5}}] \
-                         absent {} nonfinite {} complete 0 state ok]
-    set ctx [dict create header {MCU:/} devpath {@m.x1.mcu} simtype op \
+                         absent {} nonfinite {} complete 1 state ok]
+    set ctx [dict create header {MCU:/} devpath {@m.x1.mcu} simtype dc \
                          instname MCU sim ngspice]
     return [kx_ans ::rdw::format_answer $ans $ctx]
   }
@@ -2512,8 +2637,10 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
     {1 1 1 1}
 
   # --- CU11  a WRAPPED line is shaded whole ---------------------------------
-  ## The pane is -wrap word and the incompleteness sentence really wraps. The
-  ## second display row is FOUND from the widget's own bbox, never transcribed.
+  ## The pane is -wrap word and line 3 of the fixture really wraps (`cu_block`
+  ## carries ruling DD-5's analysis sentence for exactly this reason; issue
+  ## 1374 cut DD-1's, which used to be the one that wrapped here).  The second
+  ## display row is FOUND from the widget's own bbox, never transcribed.
   cu_fixture
   set CU11_DL [cu_w .rdw.p.t count -displaylines 3.0 {3.0 lineend}]
   set CU11_B0 [cu_w .rdw.p.t bbox 3.0]
@@ -3367,12 +3494,23 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
     }
     return {}
   }
-  ## The fixture: ONE block, six lines - header / devpath / the incompleteness
-  ## sentence that really wraps / two parameter rows / the separator.
+  ## The fixture: ONE block, six lines - header / devpath / ONE LONG NOTE THAT
+  ## REALLY WRAPS / two parameter rows / the separator.
+  ##
+  ## ⚠ THE WRAPPING NOTE IS RULING DD-5's ANALYSIS SENTENCE (~236 characters).
+  ## It was DD-1's incompleteness sentence until issue 1374 cut that one to 57
+  ## characters on the user's ruling, at which point line 3 stopped wrapping,
+  ## CP1's control leg went false and rows CP6/CP7 -- which drag between
+  ## columns 10 and 60 of line 3 -- were dragging past the end of it.  `simtype
+  ## dc` raises the analysis line, `complete 1` drops the incompleteness line,
+  ## and the block is six lines again with a long note on line 3.  The wrap is
+  ## load-bearing for the whole section: `rdw::_copy_lines` counts LOGICAL
+  ## lines, and a fixture with no wrapped line cannot tell that from display
+  ## rows.
   proc cp_block {} {
     set ans [dict create devices [dict create {@m.x1.mcu} {{id 1.234} {vth 0.5}}] \
-                         absent {} nonfinite {} complete 0 state ok]
-    set ctx [dict create header {MCU:/} devpath {@m.x1.mcu} simtype op \
+                         absent {} nonfinite {} complete 1 state ok]
+    set ctx [dict create header {MCU:/} devpath {@m.x1.mcu} simtype dc \
                          instname MCU sim ngspice]
     return [kx_ans ::rdw::format_answer $ans $ctx]
   }
@@ -4201,7 +4339,7 @@ set KN_T2 [kn_press 2]
 check {KN1 THE USER'S OWN GESTURE, ANSWERED: a bare 1 over a selected device prints the class's annotation list - the row it declares and NOT the row this run also published - and says which list withheld what, while a bare 3 still prints everything the run published with no narrowing sentence at all} \
   [list [kx_has $KN_T1 { zid }] \
         [kx_has $KN_T1 { zgm }] \
-        [kx_has $KN_T1 {Narrowed to the b4dev annotation list as it stood at this dump. 1 column is not in that list and not shown; this run published 2 for this device. Press 3 for everything this run published.}] \
+        [kx_has $KN_T1 {Narrowed to the b4dev annotation list at this dump: 1 of 2 columns.}] \
         [kx_has $KN_T3 { zid }] \
         [kx_has $KN_T3 { zgm }] \
         [kx_has $KN_T3 {Narrowed to the}] \
@@ -4212,7 +4350,7 @@ check {KN2 ISSUE 1300's HEADLINE MEASUREMENT, INVERTED: on the user's own tree k
   [list [expr {$KN_T1 eq $KN_T2 ? 1 : 0}] \
         [expr {$KN_T1 eq $KN_T3 ? 1 : 0}] \
         [expr {$KN_T2 eq $KN_T3 ? 1 : 0}] \
-        [kx_has $KN_T2 {Narrowed to the b4dev summary list as it stood at this dump. Every column this run published for this device is in that list.}] \
+        [kx_has $KN_T2 {Narrowed to the b4dev summary list at this dump: 2 of 2 columns.}] \
         [kx_has $KN_T1 {M1:/}] [kx_has $KN_T2 {M1:/}] [kx_has $KN_T3 {M1:/}] \
         [kx_nblocks]] \
   {0 0 0 1 1 1 1 3}
@@ -4655,7 +4793,18 @@ catch {xschem raw clear}
 ## for.  The pure half is row LX14 of test_rdw_window_1245.tcl, which drives
 ## the text builder at both values with no display at all.  A floor is raised
 ## when rows are added and NEVER lowered to make a run pass.
-set KX_FLOOR 88
+## ⚠ AND RAISED 88 -> 90 BY THE REPAIR OF ISSUE 1369, IN THE SAME COMMIT AS
+## F5 AND F6 - the two rows that make a dump's focus grant arrive AFTER the
+## user's own click in this window, once on the results pane and once on the
+## status line, and require the keyboard back on the canvas and the one-shot
+## spent.  Neither is behind the `[kx_ans ::rdw::have_tk] eq {1}` guard: they
+## are in section F, which this suite cannot run without a display at all, so
+## both are always in the denominator.  Row F3 is RE-SPELLED by the same commit
+## rather than added - its last leg moves 1 -> 0 because the deliberate click
+## now spends the one-shot - so it does not move the count.  Issue 1369's
+## structural row is K18 of test_rdw_window_1245.tcl.  A floor is raised when
+## rows are added and NEVER lowered to make a run pass.
+set KX_FLOOR 90
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\

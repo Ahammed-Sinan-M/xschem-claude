@@ -69,6 +69,21 @@ in the same commit.
 declared rows and one sentence; key 3 still prints all 88; the three blocks are
 pairwise different (469 / 466 / 1939 characters).
 
+## ⚠ THE WORDING BELOW WAS OVERRULED BY THE USER ON 2026-09-06 — SEE ISSUE 1374
+
+All four decisions STAND. Every sentence quoted below is GONE. The user read
+the shipped block and said, verbatim:
+
+> This is too verbose! Just say "annotated list" or "summary list"
+
+Issue **1374** cut the two note lines from 311 characters over four display
+lines to 123 over two, keeping every FACT these four decisions are about — the
+list's identity, the past-tense anchor, the counts, the withheld
+non-convergence, and the key-3 pointer where the block has no rows on it — and
+deleting the restatements. **The rule-debt entry for 1353 must not be put in
+front of the user quoting text that no longer exists**: read the sentences off
+`rdw::_narrow_line` and `rdw::_incomplete_line`, or off issue 1374.
+
 ## THE FOUR DECISIONS TAKEN ON THE USER'S BEHALF — rule debt 1353
 
 **(1) A row the run published that NO list declares is HIDDEN under keys 1 and
@@ -83,8 +98,17 @@ out. A narrowed block now carries:
 > not in that list and not shown; this run published 88 for this device. Press
 > 3 for everything this run published.
 
+**OVERRULED (1374).** The decision stands; the sentence reads
+
+> Narrowed to the MOS annotation list at this dump: 6 of 88 columns.
+
+The count changed sense with the words — it counts what is SHOWN out of the
+total rather than what was withheld — and the key-3 pointer moved to the one
+case where the block has no rows to point at.
+
 **Sub-decision: a `nonfinite` row no list declares is withheld like any other,
-and COUNTED in its own clause** (` N of the withheld did not converge.`).
+and COUNTED in its own clause** (` N withheld did not converge.` — ` N of the
+withheld did not converge.` until issue 1374).
 Ruling DD-1 and issue 1272 both say a non-finite row is the one fact a designer
 most wants to be told about; keeping the ROW would make the pane's length
 depend on how badly the circuit failed, so the FACT survives the narrowing even
@@ -95,6 +119,14 @@ though the row does not. Overrule by deleting one clause of
 
 > The mos annotation list was empty at this dump, so nothing this run published
 > for this device is shown. Press 3 for everything this run published.
+
+**OVERRULED (1374).** The decision stands; the sentence reads
+
+> Narrowed to the MOS annotation list at this dump: empty, 0 of 88 columns. Press 3 for all 88.
+
+and it is no longer an ARM of its own — issue 1374 collapsed the three arms to
+one builder, so the empty list and a non-empty list that keeps nothing are the
+same sentence with one word of difference (`empty,`) and can no longer diverge.
 
 A header followed by nothing reads as a broken window. This is the sixth
 sentence on the channel item B3 minted five for (rule debt
@@ -107,10 +139,13 @@ did not happen. Half of that lapses now the narrowing is real. The half that
 does NOT lapse is that a standing block is a RECORD and the store is LIVE:
 `rdw::_reslot_block` is a strict permutation ("adds nothing, removes nothing"),
 so no edit path re-narrows a block already on screen and a Delete would leave a
-present-tense label asserting something false. **"as it stood at this dump"** is
+present-tense label asserting something false. **"at this dump"** is
 what makes the sentence true for the life of the block. It goes in the BLOCK
 rather than in window chrome because the block is what the user pastes into a
 design review (item R3) and chrome does not travel with a paste.
+
+(Issue 1374 shortened the anchor from **"as it stood at this dump"** to
+**"at this dump"** — four words, kept for this reason and no other.)
 
 **(4) ORDER: the LIST's order wins, not the raw file's.** Item R2 (issue 1338)
 already promises Up and Down move the row in this window; a key that re-rendered

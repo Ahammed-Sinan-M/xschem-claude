@@ -213,7 +213,20 @@ proc o_prime {caps} {
   set r [o_useprog $S_PLAIN]
   if {$r eq {}} { return NORESOLVE }
   if {[catch {ase::cap_stamp $r} st]} { return "RAISED:$st" }
-  set ::ase::sim_caps [dict create $r [list stamp $st caps $caps]]
+  ## ⚠ THE CACHE KEY IS ASKED FOR, NEVER SPELLED (issue 1371).  This fixture
+  ## reaches into `::ase::sim_caps` directly, which is the only way to hand the
+  ## tier decision a capability answer without launching anything -- and for as
+  ## long as the key was the resolved PATH, spelling it here was free.  Issue
+  ## 1371 re-keyed the store on {resolved eargs} so the row editor can hold an
+  ## answer per program-and-arguments, and this line's hand-spelled key stopped
+  ## matching: every primed answer became invisible, every lookup fell through
+  ## to a LIVE probe of whatever ngspice the bench could resolve, and ten rows
+  ## of this file measured that binary instead of the fixture -- T1 T2 T3 T5 T6
+  ## T10 T13 Z6 S1 all answering `c unsafe`, which is /usr/bin/ngspice's own
+  ## answer.  Nothing was wrong with the SOURCE; the fixture was writing at an
+  ## address the reader had left.  `ase::cap_key` is the one builder both sides
+  ## now use, so the next re-key moves this line with it.
+  set ::ase::sim_caps [dict create [ase::cap_key $r {}] [list stamp $st caps $caps]]
   return $r
 }
 proc o_unprime {} { catch {ase::sim_caps_clear} ; catch {ase::sim_clear} }
@@ -1715,7 +1728,20 @@ proc q_prime {prog caps} {
   set r [o_useprog $prog]
   if {$r eq {}} { return NORESOLVE }
   if {[catch {ase::cap_stamp $r} st]} { return "RAISED:$st" }
-  set ::ase::sim_caps [dict create $r [list stamp $st caps $caps]]
+  ## ⚠ THE CACHE KEY IS ASKED FOR, NEVER SPELLED (issue 1371).  This fixture
+  ## reaches into `::ase::sim_caps` directly, which is the only way to hand the
+  ## tier decision a capability answer without launching anything -- and for as
+  ## long as the key was the resolved PATH, spelling it here was free.  Issue
+  ## 1371 re-keyed the store on {resolved eargs} so the row editor can hold an
+  ## answer per program-and-arguments, and this line's hand-spelled key stopped
+  ## matching: every primed answer became invisible, every lookup fell through
+  ## to a LIVE probe of whatever ngspice the bench could resolve, and ten rows
+  ## of this file measured that binary instead of the fixture -- T1 T2 T3 T5 T6
+  ## T10 T13 Z6 S1 all answering `c unsafe`, which is /usr/bin/ngspice's own
+  ## answer.  Nothing was wrong with the SOURCE; the fixture was writing at an
+  ## address the reader had left.  `ase::cap_key` is the one builder both sides
+  ## now use, so the next re-key moves this line with it.
+  set ::ase::sim_caps [dict create [ase::cap_key $r {}] [list stamp $st caps $caps]]
   return $r
 }
 ## Every line the run put in front of the user, and every sentence the one mint
@@ -1879,15 +1905,48 @@ check {Q5 RULING D5-4 both new sentences are written in the one place sentences\
 ## Q6 -- the plain-English ruling. The device names themselves are the deck's
 ## own spelling and are deliberately NOT on the ban list: they are what the
 ## user searches their results with.
+##
+## ⚠ AND NEITHER IS THE USER'S OWN TYPING (issue 1370's repair). A run's
+## sentences now include one that quotes text the USER supplied -- the
+## registered entry's NAME and the program's LOCATION (`run_using`, "This run
+## is starting the simulator you named <name>, and the program it is running is
+## <path>") -- and this file registers its fixture under the name `optier`, in
+## a scratch directory called `_optier0963_<pid>`. Scanning those substitutions
+## for code words measures THIS FILE'S OWN FIXTURE NAMING and nothing else: it
+## red Q6 six times with the mint doing exactly what it is supposed to do, once
+## per run, quoting a name the bench itself chose. Measured on the unmodified
+## tree, and proven by ablation (neuter ase::run_using_report and the row goes
+## green with no other change).
+##
+## SO THE USER DATA IS LIFTED OUT FIRST and the ban list then reads only the
+## words the MINT wrote. Same discipline as row L8 of
+## tests/headless/test_ase_simreg_0931.tcl, which strips its name and its path
+## before asking `a_plaintext` whether what is left is jargon.
+##
+## ⚠ THE STRIP IS EXACT-STRING AND LONGEST-FIRST, not a wildcard. A code word
+## OUTSIDE a substitution is still caught -- delete the strip and every one of
+## the six hits above comes back -- and longest-first matters because
+## `optier-blanket` contains BOTH banned words and must go before `optier`.
+set Q_USERDATA [list $scratch optier-blanket optier]
+proc q_nouser {s} {
+  global Q_USERDATA
+  set out $s
+  foreach u $Q_USERDATA {
+    if {$u eq {}} continue
+    set out [string map [list $u {}] $out]
+  }
+  return $out
+}
 set Q6 {}
 foreach q6r [list $Q1R $Q3R $Q4R] {
   if {$q6r eq {NOPROC} || [string match RAISED:* $q6r]} { lappend Q6 $q6r ; continue }
   foreach s [lindex $q6r 1] {
     if {$s eq {}} continue
     if {[string length $s] < 80} { lappend Q6 [list SHORT $s] }
+    set smint [q_nouser $s]
     foreach w {blanket tier optier saveopparams appendwrite hier_op_names\
                blanket_op_save vector .save .control remzerovec} {
-      if {[string first $w [string tolower $s]] >= 0} { lappend Q6 [list $w $s] }
+      if {[string first $w [string tolower $smint]] >= 0} { lappend Q6 [list $w $s] }
     }
   }
 }
@@ -2222,11 +2281,28 @@ ase::op_cards_put $NL $BLK5
 # ============================================================================
 # S-NEW. WHERE THE NEW SENTENCES LIVE, AND WHAT THE OLD ONES MAY STILL CLAIM
 # ============================================================================
+## ⚠ TWO FILTERS, AND THE SECOND ONE WAS ADDED BY 1370'S REPAIR. This row is
+## about the two sentences ISSUE 0963 added, so it drops the `op_tier*` family
+## (0963's own, counted by S9/S10) and it drops kinds MINTED BY OTHER ITEMS
+## that a run legitimately says into the same stream. `run_using` (issue 1370,
+## "This run is starting the simulator you named ... ") is one: it is said once
+## per run from ase::run_deck, so it arrived here as a THIRD kind and this row
+## read {3 {1 1 1}} against {2 {1 1}} on the unmodified tree -- a shape red,
+## not a substantive one, since its own assertion (each kind minted exactly
+## once) still held for all three. Proven by ablation: neuter
+## ase::run_using_report and the row goes green with nothing else changed.
+##
+## ⚠ THE FILTER KEEPS ITS TEETH. Only kinds NAMED here are dropped; a kind no
+## one listed still lands in Q_NEWKINDS and still reds the arity, which is the
+## whole point of counting them. Adding a sentence to a run without saying so
+## here is still caught.
+set Q_OTHERITEMS {run_using}
 set Q_NEWKINDS {}
 foreach q6r [list $Q1R $Q3R] {
   if {$q6r eq {NOPROC} || [string match RAISED:* $q6r]} { continue }
   foreach k [lindex $q6r 2] {
     if {[string match op_tier* $k]} { continue }
+    if {[lsearch -exact $Q_OTHERITEMS $k] >= 0} { continue }
     if {[lsearch -exact $Q_NEWKINDS $k] < 0} { lappend Q_NEWKINDS $k }
   }
 }

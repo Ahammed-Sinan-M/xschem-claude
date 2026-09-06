@@ -21,6 +21,14 @@
 # in-dialog feedback, and the fact that the dialog calls the ONE writer instead
 # of growing a second one.
 #
+# AND, since issue 1370, the SESSION WINDOW'S OWN BOTTOM BAR where it reports
+# what a gesture in this dialog just changed -- rows S20-S23. That is a pixel
+# question in two ways this suite is the only home for: the bar must follow a
+# real gesture with no session update behind it, and it must follow it in
+# EVERY open session window, because the registry is process-global while the
+# dialog is per-session. What the bar is told to SAY in each registry state is
+# section L of tests/headless/test_ase_simreg_0931.tcl, with no display at all.
+#
 # tests/headless/test_ase_simreg_0931.tcl section H owns the non-GUI half the
 # door cannot be built without -- the four new sentences in the mint, the
 # per-entry reason a Problem column shows, the recorder that lets the dialog
@@ -53,6 +61,9 @@
 #   procs: ase::ui::simulators_dialog simdlg_fill simdlg_status simdlg_commit
 #          simdlg_editor simdlg_browse simdlg_ok simdlg_remove simdlg_use
 #          simdlg_none_label
+#   1370:  $top.status.sim  carries "Simulator: [ase::sim_label <backend>]";
+#          ase::ui::refresh_status_all walks every open session and is called
+#          from the LAST LINE of ase::ui::simdlg_fill
 #
 # ============================================================================
 # THE ANSWER DISCIPLINE -- an absent widget must never satisfy a golden
@@ -152,6 +163,36 @@ proc wget {w} {
   if {![wex $w]} { return NOWIDGET }
   if {[catch {$w get} v]} { return NOENTRY }
   return $v
+}
+## The chooser side (issue 1371). NOVALUES / NOPICK, never {} or a silent
+## success: a row that reads "what is offered" must not be satisfiable by a
+## chooser that does not exist.
+proc wvalues {w} {
+  if {![wex $w]} { return NOWIDGET }
+  if {[catch {$w cget -values} v]} { return NOVALUES }
+  return $v
+}
+## PICK THE WAY A USER PICKS: only what the chooser is OFFERING can be chosen.
+## `$w set` would happily store a label the list does not contain, which would
+## let a row about the offered set pass on a tree that offers nothing.
+proc wpick {w label} {
+  if {![wex $w]} { return NOWIDGET }
+  set vals [wvalues $w]
+  if {$vals eq {NOVALUES}} { return NOVALUES }
+  set i [lsearch -exact $vals $label]
+  if {$i < 0} { return "NOTOFFERED: $label" }
+  if {[catch {$w current $i}]} { return NOPICK }
+  catch {update}
+  return OK
+}
+proc wcheck {w val} {
+  if {![wex $w]} { return NOWIDGET }
+  set v {}
+  if {[catch {$w cget -variable} v]} { return NOVAR }
+  if {$v eq {}} { return NOVAR }
+  if {[catch {set ::$v $val}]} { return NOVAR }
+  catch {update}
+  return OK
 }
 ## The labels of a menu, in order, so a missing entry is a visible absence
 ## rather than an exception.
@@ -280,6 +321,94 @@ a_wr $STUB3 "#!/bin/sh\nexit 0\n" 0755
 file mkdir $ADIR
 file delete -force $MISSING
 
+## --- ISSUE 1371: TWO STUBS THAT REALLY ANSWER THE CASE-MODE PROBE ----------
+## The capability probe asks the program three times, once per mode, with
+## `-D casemode=<mode>` on the command line, and reads the `CCM=` line back
+## (src/xschem.tcl, sim_probe_deck / sim_probe_parse). A `#!/bin/sh exit 0`
+## stub answers nothing, so it measures as NEVER PROBED -- which is one of the
+## cases below, but it cannot be the case where a chooser has something to
+## offer. CMSTUB echoes back whatever was asked for, so it measures as
+## delivering all three; NOCM answers the way a released ngspice with no
+## casemode feature at all answers, which the probe records as `fold` alone.
+## Neither is a simulator and neither is asked to be one: every row here is
+## about which modes are OFFERED, and that is a question about the probe's
+## answer, not about a circuit.
+set CMSTUB [file join $scratch bin ngcase]
+set NOCM   [file join $scratch bin ngnocase]
+a_wr $CMSTUB "#!/bin/sh\nm=fold\nfor a in \"\$@\"; do\n  case \"\$a\" in\n    casemode=*) m=\${a#casemode=} ;;\n  esac\ndone\necho \"CCM=\$m\"\nexit 0\n" 0755
+a_wr $NOCM "#!/bin/sh\necho 'Error: curcasemode: no such variable.'\necho 'CCM='\nexit 0\n" 0755
+
+## THE THIRD STUB, AND IT IS ISSUE 1371's REPAIR: ONE FILE, TWO TRUTHS. It
+## answers the way NOCM does when it is given `-q` and the way CMSTUB does when
+## it is not, so "what can the program at this location do" has no answer until
+## you also say what it will be started WITH. The capability probe has always
+## run the program with the entry's own extra arguments (ruling A2 -- probe with
+## the real argv), so this is not a contrivance; what WAS a contrivance was a
+## cache keyed on the file name alone. Row S38 is the measurement.
+set ARGSTUB [file join $scratch bin ngargs]
+a_wr $ARGSTUB "#!/bin/sh\nq=0\nm=fold\nfor a in \"\$@\"; do\n  case \"\$a\" in\n    -q) q=1 ;;\n    casemode=*) m=\${a#casemode=} ;;\n  esac\ndone\nif \[ \$q = 1 ]; then\n  echo 'Error: curcasemode: no such variable.'\n  echo 'CCM='\nelse\n  echo \"CCM=\$m\"\nfi\nexit 0\n" 0755
+
+## THE PROBE ITSELF, REPLACED FOR ONE GESTURE. Two of the states issue 1371's
+## adversary found cannot be reached with a stub program: a probe that COMPLETES
+## and recognises nothing (`casemode_detected {}`, the second arm of the
+## `casemode_measured` mint), and the question "what did the status line say at
+## the instant the launch began". Both are properties of the hook, so the hook
+## is what is stood in for -- renamed, not redefined in place, so the real one
+## comes back byte-identical.
+proc probe_stub_install {body} {
+  if {![llength [info commands ::ase::backend::ngspice::capabilities]]} { return 0 }
+  if {[llength [info commands ::zz_real_caps]]} { return 0 }
+  rename ::ase::backend::ngspice::capabilities ::zz_real_caps
+  proc ::ase::backend::ngspice::capabilities {exe exeargs workdir} $body
+  return 1
+}
+proc probe_stub_remove {} {
+  if {![llength [info commands ::zz_real_caps]]} { return 0 }
+  rename ::ase::backend::ngspice::capabilities {}
+  rename ::zz_real_caps ::ase::backend::ngspice::capabilities
+  return 1
+}
+
+## THE PROBE'S SCRATCH AREA MUST NOT LAND IN THE DEVELOPER'S OWN SIMULATION
+## DIRECTORY. ase::cap_workdir builds `.ase_probe` under `set_netlist_dir 0`;
+## ::netlist_dir is the documented global that answers with, and this is the
+## same redirection test_ase_simcaps_0948.tcl makes for the same reason.
+set NDSAVE [expr {[info exists ::netlist_dir] ? $::netlist_dir : {ZZUNSET}}]
+set LNDSAVE [expr {[info exists ::local_netlist_dir] ? $::local_netlist_dir : {ZZUNSET}}]
+set ::local_netlist_dir 0
+set ::netlist_dir [file join $scratch simdir]
+file mkdir $::netlist_dir
+
+## --- a real restart, for the one row that claims one -------------------------
+## Nothing in-process can prove "it comes back after a restart". HOME is what
+## moves ::USER_CONF_DIR, so the child is given a HOME of its own inside this
+## suite's scratch tree and never sees the developer's list.
+##
+## THE FORGERY TRAP (test_ase_simreg_0931's): anything lifted out of a child's
+## stdout is scrubbed before it can reach a check's detail line, so a child
+## that printed a banner cannot forge this file's own verdict.
+set ::SCRUB [list [format {%s:} RESULT] {R#SULT:} \
+                  [format {%s: %s} OVERALL ok] {OV#RALL ok} \
+                  {FAIL:} {F#IL:} \
+                  [format {%s: %s} FATAL signal] {F#TAL sig}]
+proc child_val {tag body home key} {
+  global scratch
+  set script [file join $scratch ch_$tag.tcl]
+  set out    [file join $scratch ch_$tag.out]
+  a_wr $script "if {\[catch {\n$body\n} ::zerr\]} {\n  puts \"Z_ERR=\$::zerr\"\n  flush stdout\n  exit 9\n}\n"
+  set had [info exists ::env(HOME)] ; set old {}
+  if {$had} { set old $::env(HOME) }
+  set ::env(HOME) $home
+  catch {exec timeout 40 [info nameofexecutable] --nogui --pipe -q --nolog \
+           --script $script >& $out}
+  if {$had} { set ::env(HOME) $old } else { catch {unset ::env(HOME)} }
+  set txt {}
+  if {[file exists $out]} { set fp [open $out r] ; set txt [read $fp] ; close $fp }
+  set v NOCHILD
+  regexp "${key}=(\[^\n\r\]*)" $txt -> v
+  return [string map $::SCRUB [string trim $v]]
+}
+
 ## THE SAVED LIST GOES HERE, NOT INTO THE DEVELOPER'S OWN CONFIG. Redirected
 ## for the whole run and restored in the teardown, because this suite makes the
 ## dialog SAVE and the writer's target is $::USER_CONF_DIR/ase_simulators.
@@ -326,6 +455,49 @@ set S16BUL {}
 if {[regexp {\n- \*\*Setup\*\*(.*?)\n- \*\*} $SPEC -> S16BUL]} { } else { set S16BUL ZZNOBULLET }
 check {S16 STRUCTURAL the written menu tree lists the new Setup entry, so the document and the menubar say the same thing} \
   [expr {[string first {Simulators} $S16BUL] >= 0}] 1
+
+## --- S38: ONE PROGRAM, TWO ARGUMENT LISTS, TWO ANSWERS -------------------
+## ISSUE 1371's ADVERSARY, AND IT NEEDS NO DISPLAY. The capability cache was
+## keyed on the resolved path ALONE, while the probe has always run the program
+## with the entry's own extra arguments (ruling A2 -- probe with the real
+## argv). Before this item only the in-force route could write that cache, so
+## two argument lists never met; the Case chooser and its Detect button are a
+## second writer, and they ask about a location the user typed, with whatever
+## arguments the entry happens to carry.
+##
+## MEASURED BEFORE THE REPAIR, on the stub below: an entry registered
+## `-args -q`, in force, answering `fold` alone; ONE dialog-side measurement of
+## the same file with no arguments; and `ase::sim_casemode_selectable ngspice`
+## -- the accessor the RUN reads -- then answered `fold preserve distinguish`.
+## `preserve` offered, and requested, for a program that folds.
+##
+## THE PEEK IS HALF THE ROW. `ase::sim_caps_have_path` is what lets the editor
+## promise it starts nothing (row S27): a peek that answered "yes, in hand" for
+## an argv nobody measured would send the editor into the accessor, and the
+## accessor launches.
+simreset
+catch {ase::sim_caps_clear}
+pcall ase::sim_register a38 $ARGSTUB -args {-q}
+pcall ase::sim_select a38
+set S38DLG   [pcall ase::sim_casemode_selectable_path ngspice $ARGSTUB {}]
+## THE PEEK, BETWEEN THE TWO MEASUREMENTS: one argument list has been measured
+## and the other has not, and the peek has to be able to tell them apart. Taken
+## HERE, because after the in-force call below both are in hand and a peek that
+## ignored the argv would pass.
+set S38HAVE0 [pcall ase::sim_caps_have_path ngspice $ARGSTUB {}]
+set S38HAVEQ [pcall ase::sim_caps_have_path ngspice $ARGSTUB {-q}]
+set S38FORCE [pcall ase::sim_casemode_selectable ngspice]
+## The other order, from cold, so neither answer can be the one that merely
+## happened to be taken first.
+catch {ase::sim_caps_clear}
+set S38FORCE2 [pcall ase::sim_casemode_selectable ngspice]
+set S38DLG2   [pcall ase::sim_casemode_selectable_path ngspice $ARGSTUB {}]
+simreset
+catch {ase::sim_caps_clear}
+check {S38 what was measured is remembered about a program AND the words it was started with, so a question asked from the row editor cannot answer for the run} \
+  [list $S38DLG $S38FORCE $S38FORCE2 $S38DLG2 $S38HAVE0 $S38HAVEQ] \
+  [list [list fold preserve distinguish] [list fold] \
+        [list fold] [list fold preserve distinguish] 1 0]
 
 # ============================================================================
 # THE FIXTURE -- a real library, cell and simulation-state view
@@ -675,13 +847,23 @@ if {$FIXOK && [info exists ::has_x] && [info commands winfo] ne {}} {
           [expr {$S19IO >= 0 && $S19IR > $S19IO}]] \
     [list [list mine19] mine19 1 1 1]
 
-  # --- S9: EDIT DOES NOT THROW AWAY WHAT THE DIALOG DOES NOT SHOW -------
-  # The dialog offers Name and Program only. Extra arguments and the backend
-  # an entry was registered for are invisible in it -- and an editor that
-  # rebuilt the entry from its two visible fields would silently delete them.
+  # --- S9: EDIT DOES NOT THROW AWAY ANY FIELD OF THE ENTRY ---------------
+  # Extra arguments and the backend an entry was registered for are invisible
+  # in this dialog -- and an editor that rebuilt the entry from its visible
+  # fields alone would silently delete them.
+  #
+  # ⚠ AND THE CASE MODE AND `-n` ARE THE HALF THIS ROW USED TO MISS (issue
+  # 1371). It asserted `args` and `backend` only, so it was GREEN on a tree
+  # where opening Edit… on an entry carrying `casemode preserve` and pressing
+  # OK without typing anything ERASED that mode and saved the erasure --
+  # measured through these very widgets. Those two fields are now shown by the
+  # editor, so the row asserts a round trip through the form rather than a
+  # carry-through; either way the fix is the same, and the hole was that
+  # nothing here looked at them at all.
   simreset
   pcall ase::sim_register one9   $STUB
-  pcall ase::sim_register two9   $STUB2 -args {-q -x} -backend ngspice
+  pcall ase::sim_register two9   $STUB2 -args {-q -x} -backend ngspice \
+    -casemode preserve -nospiceinit 1
   pcall ase::sim_register three9 $STUB3
   catch {destroy $top.simdlg}
   winv $top.mb.setup $SIMLBL
@@ -696,10 +878,11 @@ if {$FIXOK && [info exists ::has_x] && [info commands winfo] ne {}} {
   went $top.simrow.path $STUB3
   winv $top.simrow.btns.proceed
   update
-  check {S9 changing an entry's program leaves everything the dialog does not show exactly as it was, and the entry keeps its place in the list} \
+  check {S9 changing an entry's program leaves every other field of it exactly as it was -- the extra arguments, the backend, the case mode and the -n flag -- and the entry keeps its place in the list} \
     [list $S9OPEN $S9NAME [expr {$S9RO ne {normal} && $S9RO ne {NOWIDGET} && $S9RO ne {NOOPT}}] \
-          [simnames] [simfield two9 path] [simfield two9 args] [simfield two9 backend]] \
-    [list 1 two9 1 [list one9 two9 three9] $STUB3 [list -q -x] ngspice]
+          [simnames] [simfield two9 path] [simfield two9 args] [simfield two9 backend] \
+          [simfield two9 casemode] [simfield two9 nospiceinit]] \
+    [list 1 two9 1 [list one9 two9 three9] $STUB3 [list -q -x] ngspice preserve 1]
 
   # --- S11: A SAVE THAT CANNOT HAPPEN IS NOT SILENT ---------------------
   catch {file attributes $CONFDIR -permissions 0500}
@@ -826,14 +1009,781 @@ if {$FIXOK && [info exists ::has_x] && [info commands winfo] ne {}} {
           [info exists ::ase::ui::simuse($key)]] \
     [list [list 1 1 1] 0 {} 0]
 
+  # --- S20-S23: ISSUE 1370, THE BAR NAMES WHAT WILL RUN -----------------
+  # THE USER'S WORDS: "In the ASE-L, in status bar, Simulator: <name> should
+  # show the correct name. If user has designated (registered) a new instance
+  # of ngspice named ngspice-ver50, and the 'use this one:' field shows that,
+  # then the status bar in ASE-L should show that."
+  #
+  # MEASURED BEFORE THE FIX on a live .ase4 window: the bar read
+  # `Simulator: ngspice` with `ngspice-ver50` in force, with the choice
+  # cleared, and with it re-selected -- three registry states, one
+  # byte-identical bar. And there was no refresh either: not one of the five
+  # dialog gestures touched the bar, so even a correct label would have gone
+  # stale the moment the user changed "Use this one:" and stayed stale until
+  # the run they were trying to predict actually started.
+  #
+  # tests/headless/test_ase_simreg_0931.tcl section L owns what the label is
+  # told to say in every registry state, without a display. THESE rows own the
+  # half only pixels can answer: that the real bottom bar carries it, that it
+  # follows a real gesture with NO session update behind it, and that a second
+  # open session follows a gesture made in the first -- the registry is
+  # process-global, the dialog is per-session.
+  #
+  # ⚠ THE MARKER'S WORDING IS THE USER'S RULING (issue 1370, on their queue).
+  # It is lifted off one known-broken arm here and never retyped, so the rows
+  # fence the behaviour and a re-wording costs nothing.
+
+  ## The Simulator segment of the real bottom bar, off the widget, through the
+  ## same reader tests and scripting use. NOSEG rather than {}: an absent
+  ## segment must never satisfy a row that expects a name.
+  proc barsim {k} {
+    if {![llength [info commands ase::ui::status_text]]} { return NOPROC }
+    set t [ase::ui::status_text $k]
+    if {$t eq {}} { return NOWIDGET }
+    foreach seg [split $t |] {
+      set seg [string trim $seg]
+      if {[string first {Simulator:} $seg] == 0} {
+        return [string trim [string range $seg [string length {Simulator:}] end]]
+      }
+    }
+    return NOSEG
+  }
+  ## Pick one from the dialog's own "Use this one:" combobox, the way a user
+  ## does -- the variable the combobox is bound to, then the proc its
+  ## <<ComboboxSelected>> binding calls. NOT ase::sim_select: the whole point
+  ## of these rows is that the GESTURE is what updates the bar.
+  proc dlg_use {k v} {
+    if {![llength [info commands ase::ui::simdlg_use]]} { return NOPROC }
+    set ::ase::ui::simuse($k) $v
+    ase::ui::simdlg_use $k
+    catch {update}
+    return OK
+  }
+
+  ## THE MARKER, LIFTED OFF ONE KNOWN-BROKEN ARM AND NEVER RETYPED.
+  set S20MARK ZZ-NO-MARKER
+  simreset
+  pcall ase::sim_register ngmark20 $MISSING
+  set S20L [pcall ase::sim_label ngspice]
+  if {[string first ngmark20 $S20L] == 0} {
+    set S20MARK [string range $S20L [string length ngmark20] end]
+  }
+
+  ## THREE ENTRIES AND A CHOICE ALREADY IN FORCE BEFORE EITHER WINDOW OPENS,
+  ## so every "before" reading below comes from that window's OWN open-time
+  ## refresh and not from the process-wide one these rows are about. Two
+  ## healthy ones, so nothing here depends on what this machine has on its
+  ## PATH.
+  simreset
+  pcall ase::sim_register alpha20 $STUB
+  pcall ase::sim_register beta20  $STUB2
+  pcall ase::sim_register gone20  $MISSING
+  pcall ase::sim_select   alpha20
+
+  check {S20a the session window opens again for the status-bar rows} \
+    [ase::open_state aselib nfet_clean ngspice_state1] 1
+  update
+  set top20 [ase::ui::window_for $key]
+  catch {destroy $top20.simdlg}
+  winv $top20.mb.setup $SIMLBL
+  update
+
+  # --- S20: THE HEADLINE, AT THE PIXELS ---------------------------------
+  set S20BAR [barsim $key]
+  check {S20 THE HEADLINE the bottom bar names the simulator the user registered and picked, not the kind of simulator it is} \
+    [list $S20BAR \
+          [expr {$S20BAR eq {ngspice} ? {STILL-THE-BACKEND-WORD} : {named}}] \
+          [pcall ase::sim_selected] \
+          [string match {*| Simulator: alpha20 |*} [ase::ui::status_text $key]]] \
+    [list alpha20 named alpha20 1]
+
+  # A SECOND SESSION, on its own state view, opened while alpha20 is in force
+  # so its own bar starts from the same place window one's did.
+  set S22OK 1
+  if {[catch {
+    library_new_view aselib nfet_clean ngspice_state2 ngspice_state2
+    set spath2 [xschem cellview_path aselib/nfet_clean ngspice_state2]
+    if {$spath2 eq {}} { error "state2 view did not resolve" }
+    set key2 [ase::session_key aselib nfet_clean ngspice_state2]
+    ase::session_open $key2 [file normalize $spath2]
+    set st2 [ase::session_state $key2]
+    dict set st2 rundir $rundir
+    ase::session_update $key2 $st2
+    ase::session_save $key2
+    ase::session_close $key2
+  } e22]} { set S22OK 0 ; puts "S22 FIXTURE ERROR: $e22" }
+  check {S22a a second simulation state view and its own session window are up, and they are a different session} \
+    [list $S22OK [ase::open_state aselib nfet_clean ngspice_state2] \
+          [expr {$key ne $key2 ? 1 : 0}]] {1 1 1}
+  update
+  set top22 [ase::ui::window_for $key2]
+
+  # --- S21: IT FOLLOWS THE GESTURE, WITH NO SESSION UPDATE BEHIND IT -----
+  # The bar is refreshed by ase::session_notify, and NOTHING about picking a
+  # simulator updates the session -- the registry is not session state. So
+  # without a refresh on the dialog's own path the bar keeps the name the
+  # window opened with until the run starts, which is exactly the moment the
+  # user was trying to predict. The two dirty terms are the witness that no
+  # session update happened on either side of the gesture.
+  set S21WAS [barsim $key]
+  set S21D [ase::session_dirty $key]
+  dlg_use $key beta20
+  set S21B [barsim $key]
+  dlg_use $key alpha20
+  set S21A [barsim $key]
+  check {S21 changing "Use this one:" changes the bottom bar there and then -- the user does not have to start a run to find out which simulator a run would start} \
+    [list $S21WAS $S21B $S21A $S21D [ase::session_dirty $key]] \
+    [list alpha20 beta20 alpha20 0 0]
+
+  # --- S22: EVERY OPEN SESSION FOLLOWS IT -------------------------------
+  # The registry is process-global; the dialog is per-session (0937's own
+  # known-issues note). A second window still showing the old name would be
+  # telling the user something untrue about what ITS run would start.
+  set S22W1 [barsim $key]
+  set S22W2 [barsim $key2]
+  dlg_use $key beta20
+  set S22A1 [barsim $key]
+  set S22A2 [barsim $key2]
+  check {S22 a simulator picked in one session window is what EVERY open session window's bar says, because the choice is one choice for the whole program} \
+    [list $S22W1 $S22W2 $S22A1 $S22A2] \
+    [list alpha20 alpha20 beta20 beta20]
+
+  # --- S23: A NAME THE BAR SHOWS IS NEVER A PROMISE ---------------------
+  # The user's own rule: "It must never silently print a name for a simulator
+  # that is not going to run - a false name is worse than the backend word."
+  # The name stays -- it is what they need in order to go and fix the entry --
+  # and it is marked. The structural half keeps the marker out of this file:
+  # ruling D5-4, and row R9 of the registry suite.
+  dlg_use $key gone20
+  set S23BAR [barsim $key]
+  check {S23 a simulator whose program has gone is still named on the bar and is marked as one that will not run, and that marking is not a second piece of wording living in the window file} \
+    [list $S23BAR \
+          [expr {[string first gone20 $S23BAR] == 0}] \
+          [expr {$S23BAR ne {gone20}}] \
+          [expr {$S20MARK ne {ZZ-NO-MARKER}}] \
+          [scount $SRCW $S20MARK]] \
+    [list "gone20$S20MARK" 1 1 1 0]
+
+  dlg_use $key alpha20
+  catch {destroy $top20.simdlg}
+  update
+
+  # --- S32: THE REGISTRY'S OTHER DOOR (1370's repair) -------------------
+  # 1370 hung the bar's refresh off ase::ui::simdlg_fill, which every gesture
+  # of THIS DIALOG funnels through -- and nothing else. The registry has a
+  # second door: `ase::sim_register <name> <path>` then `ase::sim_select
+  # <name>` typed into the Command window. That is the pre-0937 path, it is
+  # still supported, and it is how this user's own ngspice-ver50 entry was
+  # first created. Measured live by this item's adversary, with a window open
+  # on `Simulator: ngspice-ver50`: that pair left the bar naming the OLD entry
+  # while ase::sim_label already answered the new one -- a name on the bar for
+  # a simulator that would NOT run, healed only by the run it was supposed to
+  # predict.
+  #
+  # THE DIALOG IS DESTROYED FIRST, and the first term is the witness: nothing
+  # dialog-side can be doing this work. Both windows are still open, because
+  # the registry is process-global and one CIW gesture changes what BOTH would
+  # start.
+  #
+  # THE MIDDLE PAIR IS THE CONTROL. Registering alone must NOT move the bar --
+  # a later registration never steals the choice (ase::sim_register's own
+  # rule) -- so a refresh that fired and rendered something arbitrary reds
+  # here rather than passing on the last term alone.
+  set S32DLG [expr {[winfo exists $top20.simdlg] ? 1 : 0}]
+  set S32W1 [barsim $key]
+  set S32W2 [barsim $key2]
+  pcall ase::sim_register ciw32 $STUB2
+  update
+  set S32R1 [barsim $key]
+  set S32R2 [barsim $key2]
+  pcall ase::sim_select ciw32
+  update
+  set S32A1 [barsim $key]
+  set S32A2 [barsim $key2]
+  ## AND THE REMOVAL, the other Command-window gesture. Taking out the entry in
+  ## force with more than one left picks nothing at all, so the bar must stop
+  ## naming it. What it says INSTEAD depends on what this machine has on its
+  ## PATH, so the term is that the gone name is gone -- not a literal.
+  pcall ase::sim_unregister ciw32
+  update
+  set S32X1 [barsim $key]
+  set S32X2 [barsim $key2]
+  check {S32 a simulator registered and picked from the Command window -- the\
+ registry's other door, with the Simulators dialog shut -- changes every open\
+ window's bar there and then, and removing it stops every bar naming it} \
+    [list $S32DLG $S32W1 $S32W2 $S32R1 $S32R2 $S32A1 $S32A2 \
+          [expr {[string first ciw32 $S32X1] < 0 ? 1 : 0}] \
+          [expr {[string first ciw32 $S32X2] < 0 ? 1 : 0}] \
+          [pcall ase::sim_selected]] \
+    [list 0 alpha20 alpha20 alpha20 alpha20 ciw32 ciw32 1 1 {}]
+
+  pcall ase::sim_select alpha20
+  ase::ui::close $key2
+  update
+
+  # =====================================================================
+  # S24-S31: ISSUE 1371, THE MEASURED CASE MODE FINALLY HAS A DOOR
+  # =====================================================================
+  # THE USER'S WORDS: "If the run *is* using ver_50, then why is case-mode
+  # support not showing up? What needs to be done for that? I plot the VBG
+  # net from top level of sky130_tests_ase/tb_bandgap and it plots v(vbg)
+  # not v(VBG). What's going on? I thought we nailed this weeks ago."
+  #
+  # MEASURED ON THEIR OWN BENCH BEFORE THE FIX: their build really is in
+  # force, and it really was measured -- `casemode_detected` and
+  # `casemode_selectable` both answered `fold preserve distinguish`. Their
+  # registry entry carried `casemode {}`, so the request fell to the global
+  # floor `fold`, and a `fold` request deliberately emits no `-D casemode=`
+  # at all. The one broken link was that NOTHING COULD ASK: this row editor
+  # built two rows, Name and Program, so `preserve` could only be reached by
+  # hand-editing the saved list -- and pressing Edit… on an entry that had
+  # been hand-edited ERASED it again (row S9).
+  #
+  # RULE A1 is what these rows are really about: never offer a mode the
+  # binary was not measured to deliver. So every row below compares what the
+  # chooser OFFERS against what the MEASUREMENT says, per entry -- never
+  # against a literal list written here, which would drift.
+  #
+  # THE STUBS REALLY ANSWER THE PROBE. See the CMSTUB / NOCM note in the
+  # fixture block: this section measures three programs that answer three
+  # different ways, and a `#!/bin/sh exit 0` that answers nothing.
+  set GD [mint ase::ui::simdlg_case_label {}]
+
+  proc open_editor {top key row} {
+    catch {destroy $top.simrow}
+    catch {destroy $top.simdlg}
+    winv $top.mb.setup "Simulators…"
+    update
+    catch {$top.simdlg.tv selection set $row}
+    update
+    winv $top.simdlg.btns.edit
+    update
+    return [wex $top.simrow]
+  }
+
+  # --- S24: THE HEADLINE ------------------------------------------------
+  simreset
+  pcall ase::sim_register cm24 $CMSTUB
+  set S24MEAS [pcall ase::sim_casemode_selectable_for cm24]
+  set S24OPEN [open_editor $top20 $key 0]
+  set S24VALS [wvalues $top20.simrow.casemode]
+  check {S24 THE HEADLINE the row editor has a Case chooser, and what it offers is exactly what THAT program was measured to deliver, plus the "leave it to the global default" line} \
+    [list $S24OPEN [wex $top20.simrow.casemode] \
+          [wcget $top20.simrow.casemode -state] \
+          $S24MEAS $S24VALS \
+          [wtext $top20.simrow.lcasemode]] \
+    [list 1 1 readonly [list fold preserve distinguish] \
+          [linsert $S24MEAS 0 $GD] {Case:}]
+
+  # --- S25: A1, AGAINST A SECOND PROGRAM THAT ANSWERS DIFFERENTLY -------
+  ## Two programs, two measurements, one dialog. NOCM answers the way a build
+  ## with no casemode feature at all answers, which the probe records as
+  ## `fold` and nothing else -- so if the chooser were offering a fixed list,
+  ## or the in-force program's list, this row is where it shows.
+  simreset
+  pcall ase::sim_register cm25   $CMSTUB
+  pcall ase::sim_register nocm25 $NOCM
+  set S25A [pcall ase::sim_casemode_selectable_for cm25]
+  set S25B [pcall ase::sim_casemode_selectable_for nocm25]
+  open_editor $top20 $key 0
+  set S25VA [wvalues $top20.simrow.casemode]
+  open_editor $top20 $key 1
+  set S25VB [wvalues $top20.simrow.casemode]
+  check {S25 A1 the chooser never offers a mode the program was not measured to deliver -- a build that measures as folding only is offered folding only} \
+    [list $S25A $S25B $S25VA $S25VB \
+          [expr {[lsearch -exact $S25VB preserve] < 0}]] \
+    [list [list fold preserve distinguish] [list fold] \
+          [linsert $S25A 0 $GD] [linsert $S25B 0 $GD] 1]
+
+  # --- S26: THE ROW BEING EDITED, NOT THE ROW IN FORCE ------------------
+  ## MEASURED BEFORE THE FIX: `ase::sim_casemode_selectable ngspice` -- the
+  ## accessor a door would reach for first -- answered `fold preserve
+  ## distinguish` or `fold` depending ONLY on which entry was selected, so a
+  ## chooser built from it offers one program's modes while the user is
+  ## editing another's. That is an A1 breach introduced by the very door
+  ## meant to enforce A1, and no row above can see it: they all edit the
+  ## entry that happens to be in force.
+  pcall ase::sim_select nocm25
+  set S26INFORCE [pcall ase::sim_casemode_selectable ngspice]
+  open_editor $top20 $key 0
+  set S26EDITED [wvalues $top20.simrow.casemode]
+  pcall ase::sim_select cm25
+  set S26INFORCE2 [pcall ase::sim_casemode_selectable ngspice]
+  open_editor $top20 $key 1
+  set S26EDITED2 [wvalues $top20.simrow.casemode]
+  check {S26 the chooser describes the row the user clicked, not whichever simulator happens to be in force} \
+    [list $S26INFORCE $S26EDITED $S26INFORCE2 $S26EDITED2] \
+    [list [list fold] [linsert $S25A 0 $GD] \
+          [list fold preserve distinguish] [linsert $S25B 0 $GD]]
+
+  # --- S27: NOTHING MEASURED MEANS FOLD ALONE, AND NOTHING IS STARTED ---
+  ## `fold` is what a released ngspice does whether or not it was asked, so
+  ## it is the one request no binary can silently fail -- the only honest
+  ## offer for a program nobody has measured. The last term is the one that
+  ## matters most: opening a row editor must not be a gesture that starts the
+  ## user's simulator. On a licensed tool that would check out a licence.
+  simreset
+  pcall ase::sim_register never27 $STUB
+  pcall ase::sim_register gone27  $MISSING
+  set S27HAVE [pcall ase::sim_caps_have never27]
+  set S27OPEN [open_editor $top20 $key 0]
+  set S27A [wvalues $top20.simrow.casemode]
+  set S27HAVE2 [pcall ase::sim_caps_have never27]
+  open_editor $top20 $key 1
+  set S27B [wvalues $top20.simrow.casemode]
+  check {S27 a program nobody has measured, and one whose file has gone, are each offered folding alone -- and merely opening the editor never starts anything} \
+    [list $S27OPEN $S27A $S27B $S27HAVE $S27HAVE2] \
+    [list 1 [list $GD fold] [list $GD fold] 0 0]
+
+  # --- S28: DETECT IS THE ONLY THING THAT MAY START A PROGRAM -----------
+  ## The other half of S27's rule. The chooser offers fold alone until the
+  ## user asks, and Detect is the asking: it says what it is doing first --
+  ## the sentence has to be painted BEFORE the launch, because the launch
+  ## freezes Tk and a sentence arriving afterwards can only ever read as a
+  ## report about something already finished -- and then rebuilds the offer
+  ## from what came back. Every sentence is ase::sim_why's; this file mints
+  ## nothing (ruling D5-4).
+  simreset
+  pcall ase::sim_register det28 $CMSTUB
+  set S28OPEN [open_editor $top20 $key 0]
+  set S28BEFORE [wvalues $top20.simrow.casemode]
+  winv $top20.simrow.detect
+  update
+  set S28AFTER [wvalues $top20.simrow.casemode]
+  set S28SAID [wtext $top20.simrow.status]
+  set S28MINT [mint ase::sim_why casemode_measured {} $CMSTUB \
+                 [list fold preserve distinguish]]
+  set S28UNMEAS [mint ase::sim_why casemode_unmeasured {} $CMSTUB]
+  check {S28 Detect measures the program in the Program field, rebuilds the offer from the answer, and reports it in the words the rest of xschem uses} \
+    [list $S28OPEN $S28BEFORE $S28AFTER \
+          [expr {$S28MINT ne {NOMINT} && $S28SAID eq $S28MINT}] \
+          [expr {$S28UNMEAS ne {NOMINT} && $S28SAID ne $S28UNMEAS}] \
+          [scount $SRCW [string range $S28MINT 0 20]]] \
+    [list 1 [list $GD fold] [list $GD fold preserve distinguish] 1 1 0]
+
+  # --- S29: PICK IT, PRESS OK, AND THE RUN REALLY ASKS FOR IT -----------
+  ## THE WHOLE ITEM, END TO END, IN ONE ROW. The user picks `preserve` the
+  ## way a user can -- only from what the chooser is OFFERING, which is what
+  ## `wpick` enforces -- presses OK, and every consumer downstream has to
+  ## agree: the entry, the request the run reads off it, the flag the command
+  ## builder emits, the saved file, and a REAL FRESH PROCESS reading that
+  ## file back. Without the last one this row cannot say "and it is still
+  ## there tomorrow", which is the user's actual complaint.
+  simreset
+  pcall ase::sim_register run29 $CMSTUB
+  pcall ase::sim_select run29
+  pcall ase::sim_capabilities_for run29
+  set S29OPEN [open_editor $top20 $key 0]
+  set S29PICK [wpick $top20.simrow.casemode preserve]
+  set S29NPICK [wcheck $top20.simrow.nospiceinit 1]
+  winv $top20.simrow.btns.proceed
+  update
+  set S29FIELD [simfield run29 casemode]
+  set S29NS [simfield run29 nospiceinit]
+  set S29REQ [pcall ase::sim_casemode_requested ngspice]
+  set S29FLAG [pcall ase::run_casemode_flag [ase::session_state $key]]
+  set S29TXT {}
+  if {$CONFFILE ne {NOPROC} && $CONFFILE ne {} && [file exists $CONFFILE]} {
+    set S29TXT [slurp $CONFFILE]
+  }
+  ## The restart, for real. The saved list is copied into a HOME of this
+  ## suite's own and a fresh --nogui xschem is asked what it reads there.
+  set RHOME [file join $scratch rhome]
+  file mkdir [file join $RHOME .xschem]
+  catch {file copy -force $CONFFILE [file join $RHOME .xschem ase_simulators]}
+  set S29CHILD [child_val s29 {
+    set m NOENTRY
+    if {[llength [info commands ase::sim_entry]]} {
+      set e [ase::sim_entry run29]
+      if {$e ne {}} { set m [ase::state_get $e casemode ZZNONE] }
+    }
+    puts "CM29=$m"
+    flush stdout
+    exit 0
+  } $RHOME CM29]
+  check {S29 picking preserve and pressing OK is the whole chain -- the entry keeps it, the run asks for it, the command carries it, the file records it, and a fresh xschem reads it back} \
+    [list $S29OPEN $S29PICK $S29NPICK $S29FIELD $S29NS $S29REQ $S29FLAG \
+          [expr {[string first {-casemode preserve} $S29TXT] >= 0}] \
+          $S29CHILD] \
+    [list 1 OK OK preserve 1 preserve [list -D casemode=preserve] 1 preserve]
+
+  # --- S30: A MODE THE USER WROTE BY HAND IS SHOWN, NOT SILENTLY DROPPED -
+  ## Until this item landed, hand-editing the saved list was the ONLY way to
+  ## ask for a case mode, so an entry carrying a mode its program was never
+  ## measured to deliver is the normal legacy shape, not a corner case.
+  ## Opening the editor on one must not quietly rewrite it: the mode is shown,
+  ## MARKED, and pressing OK without touching anything leaves it alone.
+  ##
+  ## THE MARK IS `not tried yet` AND NOT `NOT supported`, and after issue
+  ## 1371's repair those are two different words for two different states (see
+  ## ase::ui::simdlg_case_label). This row is the first: nobody has measured
+  ## $STUB, so nothing is known about `distinguish` either way. Row S34 is the
+  ## second, where the program WAS measured and does not deliver it.
+  simreset
+  pcall ase::sim_register hand30 $STUB -casemode distinguish
+  set S30OPEN [open_editor $top20 $key 0]
+  set S30VALS [wvalues $top20.simrow.casemode]
+  set S30SHOWN [wget $top20.simrow.casemode]
+  set S30MARK [mint ase::ui::simdlg_case_label distinguish untried]
+  winv $top20.simrow.btns.proceed
+  update
+  check {S30 a case mode the user wrote by hand, for a program that was never measured, is shown marked rather than dropped -- and pressing OK leaves it exactly as it was} \
+    [list $S30OPEN $S30VALS $S30SHOWN \
+          [expr {$S30MARK ne {NOMINT} && $S30SHOWN eq $S30MARK}] \
+          [simfield hand30 casemode] \
+          [mint ase::ui::simdlg_case_value $S30MARK]] \
+    [list 1 [list $GD fold $S30MARK] $S30MARK 1 distinguish distinguish]
+
+  # --- S31 STRUCTURAL: ONE PLACE ASKS, SO A1 CANNOT BE COPIED -----------
+  ## The A1 rule lives in the model (ase::sim_casemode_selectable* and the
+  ## caps-dict rule behind them) and this window file may hold exactly one
+  ## caller of it, inside the proc that builds the chooser's values. A second
+  ## caller elsewhere in the dialog is how a door built to enforce A1 ends up
+  ## carrying a second, drifting copy of it -- which is the shape that killed
+  ## `fluid-editing`'s eleven sim_profile_* procs.
+  ##
+  ## Non-vacuous by construction: it counts the proc it scanned, so "no second
+  ## caller" cannot be satisfied by "no proc".
+  set S31B [procbodies $SRCW ase::ui::simdlg_case_values]
+  set S31ALL [lindex [procbodies $SRCW ase::ui::] 1]
+  check {S31 STRUCTURAL exactly one place in the window file asks what a program may be offered, so the rule cannot be copied behind the dialog} \
+    [list [lindex $S31B 0] \
+          [expr {[scount [lindex $S31B 1] {casemode_selectable}] == 1}] \
+          [scount $S31ALL {casemode_selectable}] \
+          [scount $S31ALL {casemode_detected}]] \
+    [list 1 1 1 0]
+
+  # =====================================================================
+  # S33-S37: ISSUE 1371's OWN REFUTATION, ROW BY ROW
+  # =====================================================================
+  # Everything above was green while five things were wrong, and every one of
+  # them was reached by an ordinary gesture. The rows below are the fences the
+  # first pass did not have; each one names the measurement that produced it.
+
+  # --- S33: THE OFFER FOLLOWS THE PROGRAM FIELD -------------------------
+  ## THE CLAIM THAT WAS FALSE. This item's own write-up said the chooser is
+  ## "keyed on the PROGRAM NAMED IN THE PROGRAM FIELD, not on the entry ...
+  ## because a user who has just typed a NEW location into the Program field
+  ## would otherwise be offered the OLD program's modes". It WAS keyed on the
+  ## field -- and built only at editor-open and by Detect, with nothing bound
+  ## to the field at all. Measured through the real widgets: an entry measuring
+  ## `fold preserve distinguish`, the location of a build measuring `fold`
+  ## alone typed in, and the chooser still offering `preserve`; OK saved it,
+  ## `ase::sim_casemode_requested` answered `preserve`, and
+  ## `ase::run_casemode_flag` emitted `-D casemode=preserve` for a program
+  ## measured not to deliver it. And the adversary's proof that no row could
+  ## see it: re-keying BOTH readers on the entry's stored path -- the shape the
+  ## write-up says it had to correct -- left the suite at ALL PASS.
+  ##
+  ## THE THIRD TERM IS WHAT MAKES IT ABOUT THE FIELD. The program now named
+  ## there really is measured, and really delivers `fold` alone, so the offer
+  ## collapsing to `fold` cannot be an accident of "nothing is measured".
+  ##
+  ## WHAT OK THEN SAVES IS THE RECORDED, UNRATIFIED CHOICE (issue 1371's rule
+  ## debt): a mode the user can SEE is marked `(NOT supported)` is still
+  ## written down, exactly as row S30's hand-written one is. The alternative --
+  ## refusing at OK -- would have the dialog tighten a rule the registry itself
+  ## does not have, mid-gesture.
+  simreset
+  catch {ase::sim_caps_clear}
+  pcall ase::sim_register cm33 $CMSTUB
+  set S33MEAS [pcall ase::sim_casemode_selectable_for cm33]
+  set S33FIELDCAN [pcall ase::sim_casemode_selectable_path ngspice $NOCM]
+  set S33OPEN [open_editor $top20 $key 0]
+  set S33V0 [wvalues $top20.simrow.casemode]
+  set S33PICK [wpick $top20.simrow.casemode preserve]
+  went $top20.simrow.path $NOCM
+  update
+  set S33V1 [wvalues $top20.simrow.casemode]
+  set S33SHOWN [wget $top20.simrow.casemode]
+  set S33MARK [mint ase::ui::simdlg_case_label preserve unsupported]
+  set S33UNTRIED [mint ase::ui::simdlg_case_label preserve untried]
+  winv $top20.simrow.btns.proceed
+  update
+  check {S33 typing another location into the Program field rebuilds what the Case chooser offers, from the program NOW named there -- and the pick that program cannot deliver is marked, not left looking measured} \
+    [list $S33OPEN $S33V0 $S33PICK $S33FIELDCAN $S33V1 $S33SHOWN \
+          [expr {$S33MARK ne {NOMINT} && $S33MARK ne $S33UNTRIED}] \
+          [simfield cm33 path] [simfield cm33 casemode]] \
+    [list 1 [linsert $S33MEAS 0 $GD] OK [list fold] \
+          [list $GD fold $S33MARK] $S33MARK 1 $NOCM preserve]
+
+  # --- S39: DETECT MEASURES WHAT IS IN THE FIELD, NOT WHAT WAS REGISTERED -
+  ## Row S28 says "Detect measures the program in the Program field" and cannot
+  ## see it: it opens the editor and presses Detect without touching the field,
+  ## where the two are the same string. The adversary re-keyed simdlg_detect
+  ## onto the entry's stored path and S28 stayed green. The symptom that leaves
+  ## is "Detect does nothing": the user types a new location, presses the one
+  ## button that may measure something, and the offer does not move -- because
+  ## what got measured was the program they are replacing.
+  ##
+  ## THE LAST TERM IS THE ONE THAT CANNOT BE FAKED. The entry's own program is
+  ## still unmeasured afterwards, so a Detect that answered correctly by
+  ## measuring BOTH would redden here too.
+  simreset
+  catch {ase::sim_caps_clear}
+  pcall ase::sim_register det39 $STUB
+  set S39OPEN [open_editor $top20 $key 0]
+  set S39V0 [wvalues $top20.simrow.casemode]
+  went $top20.simrow.path $CMSTUB
+  update
+  set S39V1 [wvalues $top20.simrow.casemode]
+  winv $top20.simrow.detect
+  update
+  set S39V2 [wvalues $top20.simrow.casemode]
+  set S39SAID [wtext $top20.simrow.status]
+  set S39MINT [mint ase::sim_why casemode_measured {} $CMSTUB \
+                 [list fold preserve distinguish]]
+  set S39HAVEFIELD [pcall ase::sim_caps_have_path ngspice $CMSTUB]
+  set S39HAVEENTRY [pcall ase::sim_caps_have_path ngspice $STUB]
+  catch {ase::sim_caps_clear}
+  check {S39 Detect measures the program named in the Program field even when it is not the one the entry was registered with -- otherwise typing a new location and pressing Detect measures the program being replaced} \
+    [list $S39OPEN $S39V0 $S39V1 $S39V2 \
+          [expr {$S39MINT ne {NOMINT} && $S39SAID eq $S39MINT}] \
+          $S39HAVEFIELD $S39HAVEENTRY] \
+    [list 1 [list $GD fold] [list $GD fold] \
+          [list $GD fold preserve distinguish] 1 1 0]
+
+  # --- S34: MEASURED-AND-CANNOT IS NOT THE SAME AS NOBODY-ASKED ---------
+  ## The other half of the mark. Row S30 is a mode stored for a program NOBODY
+  ## HAS MEASURED -- nothing is known about it either way, and the label says
+  ## so. This row is a mode stored for a program that WAS measured and does not
+  ## deliver it, which is a statement about the user's own program, and it used
+  ## to wear the same words: `(NOT measured)`, 449 ms after the measurement.
+  simreset
+  catch {ase::sim_caps_clear}
+  pcall ase::sim_register hand34 $NOCM -casemode distinguish
+  set S34CAN [pcall ase::sim_casemode_selectable_for hand34]
+  set S34OPEN [open_editor $top20 $key 0]
+  set S34VALS [wvalues $top20.simrow.casemode]
+  set S34SHOWN [wget $top20.simrow.casemode]
+  set S34MARK [mint ase::ui::simdlg_case_label distinguish unsupported]
+  set S34UNTRIED [mint ase::ui::simdlg_case_label distinguish untried]
+  check {S34 a stored mode the program was MEASURED not to deliver is marked with different words from one nobody has measured, and still maps back to the mode itself} \
+    [list $S34OPEN $S34CAN $S34VALS $S34SHOWN \
+          [expr {$S34MARK ne {NOMINT} && $S34MARK ne $S34UNTRIED}] \
+          [mint ase::ui::simdlg_case_value $S34MARK]] \
+    [list 1 [list fold] [list $GD fold $S34MARK] $S34MARK 1 distinguish]
+
+  # --- S35: DETECT NEVER SAYS "NOT TRIED YET" AFTER IT HAS TRIED --------
+  ## FOUR STATES, ALL MEASURED THROUGH THE REAL BUTTON, all of which used to
+  ## print "<path> has not been tried yet, so fold is all that can be offered;
+  ## press Detect to try it." -- a false claim plus an instruction to press the
+  ## button that had just been pressed:
+  ##   (a) a program that exists, is executable and ANSWERED the probe but
+  ##       published no casemode key -- which is every executable that is not
+  ##       an ngspice;
+  ##   (b) a program whose file has gone, while the SAME dialog's Problem
+  ##       column two widgets away carried the correct sentence;
+  ##   (c) Detect pressed with the Program field empty -- two clicks from the
+  ##       menu -- which printed two sentences with no subject and a leading
+  ##       space;
+  ##   (d) a probe that COMPLETES and recognises nothing, which is the second
+  ##       arm of the `casemode_measured` mint and the one shape no stub
+  ##       program can produce, so the probe hook itself stands in. A1's own
+  ##       two-empties rule then leaves the global-default line ALONE in the
+  ##       offer: measured, and it delivers nothing this window can ask for.
+  ## Every sentence is compared against the MINT (ruling D5-4) and against the
+  ## "not tried yet" one, so a tree that reworded either cannot pass.
+  set S35UNMEAS [mint ase::sim_why casemode_unmeasured {} $STUB]
+  simreset
+  catch {ase::sim_caps_clear}
+  pcall ase::sim_register det35a $STUB
+  open_editor $top20 $key 0
+  winv $top20.simrow.detect
+  update
+  set S35A [wtext $top20.simrow.status]
+  set S35AMINT [mint ase::sim_why casemode_nokey {} $STUB]
+
+  simreset
+  catch {ase::sim_caps_clear}
+  pcall ase::sim_register det35b $MISSING
+  open_editor $top20 $key 0
+  winv $top20.simrow.detect
+  update
+  set S35B [wtext $top20.simrow.status]
+  set S35BMINT [mint ase::sim_why casemode_noprogram {} $MISSING missing]
+  set S35BCELL [wcell $top20.simdlg.tv 0 problem]
+
+  simreset
+  catch {ase::sim_caps_clear}
+  catch {destroy $top20.simrow}
+  catch {destroy $top20.simdlg}
+  winv $top20.mb.setup "Simulators…"
+  update
+  winv $top20.simdlg.btns.add
+  update
+  set S35COPEN [wex $top20.simrow]
+  set S35CPATH [wget $top20.simrow.path]
+  winv $top20.simrow.detect
+  update
+  set S35C [wtext $top20.simrow.status]
+  set S35CMINT [mint ase::sim_why casemode_nopath {} {}]
+  ## THE FLASH IS STRUCTURAL AND SAYS SO. With the guard removed the FINAL
+  ## sentence is unchanged -- ase::casemode_report answers an empty path the
+  ## same way -- so what the guard actually buys is that "Trying  now, to find
+  ## out which spellings of a net name it can hand back." is never painted and
+  ## flushed about no program at all. No widget can see a label that is
+  ## overwritten in the same event, so the ordering in the source is the
+  ## measurement: the empty-field answer is given BEFORE anything about a
+  ## launch is said.
+  set S35CB [procbodies $SRCW ase::ui::simdlg_detect]
+  set S35CBT [lindex $S35CB 1]
+  set S35CI1 [string first {casemode_status} $S35CBT]
+  set S35CI2 [string first {casemode_measuring} $S35CBT]
+  set S35CGUARD [expr {$S35CI1 >= 0 && $S35CI2 > $S35CI1}]
+  catch {destroy $top20.simrow}
+  catch {destroy $top20.simdlg}
+
+  simreset
+  catch {ase::sim_caps_clear}
+  set S35DINST [probe_stub_install {
+    return [dict create known 1 usable 1 appendwrite 0 blanket_op_save 0 \
+                       hier_op_names 0 casemode_detected {}]
+  }]
+  pcall ase::sim_register det35d $STUB2
+  open_editor $top20 $key 0
+  winv $top20.simrow.detect
+  update
+  set S35D [wtext $top20.simrow.status]
+  set S35DVALS [wvalues $top20.simrow.casemode]
+  set S35DMINT [mint ase::sim_why casemode_measured {} $STUB2 {}]
+  set S35DREM [probe_stub_remove]
+  catch {ase::sim_caps_clear}
+  check {S35 after Detect has really tried a program the editor says what happened -- it answered but said nothing about spellings, its file is gone, no location was given, or it was tried and delivers none of them -- and never that it has not been tried} \
+    [list [expr {$S35AMINT ne {NOMINT} && $S35A eq $S35AMINT}] \
+          [expr {$S35BMINT ne {NOMINT} && $S35B eq $S35BMINT}] \
+          [expr {$S35CMINT ne {NOMINT} && $S35C eq $S35CMINT}] \
+          [expr {$S35DMINT ne {NOMINT} && $S35D eq $S35DMINT}] \
+          [expr {$S35UNMEAS ne {NOMINT} && $S35A ne $S35UNMEAS \
+                 && $S35B ne $S35UNMEAS && $S35C ne $S35UNMEAS \
+                 && $S35D ne $S35UNMEAS}] \
+          $S35COPEN $S35CPATH $S35CGUARD [lindex $S35CB 0] \
+          $S35DINST $S35DREM $S35DVALS \
+          [expr {$S35BCELL ne $S35B && [string first $MISSING $S35BCELL] >= 0}] \
+          [scount $SRCW {has not been tried yet}]] \
+    [list 1 1 1 1 1 1 {} 1 1 1 1 [list $GD] 1 0]
+
+  # --- S36: WHAT THE EDITOR SAYS BEFORE ANYTHING IS TRIED ---------------
+  ## THE THIRD REFUTATION, and it is the deliverable itself: this item's answer
+  ## to the user said "Edit… -> a Case chooser listing exactly what that
+  ## program was measured to deliver -> pick preserve -> OK", with no mention
+  ## of Detect. Measured COLD on their own entry and binary, that gesture finds
+  ## `{global default (fold)} fold` and no `preserve` -- correct, because
+  ## nothing has been measured and A1 forbids the rest, and indistinguishable
+  ## from the bug the item was filed about. The editor now says so, in the
+  ## mint's words, and names the one button that changes it.
+  ##
+  ## AND THE SAME SENTENCE COMES BACK AFTER OK, WHICH IS NOT A DEFECT BUT IS
+  ## WHAT THE USER SEES: ase::sim_register's look-again (issue 0950, row D10 of
+  ## test_ase_simcaps_0948) forgets every measurement on every registry edit,
+  ## deliberately, so the reopen after a save is a cold open again. Before this
+  ## row the chooser said `preserve (NOT measured)` about a program measured
+  ## 449 ms earlier and the status line said nothing at all.
+  ##
+  ## LAST TERM: opening the editor, twice, and reopening it after a save, still
+  ## starts nothing. Row S27's promise survives the status line being painted.
+  simreset
+  catch {ase::sim_caps_clear}
+  pcall ase::sim_register cold36 $CMSTUB
+  set S36HAVE0 [pcall ase::sim_caps_have cold36]
+  set S36OPEN [open_editor $top20 $key 0]
+  set S36COLD [wtext $top20.simrow.status]
+  set S36HAVE1 [pcall ase::sim_caps_have cold36]
+  set S36UNMEAS [mint ase::sim_why casemode_unmeasured {} $CMSTUB]
+  winv $top20.simrow.detect
+  update
+  set S36AFTER [wtext $top20.simrow.status]
+  set S36MEAS [mint ase::sim_why casemode_measured {} $CMSTUB \
+                 [list fold preserve distinguish]]
+  ## Reopened with the measurement still in hand: the status is the measured
+  ## sentence and NOTHING was started to say it.
+  open_editor $top20 $key 0
+  set S36WARM [wtext $top20.simrow.status]
+  set S36PICK [wpick $top20.simrow.casemode preserve]
+  winv $top20.simrow.btns.proceed
+  update
+  ## And after the save, which is where the user looks next.
+  open_editor $top20 $key 0
+  set S36SAVED [wtext $top20.simrow.status]
+  set S36SVALS [wvalues $top20.simrow.casemode]
+  set S36SMARK [mint ase::ui::simdlg_case_label preserve untried]
+  check {S36 the row editor says what is known about the program it is showing, before anything is tried -- it names Detect when nothing has been measured, repeats the measurement when there is one, and starts nothing to do either} \
+    [list $S36OPEN $S36HAVE0 $S36HAVE1 \
+          [expr {$S36UNMEAS ne {NOMINT} && $S36COLD eq $S36UNMEAS}] \
+          [expr {$S36MEAS ne {NOMINT} && $S36AFTER eq $S36MEAS}] \
+          [expr {$S36WARM eq $S36MEAS}] $S36PICK \
+          [expr {$S36SAVED eq $S36UNMEAS}] $S36SVALS \
+          [simfield cold36 casemode]] \
+    [list 1 0 0 1 1 1 OK 1 [list $GD fold $S36SMARK] preserve]
+
+  # --- S37: THE SENTENCE IS ON SCREEN BEFORE THE LAUNCH, NOT AFTER ------
+  ## Detect can block Tk for 31.2 seconds on a program that exists and never
+  ## answers, so the source paints its sentence and flushes the display BEFORE
+  ## it starts anything -- a sentence arriving afterwards could only ever read
+  ## as a report about something already finished. NOTHING IN THE TREE
+  ## ASSERTED IT: `casemode_measuring` appeared in no test file at all, and the
+  ## adversary deleted both the sentence and the `update idletasks` with the
+  ## suite at ALL PASS.
+  ##
+  ## MEASURED FROM INSIDE THE LAUNCH. The probe hook stands in for one gesture
+  ## and reads the status label at the instant it is entered, which is the only
+  ## place the ordering is a fact rather than a reading of the source. The
+  ## structural half is the flush, which no widget can see: `update idletasks`
+  ## has to sit between the sentence and the measurement.
+  simreset
+  catch {ase::sim_caps_clear}
+  set ::ZZ_STATUSW $top20.simrow.status
+  set ::ZZ_SEEN ZZNOTRUN
+  set S37INST [probe_stub_install {
+    set ::ZZ_SEEN ZZNOLABEL
+    catch {set ::ZZ_SEEN [$::ZZ_STATUSW cget -text]}
+    return [dict create known 1 usable 1 appendwrite 0 blanket_op_save 0 \
+                       hier_op_names 0 casemode_detected {fold preserve}]
+  }]
+  pcall ase::sim_register say37 $STUB3
+  open_editor $top20 $key 0
+  winv $top20.simrow.detect
+  update
+  set S37SEEN $::ZZ_SEEN
+  set S37REM [probe_stub_remove]
+  set S37MINT [mint ase::sim_why casemode_measuring {} $STUB3]
+  set S37B [procbodies $SRCW ase::ui::simdlg_detect]
+  set S37TXT [lindex $S37B 1]
+  set S37I1 [string first {casemode_measuring} $S37TXT]
+  set S37I2 [string first {update idletasks} $S37TXT]
+  set S37I3 [string first {sim_capabilities_path} $S37TXT]
+  check {S37 Detect says it is starting the program BEFORE it starts it, and flushes the display first -- the launch freezes Tk and a sentence arriving afterwards would be a report about something already over} \
+    [list $S37INST $S37REM \
+          [expr {$S37MINT ne {NOMINT} && $S37SEEN eq $S37MINT}] \
+          [lindex $S37B 0] \
+          [expr {$S37I1 >= 0 && $S37I2 > $S37I1 && $S37I3 > $S37I2}] \
+          [scount $SRCW {to find out which spellings}]] \
+    [list 1 1 1 1 1 0]
+  catch {ase::sim_caps_clear}
+
+  catch {destroy $top20.simrow}
+  catch {destroy $top20.simdlg}
+  ase::ui::close $key
+  update
+
 } else {
-  puts "SKIP: S1-S12 S14b S15 S17 S18 need a display (the dialog is the subject)"
+  ## NAMES THE ROWS THAT DID RUN, NOT THE ONES THAT DID NOT, and that is the
+  ## repair: the hand-typed list of skipped rows here was EIGHT ROWS out of
+  ## date -- it never mentioned S24-S32 -- so the message under-reported what
+  ## this arm does not cover, which is the one thing it exists to say. Four
+  ## names stay true when a GUI row is added; a list of skipped ones does not.
+  puts "SKIP: only S0 S13 S14a S16 S38 run without a display. Every other row\
+ in this file needs one -- the dialog, its row editor and the session window's\
+ own status bar are the subject."
 }
 
 # --- teardown ----------------------------------------------------------------
 simreset
 catch {file attributes $CONFDIR -permissions 0755}
 if {$UCD_HAD} { set ::USER_CONF_DIR $UCD_OLD } else { catch {unset ::USER_CONF_DIR} }
+if {$NDSAVE eq {ZZUNSET}} { catch {unset ::netlist_dir} } else { set ::netlist_dir $NDSAVE }
+if {$LNDSAVE eq {ZZUNSET}} { catch {unset ::local_netlist_dir} } else { set ::local_netlist_dir $LNDSAVE }
 
 # --- verdict -----------------------------------------------------------------
 # THE DUAL BANNER IS REQUIRED by tests/run_regression.tcl's hcases list, which

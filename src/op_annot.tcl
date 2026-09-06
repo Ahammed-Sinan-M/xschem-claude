@@ -633,6 +633,47 @@ proc op_annot::_wrap {dev param kind} {
   }
 }
 
+## THE INVERSE OF _wrap's TABLE, AND IT LIVES HERE FOR THAT REASON ALONE
+## (issue 1372).
+##
+## Given a name a RESULTS FILE published, which `kind` would _wrap have used to
+## build it?  `i(` -> 0, nothing -> 1, `v(` -> 2, reading the prefix that sits
+## in front of the `@`.  {} when the name is not a device-parameter vector at
+## all, or when it carries a wrapper this table does not name -- a caller that
+## cannot be told the shape must refuse, not pick one.
+##
+## ⚠ IT IS BESIDE _wrap AND NOT IN THE CALLER, WHICH IS INVARIANT I1.  The
+## forward table is token.c:4524-4525 copied once; a second file that decided
+## `i(` means 0 would be a second copy of the same table, and the two would
+## drift silently the moment token.c moved -- the numbers keep coming, they are
+## just read out of the wrong column.  ase::op_param_split already refuses to
+## re-encode this table for exactly the same reason and says so in its own
+## comment; this is the half it deliberately does not answer.
+##
+## ⚠ AND IT IS NOT _wrap RUN BACKWARDS BY CONSTRUCTION.  _wrap's `default` arm
+## folds 2 AND every other value into `v(`, so the map is not injective and the
+## inverse of `v(` is CANONICALLY 2 -- the value _wrap's own switch names.  A
+## caller wanting the exact integer some descriptor once held cannot have it
+## and does not need it: 2 and "anything else" build the same string, so they
+## read the same column.
+##
+## The one consumer is rdw::_run_triple (src/rdw.tcl), which mints a triple for
+## a column this run published that no list and no PDK descriptor declares.
+proc op_annot::_kind_of_vector {v} {
+  set a [string first {@} $v]
+  if {$a < 0} { return {} }
+  set pre [string range $v 0 [expr {$a - 1}]]
+  ## The wrapper is a PAIR.  A prefix with no closing `)` -- and a bare name
+  ## that grew one -- is a name neither arm of _wrap can have built, so it gets
+  ## the same {} an unknown prefix gets.
+  set closed [expr {[string index $v end] eq {)} ? 1 : 0}]
+  if {$pre eq {}} { return [expr {$closed ? {} : 1}] }
+  if {!$closed}   { return {} }
+  if {$pre eq {i(}} { return 0 }
+  if {$pre eq {v(}} { return 2 }
+  return {}
+}
+
 ## ISSUE 0963 — THE SAME NAME, IN EVERY SPELLING A RESULTS FILE MAY USE.
 ##
 ## Returns the ordered list of vector names to try for one device parameter:

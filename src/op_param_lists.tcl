@@ -411,6 +411,78 @@ namespace eval ::op_param_lists {
   }
 
   ## -----------------------------------------------------------------------
+  ## THE CLASS DISPLAY NAME (issue 1373)
+  ## -----------------------------------------------------------------------
+  ## op_param_lists::class_label <class-key> -> what a PERSON reads for it.
+  ##
+  ## ⚠ THE KEY DOES NOT MOVE.  A class key is the store's PRIMARY KEY -- it
+  ## indexes `lists`, `owned` and `warned`, it is compared with `eq` by
+  ## `_flavor_matches_class`, and it is a FIELD THE USER TYPES into a settings
+  ## file (`list class mos annotation`, `param class mos ...`,
+  ## `class nmos mos`).  MEASURED: `get_list class MOS annotation` is empty and
+  ## `governs MOS annotation foo.sym` answers nothing, so `MOS` is a DIFFERENT
+  ## KEY, not the same one shouted.  This proc therefore answers a string for
+  ## PROSE ABOUT DEVICES and nothing else; it never renames anything.
+  ##
+  ## ⚠ SITES THAT MUST NOT BE ROUTED THROUGH IT, so the next reader does not
+  ## "fix" the inconsistency in the wrong direction: `_dup_why` (:616),
+  ## `set_list`'s key reports, `_key_why` (:442), `seed`'s divergence report
+  ## (:960) and the parser's reports.  Every one of those prints the class as a
+  ## SETTINGS-FILE FIELD the user types back, and keys are case-sensitive, so a
+  ## user who reads `MOS` there and writes `list class MOS annotation` gets a
+  ## silently dead entry.  `seed`'s report also names the type tokens beside the
+  ## class, which is the other reason it keeps the key spelling.
+  ##
+  ## ⚠ AND IT IS A TABLE, NOT `string toupper`.  The user's rule is "acronyms
+  ## upper case", not "everything upper case": the identity fallthrough of
+  ## `class` above mints keys like `pwell_resistor`, `high_precision_p` and
+  ## `subcircuit` from any PDK's `type=` tokens, and shouting those would be a
+  ## second defect wearing the first one's fix.  Only rows whose display
+  ## DIFFERS from the key are listed; `resistor`, `capacitor`, `diode` and
+  ## `bipolar` are already their own human spelling and reach the user through
+  ## the SAME identity return an unmapped key takes.
+  ##
+  ## ⚠ IT LIVES HERE, NOT IN rdw.tcl, AND THERE IS NO `rdw::_class_name`
+  ## WRAPPER.  This file may not call `rdw::` (SOURCE-TIME PURITY, above), so
+  ## an accessor over there could never be reached by the store's own
+  ## sentences -- and a second copy is the two-wordings-for-one-fact drift that
+  ## `rdw::_list_name`/`_list_gloss` were written to stop one concept over.
+  ## ONE door: every surface calls this one.
+  ##
+  ## Ratified so far: the user's own words, "why is that not uppercase? MOS is
+  ## an acronym!".  NPN, PNP and ESD are the same rule applied to the other
+  ## acronym keys the identity fallthrough really mints on the shipped sky130
+  ## and IHP trees.  Whether the table should also carry prose for the
+  ## snake_case sky130 keys, and whether `bipolar` should read `BJT`, is the
+  ## user's vocabulary and is on the owed ledger as rule debt 1373.
+  variable classlabel
+  if {![array exists classlabel]} {
+    array set classlabel {
+      mos   MOS
+      npn   NPN
+      pnp   PNP
+      esd   ESD
+    }
+  }
+
+  proc class_label {cls} {
+    variable classlabel
+    if {[info exists classlabel($cls)]} { return $classlabel($cls) }
+    return $cls
+  }
+
+  ## The extension door, matching `set_class` above: one call from an rc for a
+  ## PDK whose class keys this table has never heard of.  Deliberately NO
+  ## `_mark_dirty`: a display name is not a settings-file field, so there is
+  ## nothing for the writer to round-trip and marking it dirty would make the
+  ## store offer to save a grammar row that does not exist.
+  proc set_class_label {cls label} {
+    variable classlabel
+    set classlabel($cls) $label
+    return $label
+  }
+
+  ## -----------------------------------------------------------------------
   ## KEYS AND VALIDATION
   ## -----------------------------------------------------------------------
   ## THE ONE KEY BUILDER, AND IT CANONICALISES (invariant I1). A flavor key is

@@ -12,6 +12,14 @@
 # global to the whole process, invisible from inside it, and impossible to
 # name, list or take back.
 #
+# ⚠ THE BOTTOM-BAR CLAUSE ABOVE IS HISTORY NOW, and 0931 is the reason it was
+# still true for so long: this item named that segment in its own problem
+# statement and shipped without touching it, and issue 0937 then wrote the
+# exclusion down as a decision. The user overturned it directly in issue 1370
+# ("in ASE-L, in status bar, Simulator: <name> should show the correct name").
+# Section L below owns what the segment is told to say; rows S20-S23 of
+# tests/headless/test_ase_simdlg_0937.tcl own the pixels.
+#
 # ============================================================================
 # THE MECHANISM, MEASURED AT HEAD 0e6cb3cb AND NOT RE-DERIVED HERE
 # ============================================================================
@@ -1645,6 +1653,457 @@ check {R19 a dollar sign in the location buys it the benefit of the doubt about 
         [expr {$R19NW eq [a_msg $R19N]}] [a_plain $R19N nx19 $R19NX] $R19NV] \
   [list 1 1  0 0 0  1 0 1 PLAIN 1 \
         1 1 0  0 0 0  1 0 1 PLAIN 1]
+
+
+# ============================================================================
+# L. WHAT TO CALL THE SIMULATOR ON A ONE-LINE SURFACE -- ISSUE 1370
+# ============================================================================
+# THE USER'S WORDS: "which version of ngspice did the most recent run use? It's
+# very confusing.. in ASE-L, to know if a change has had desired effect. In the
+# ASE-L, in status bar, Simulator: <name> should show the correct name. If user
+# has designated (registered) a new instance of ngspice named ngspice-ver50, and
+# the 'use this one:' field shows that, then the status bar in ASE-L should show
+# that."
+#
+# MEASURED BEFORE THE FIX, on a live .ase4 window with ngspice-ver50 registered
+# and selected: the bar read `Simulator: ngspice` with the entry in force, with
+# the choice cleared, and with it re-selected. Three registry states, one
+# byte-identical bar, because ase::ui::refresh_status rendered the STATE's
+# backend word and never asked the registry anything.
+#
+# THIS SECTION OWNS THE NON-GUI HALF: ase::sim_label (what the bar is told to
+# say), the run's own naming line, and the run log's `using` field. The pixels
+# -- the bar really changing, and changing without a session update -- are rows
+# S20-S23 of tests/headless/test_ase_simdlg_0937.tcl.
+#
+# ⚠ THE MARKER'S WORDING IS THE USER'S RULING (issue 1370, on their queue with
+# --eyes: it is a pixel decision on a five-segment bar). So NOT ONE ROW BELOW
+# RETYPES IT. L0 lifts it off one known-broken arm and pins it structurally --
+# non-empty, written in ase.tcl exactly once, and never in the window file --
+# and every other row asks only WHICH arms carry it. A re-worded marker changes
+# nothing here; a marker that stops discriminating reds nine rows.
+
+## The label of a backend with the PATH pointed at $dir, or at nothing at all.
+## ⚠ auto_execok CACHES in ::auto_execs, so a PATH change that does not clear
+## it measures the PATH from before. Measured while writing this: without the
+## unset, the empty-PATH leg answered with the program the previous leg found.
+proc a_label_pathed {dir backend} {
+  set saved {}
+  if {[info exists ::env(PATH)]} { set saved $::env(PATH) }
+  set ::env(PATH) $dir
+  catch {unset ::auto_execs}
+  set r [a_ans ase::sim_label $backend]
+  set ::env(PATH) $saved
+  catch {unset ::auto_execs}
+  return $r
+}
+proc a_plaintext {m args} {
+  if {$m eq {} || $m eq {NOPROC} || [string match RAISED:* $m]} { return NOSENTENCE }
+  set map {}
+  foreach w $args { lappend map $w {} }
+  set m [string map $map $m]
+  foreach tok {auto_execok ase:: sim_ dict backend} {
+    if {[string first $tok $m] >= 0} { return "JARGON-$tok" }
+  }
+  return PLAIN
+}
+proc a_hdrfield {txt key} {
+  if {$txt eq {NOPROC} || [string match RAISED:* $txt]} { return $txt }
+  set i 0
+  foreach l [split $txt "\n"] {
+    if {[regexp "^${key} *: ?(.*)\$" $l -> v]} { return [list $i $v] }
+    incr i
+  }
+  return [list -1 NOFIELD]
+}
+
+## A directory holding a real program literally named `ngspice`, so the
+## "nothing of your own registered" rows do not depend on whether this machine
+## happens to have one installed.
+set LPATHDIR [file join $scratch pathbin]
+a_wr [file join $LPATHDIR ngspice] "#!/bin/sh\nexit 0\n" 0755
+
+## THE MARKER, LIFTED OFF ONE ARM AND NEVER RETYPED.
+a_reset
+a_ans ase::sim_register ng-mark $MISSING
+set L0FULL [a_ans ase::sim_label ngspice]
+set LMARK ZZ-NO-MARKER
+if {[string first ng-mark $L0FULL] == 0} {
+  set LMARK [string range $L0FULL [string length ng-mark] end]
+}
+a_reset
+set L0SRCA [a_nocomment $ASETCL]
+set L0SRCW [a_nocomment $ASEWIN]
+check {L0 the bar's "this one is not going to run" marker is real text, written in one place in the simulator file, and never written in the window file} \
+  [list [expr {$LMARK ne {ZZ-NO-MARKER} && [string trim $LMARK] ne {}}] \
+        [expr {[string length [string trim $LMARK]] >= 5}] \
+        [a_count $L0SRCA $LMARK] [a_count $L0SRCW $LMARK]] \
+  [list 1 1 1 0]
+
+## L1 THE HEADLINE. The user registered a build of their own and picked it; the
+## one-line surface must say THAT name. The second term is what the bar said
+## before this item and is the whole of the complaint: the backend word.
+a_reset
+a_ans ase::sim_register ngspice-l1 $STUB
+a_ans ase::sim_select ngspice-l1
+check {L1 THE HEADLINE the one-line surface names the simulator the user registered and picked, not the kind of simulator it is} \
+  [list [a_ans ase::sim_label ngspice] \
+        [expr {[a_ans ase::sim_label ngspice] eq {ngspice} ? {STILL-THE-BACKEND-WORD} : {named}}] \
+        [a_sfield ngspice entry]] \
+  [list ngspice-l1 named ngspice-l1]
+
+## L2 NOTHING OF YOUR OWN REGISTERED. The backend word is the right answer here
+## -- there is no other name -- but ONLY when the system really has that program.
+## ⚠ `ok` IS NOT THE DISCRIMINATOR: the PATH arm answers `ok 1` whether or not
+## it found anything, so an empty PATH gives `ok 1` with `resolved` EMPTY. The
+## second term is the one that reds when a caller trusts `ok` alone.
+a_reset
+set L2A [a_label_pathed $LPATHDIR ngspice]
+set L2B [a_label_pathed {} ngspice]
+set L2OK [a_sfield ngspice ok]
+check {L2 with nothing of your own registered the surface says the kind of simulator plain when your system really has that program, and marks it when your system has nothing to start} \
+  [list $L2A $L2B $L2OK] [list ngspice "ngspice$LMARK" 1]
+
+## L3 REGISTERED, AND THE PROGRAM IS NOT THERE ANY MORE. All three broken
+## arms: the file was deleted, the file lost its executable bit, the entry
+## points at a folder. Each is NAMED -- the user needs the name to go and fix
+## it -- and each is MARKED, because it is not going to run.
+a_reset ; a_ans ase::sim_register ng-gone   $MISSING ; set L3A [a_ans ase::sim_label ngspice]
+a_reset ; a_ans ase::sim_register ng-noexec $NOEXEC  ; set L3B [a_ans ase::sim_label ngspice]
+a_reset ; a_ans ase::sim_register ng-folder $ADIR    ; set L3C [a_ans ase::sim_label ngspice]
+check {L3 a simulator you registered whose program has gone, lost its executable bit, or turns out to be a folder is still named -- and marked as one that is not going to run} \
+  [list $L3A $L3B $L3C] \
+  [list "ng-gone$LMARK" "ng-noexec$LMARK" "ng-folder$LMARK"]
+
+## L4 REGISTERED FOR A DIFFERENT KIND OF SIMULATOR. The resolver refuses it by
+## name; the surface must not quietly show it as the thing that will run.
+a_reset
+a_ans ase::sim_register spec-only $STUB -backend spectre
+a_ans ase::sim_select spec-only
+check {L4 a simulator registered for a different kind of run is named and marked, never shown as the one that is about to start} \
+  [list [a_ans ase::sim_label ngspice] [a_sfield ngspice ok]] \
+  [list "spec-only$LMARK" 0]
+
+## L5 THE GHOST, and it is the row the user's own rule is written about: "It
+## must never silently print a name for a simulator that is not going to run --
+## a false name is worse than the backend word." A choice naming an entry
+## nobody registered is a name for something that does not exist, so the
+## surface falls back to the kind of simulator and marks it. The typo is named
+## on the Simulators dialog's own status line, which is where it can be fixed.
+## Reached the way row D2 reaches it -- ::ase::sim_use directly, the one
+## internal name this file depends on and a documented contract.
+a_reset
+a_ans ase::sim_register ng-real $STUB
+set ::ase::sim_use zz-ghost-l5
+set L5 [a_ans ase::sim_label ngspice]
+a_reset
+check {L5 a choice naming a simulator nobody registered never puts that name on the surface: it says the kind of simulator, and says it will not run} \
+  [list $L5 [string first zz-ghost-l5 $L5]] \
+  [list "ngspice$LMARK" -1]
+
+## L6 THE KIND OF SIMULATOR THE SESSION ASKS FOR HAS NO MACHINERY HERE. An
+## entry registered for no particular kind answers for ANY backend name, so the
+## resolver says `ok 1` about a `spectre` session this program cannot run at
+## all -- and about a session whose `simulator` key is missing entirely, which
+## ase::run_deck refuses with "state has no simulator". The third term is the
+## witness that makes the first two non-vacuous.
+a_reset
+a_ans ase::sim_register mysim-l6 $STUB
+check {L6 a session asking for a kind of simulator this program has no machinery for is marked, however healthy the registered entry is} \
+  [list [a_ans ase::sim_label spectre] [a_ans ase::sim_label {}] \
+        [a_refused ase::backend_hook spectre run_cmd] [a_sfield spectre ok]] \
+  [list "mysim-l6$LMARK" "mysim-l6$LMARK" REFUSED-ase 1]
+
+## L7 IT NEVER RAISES. This feeds a label redrawn on every session update; a
+## status bar is no place to discover a stack trace. Same discipline as
+## ase::sim_named_path, and driven the same way -- the resolver is renamed
+## aside and replaced with one that blows up.
+set L7 NOPROC
+if {[llength [info commands ::ase::sim_status]]} {
+  rename ::ase::sim_status ::a_l7_saved
+  proc ::ase::sim_status {backend} { return -code error "l7: the resolver blew up" }
+  set L7 [a_ans ase::sim_label zz-l7-kind]
+  rename ::ase::sim_status {}
+  rename ::a_l7_saved ::ase::sim_status
+}
+check {L7 a surface that is redrawn on every keystroke never blows up in the user's face: a resolver that raises costs the label its detail, not the window} \
+  [list $L7 [expr {[llength [info commands ::ase::sim_status]] ? 1 : 0}]] \
+  [list zz-l7-kind 1]
+
+## L8 STRUCTURAL. The run's own naming sentence is minted where every other
+## sentence about a simulator is minted, is written there exactly once, is
+## never written in the window file, and is not one of the sentences the
+## dialog already uses. Same shape as R9, extended to the kind 1370 adds.
+set L8NAME zz8name
+set L8PATH /zz8/path/to/ngspice
+set L8S [a_ans ase::sim_why run_using $L8NAME $L8PATH {}]
+set L8CATCH [a_ans ase::sim_why zz-no-such-kind $L8NAME $L8PATH {}]
+set L8N 0 ; set L8ONE 1 ; set L8ZERO 1
+set L8CHUNKS [list $L8S]
+foreach l8w [list $L8NAME $L8PATH] {
+  set next {}
+  foreach c $L8CHUNKS {
+    foreach piece [split [string map [list $l8w \x01] $c] \x01] { lappend next $piece }
+  }
+  set L8CHUNKS $next
+}
+foreach c $L8CHUNKS {
+  set c [string trim $c]
+  if {[string length $c] < 25} { continue }
+  incr L8N
+  if {[a_count $L0SRCA $c] != 1} { set L8ONE 0 }
+  if {[a_count $L0SRCW $c] != 0} { set L8ZERO 0 }
+}
+check {L8 STRUCTURAL the sentence a run says about which simulator it is starting is written once, in the same place as every other sentence about a simulator, and names BOTH the name the user gave it and the program that is running} \
+  [list [expr {$L8S ne $L8CATCH}] [expr {$L8N >= 1}] $L8ONE $L8ZERO \
+        [expr {[string first $L8NAME $L8S] >= 0}] \
+        [expr {[string first $L8PATH $L8S] >= 0}] \
+        [a_plaintext $L8S $L8NAME $L8PATH]] \
+  [list 1 1 1 1 1 1 PLAIN]
+
+## L9 THE RUN SAYS WHICH ONE IT IS STARTING, ONCE -- and says NOTHING when the
+## user has registered nothing, because then there is no name to say and
+## `path_in_force` is the sentence for that state. The control half is the
+## load-bearing one: a line on every run of an ordinary installation would be
+## noise, and this is the term that reds for it.
+a_reset
+a_ans ase::sim_register ng-l9 $STUB
+set ::l9rv NOPROC
+set L9SAID [a_echoed {set ::l9rv [a_ans ase::run_using_report [dict create simulator ngspice]]}]
+set L9MINT [a_ans ase::sim_why run_using ng-l9 [a_sfield ngspice exe] {}]
+a_reset
+set ::l9brv NOPROC
+set L9BSAID [a_echoed {set ::l9brv [a_ans ase::run_using_report [dict create simulator ngspice]]}]
+## ...AND IT IS REALLY WIRED INTO THE RUN. The last two terms are the ones the
+## rest of this row cannot reach: nothing here starts a run, so a reporter that
+## is perfect and unreferenced would satisfy every term above it. The call must
+## exist exactly once, and it must be the CAUGHT one inside ase::run_deck's
+## registry gate -- everything it says is advisory, and a defect in it must
+## never stop a run (ase::op_tier_report's own reason, and its neighbour).
+## ⚠ SHAPE, NOT LITERAL TEXT (1370's adversary). This term used to pin the call
+## site as the exact string `catch {set using [ase::run_using_report $state]}`,
+## so renaming the local variable or reflowing the catch across two lines --
+## neither of which changes one thing the user sees -- red the row. It now
+## matches the SHAPE: a catch, around a set of some variable, from this
+## reporter, on some variable. Everything the row is actually about (the call
+## exists, exactly once, and it is CAUGHT) is still pinned; delete the catch
+## and it reds.
+set L9WIRED [a_count $L0SRCA {ase::run_using_report}]
+set L9CALL  [regexp -all {catch\s*\{\s*set\s+\w+\s+\[ase::run_using_report\s+\$\w+\]\s*\}} $L0SRCA]
+check {L9 a run started with a simulator of your own says which one, once, in the words the mint owns -- and a run on an ordinary installation with nothing registered says nothing at all} \
+  [list $::l9rv [llength $L9SAID] [lindex [lindex $L9SAID 0] 0] \
+        [expr {[lindex [lindex $L9SAID 0] 1] eq $L9MINT}] \
+        $::l9brv [llength $L9BSAID] $L9WIRED $L9CALL] \
+  [list ng-l9 1 note 1 {} 0 2 1]
+
+## L10 AND THE RUN LOG CARRIES IT TOO, AS A FIELD BESIDE THE OTHERS. It is
+## ADDED, never re-pointed: `simulator :` is the KIND of simulator and row E1e
+## of tests/headless/test_ase_core.tcl asserts the literal `ngspice` there,
+## under the developer's own HOME -- re-pointing it would make a shipped
+## suite's expectation depend on whose simulator list is live. Empty writes
+## NOTHING, the `casenote` field's discipline, so an ordinary run's log is
+## byte-identical to the framing issue 0618 committed.
+set L10META [dict create cell c10 simulator ngspice using ng-l10 \
+                  cmd {/x/ngspice -b /d/c10.spice 2>@1} dir /d deck /d/c10.spice started 0]
+set L10A [a_ans ase::run_log_header $L10META]
+set L10B [a_ans ase::run_log_header [dict remove $L10META using]]
+## ...AND THE RUN REALLY PUTS IT IN THE RECORD. Same gap as L9's last two
+## terms: run_log_header renders whatever it is handed, so a header that is
+## perfect and a run record that never carries the field would satisfy every
+## term above. The name in the record is the name the run SAID -- one resolve,
+## so the log and the sentence cannot be answers about two different instants.
+## Shape, not literal text, for L9's reason: the field's NAME is what a reader
+## of the log sees, the local variable's name is not.
+set L10WIRED [regexp -all {\yusing\s+\$\w+} $L0SRCA]
+check {L10 the run log names the simulator you picked on a line of its own, right under the line that says what kind it is -- and a run with nothing of yours in force writes that line not at all} \
+  [list [lindex [a_hdrfield $L10A simulator] 1] \
+        [a_hdrfield $L10A using] \
+        [a_hdrfield $L10B using] \
+        [llength [split [string trimright $L10B "\n"] "\n"]] \
+        [lindex [a_hdrfield $L10A command] 0] $L10WIRED] \
+  [list ngspice [list 2 ng-l10] [list -1 NOFIELD] 5 3 1]
+
+## L11 THE TWO LINES THAT USED TO CONTRADICT EACH OTHER. The user's own run log
+## carried `simulator : ngspice` with `command : .../build-ver_50/src/ngspice`
+## one line under it, and nothing anywhere joined them. Now the name that
+## joins them is between them, and it is the name the run itself said out loud.
+a_reset
+a_ans ase::sim_register ng-l11 $STUB
+set L11CMD [a_runcmd $DECK]
+set L11EXE [a_sfield ngspice exe]
+set ::l11rv NOPROC
+a_echoed {set ::l11rv [a_ans ase::run_using_report [dict create simulator ngspice]]}
+set L11HDR [a_ans ase::run_log_header [dict create cell c11 simulator ngspice \
+                 using $::l11rv cmd $L11CMD dir /d deck $DECK started 0]]
+a_reset
+check {L11 the run log's three lines finally agree: the kind of simulator, the name you gave the one you picked, and the program that was actually started} \
+  [list [lindex $L11CMD 0] $::l11rv \
+        [lindex [a_hdrfield $L11HDR simulator] 1] \
+        [lindex [a_hdrfield $L11HDR using] 1] \
+        [expr {[string first $L11EXE [lindex [a_hdrfield $L11HDR command] 1]] >= 0}]] \
+  [list $L11EXE ng-l11 ngspice ng-l11 1]
+
+## ============================================================================
+## L12-L15 -- 1370'S REPAIR, AFTER ITS ADVERSARIES. Four defects the first
+## landing did not cover: a latent FALSE NAME the three-term test could not
+## see, a marker printed with NO NAME in front of it, a bar that went STALE on
+## the registry's other door, and a run that said it was STARTING and was then
+## refused. Every one of them is the same rule -- the segment must never name a
+## simulator that is not going to run -- reached from a direction the first
+## nine rows did not look in.
+## ============================================================================
+
+## L12 A SECOND KIND OF SIMULATOR, WITH A BINARY OF ITS OWN, AND THE FOURTH
+## TERM. `ok`, `resolved` and `known` ALL answer yes about a GENERIC entry
+## (`-backend {}`, which is exactly how this user's own ngspice-ver50 is
+## registered) asked about a backend whose `run_cmd` hardcodes its own program
+## and consults no registry -- the shape ase::run_composes_registry exists to
+## detect, and the shape test_ase_core's E2 backend already has. The run starts
+## THAT program; the entry names another; so the entry's name on the bar is a
+## false name. The last four terms are the witnesses that make the first
+## non-vacuous: they show the three original terms all saying yes.
+a_reset
+set L12PRE [expr {[lsearch -exact [a_ans ase::backend_names] zzl12] >= 0 ? 1 : 0}]
+a_ans ase::register_backend zzl12 [dict create render_deck zz_l12_hook \
+        run_cmd zz_l12_hook log_file zz_l12_hook result_probe zz_l12_hook \
+        raw_file zz_l12_hook]
+a_ans ase::sim_register gen-l12 $STUB
+set L12      [a_ans ase::sim_label zzl12]
+set L12OK    [a_sfield zzl12 ok]
+set L12RES   [expr {[string trim [a_sfield zzl12 resolved]] ne {} ? 1 : 0}]
+set L12KNOWN [expr {[lsearch -exact [a_ans ase::backend_names] zzl12] >= 0 ? 1 : 0}]
+set L12COMP  [a_ans ase::run_composes_registry zzl12]
+catch {dict unset ::ase::backends zzl12}
+set L12POST [expr {[lsearch -exact [a_ans ase::backend_names] zzl12] >= 0 ? 1 : 0}]
+a_reset
+check {L12 an entry registered for no particular kind, asked about a kind of\
+ simulator that starts a program of its own and reads no list, is marked --\
+ the entry names one program and the run would start another} \
+  [list $L12 $L12PRE $L12OK $L12RES $L12KNOWN $L12COMP $L12POST] \
+  [list "gen-l12$LMARK" 0 1 1 1 0 0]
+
+## L13 THERE IS NOTHING TO NAME AT ALL. A state whose `simulator` key is
+## missing, on an installation with nothing registered: `entry` is empty, the
+## backend word it falls back to is empty too, and the bar used to render the
+## marker with a blank in front of it and a DOUBLE SPACE where the name should
+## be. That is byte for byte the shape row Z8 of
+## tests/headless/test_ase_optier_0963.tcl exists to forbid of a sentence, and
+## the bar owes the user the same. The second term is the one that reds for it.
+a_reset
+set L13 [a_ans ase::sim_label {}]
+set L13NAME [string trim [string map [list $LMARK {}] $L13]]
+check {L13 with nothing registered and no kind of simulator named either, the\
+ surface still names the absence rather than printing a marker with a blank\
+ and a double space in front of it} \
+  [list [expr {$L13NAME ne {} ? 1 : 0}] [string first {  } $L13] \
+        [expr {[string first $LMARK $L13] >= 0 ? 1 : 0}] $L13NAME] \
+  [list 1 -1 1 {(none)}]
+
+## L14 THE REGISTRY'S OTHER DOOR. 1370 hung the bar's refresh off
+## ase::ui::simdlg_fill, which every gesture of the Simulators DIALOG funnels
+## through -- and nothing else. `ase::sim_register <name> <path>` followed by
+## `ase::sim_select <name>` typed into the Command window is the pre-0937 path
+## and is how this user's own ngspice-ver50 entry was first created; measured
+## live by this item's adversary, it left an open bar naming the OLD entry
+## while ase::sim_label already answered the new one -- a name on the bar for a
+## simulator that would not run, healed only by the run it was meant to
+## predict. So the four mutators fire a seam of their own.
+##
+## ⚠ AND A BROKEN HOOK NEVER COSTS THE USER THE GESTURE. These mutators are
+## called once per line of ~/.xschem/ase_simulators at startup; a GUI hook that
+## raises must not cost a user their simulator list. Same discipline, and the
+## same `catch {uplevel #0 ...}`, as ase::session_notify_fire.
+a_reset
+set L14SAVED {}
+catch {set L14SAVED $::ase::sim_notify}
+set ::l14n 0
+set ::ase::sim_notify {incr ::l14n}
+a_ans ase::sim_register ng-l14  $STUB  ; set L14A $::l14n
+a_ans ase::sim_register ng-l14b $STUB  ; set L14B $::l14n
+a_ans ase::sim_select   ng-l14b        ; set L14C $::l14n
+a_ans ase::sim_select   {}             ; set L14D $::l14n
+a_ans ase::sim_unregister ng-l14b      ; set L14E $::l14n
+a_ans ase::sim_clear                   ; set L14F $::l14n
+set ::ase::sim_notify {error {l14: the hook blew up}}
+set L14RV  [a_ans ase::sim_register ng-l14c $STUB]
+set L14SEL [a_ans ase::sim_select ng-l14c]
+set ::ase::sim_notify $L14SAVED
+a_reset
+## ...AND IT IS REALLY POINTED AT THE BAR. Structural, for L9's reason: nothing
+## here opens a window, so a seam that is perfect and unsubscribed would
+## satisfy every term above it. The pixels are row S32 of
+## tests/headless/test_ase_simdlg_0937.tcl.
+set L14W    [a_count $L0SRCW {set ::ase::sim_notify ase::ui::refresh_status_all}]
+set L14WALL [a_count $L0SRCW {proc ase::ui::refresh_status_all}]
+check {L14 a simulator registered or picked from the Command window -- the\
+ registry's other door, and the one this user's own entry came through --\
+ tells every open window's bar, and a broken listener never costs the user the\
+ registration} \
+  [list $L14A $L14B $L14C $L14D $L14E $L14F $L14RV $L14SEL $L14W $L14WALL] \
+  [list 1 2 3 4 5 6 1 ng-l14c 1 1]
+
+## L15 A RUN THAT IS REFUSED NEVER SAYS IT IS STARTING. 1370 put the say beside
+## ase::run_precheck at the TOP of ase::run_deck -- eleven lines above
+## ase::preflight_gate and above the `open $netlistfile`. Measured by this
+## item's adversary: a pre-flight refusal and a missing netlist BOTH said "This
+## run is starting the simulator you named <name>, and the program it is
+## running is <path>" and were then refused with "Nothing was generated: no
+## deck, no raw, no log." The one channel the user reads to answer "which
+## version did the most recent run use?" was claiming starts for runs that
+## never started.
+##
+## HOW THIS DRIVES IT: ase::preflight_gate is replaced by one that refuses, so
+## the refusal is deterministic and needs no fixture that can be repaired away.
+## The THIRD term is the control that makes the silence mean something -- the
+## same state, the same registry, the reporter called directly, DOES say it. A
+## reporter that had simply been deleted would satisfy the first two terms and
+## reds this one.
+a_reset
+a_ans ase::sim_register ng-l15 $STUB
+set L15NL [file join $scratch l15.spice]
+a_wr $L15NL "* l15\n.end\n" 0644
+proc a_l15_refused {nl} {
+  set ::a_l15_rc NOPROC
+  if {![llength [info commands ::ase::preflight_gate]]} { return }
+  rename ::ase::preflight_gate ::a_l15_saved_pfg
+  proc ::ase::preflight_gate {state netlist_text} {
+    return -code error "ase: l15 refuses this run"
+  }
+  set ::a_l15_rc [catch {ase::run_deck [dict create simulator ngspice] $nl}]
+  rename ::ase::preflight_gate {}
+  rename ::a_l15_saved_pfg ::ase::preflight_gate
+}
+set L15SAID [a_echoed [list a_l15_refused $L15NL]]
+set L15STARTS 0
+foreach p $L15SAID {
+  if {[string first {starting the simulator} [lindex $p 1]] >= 0} { incr L15STARTS }
+}
+set ::l15d {}
+set L15DSAID [a_echoed {set ::l15d [a_ans ase::run_using_report [dict create simulator ngspice]]}]
+set L15DSTARTS 0
+foreach p $L15DSAID {
+  if {[string first {starting the simulator} [lindex $p 1]] >= 0} { incr L15DSTARTS }
+}
+## ...AND STRUCTURALLY, THE CALL IS BELOW BOTH GATES IT HAS TO BE BELOW: the
+## pre-flight (the last thing that can REFUSE) and the line that composes the
+## argument list `execute` is handed (so the sentence, the run log's `using :`
+## field and its `command :` field are one instant and one resolve).
+set L15PFG  [a_lines_matching $ASETCL {ase::preflight_gate $state}]
+set L15CALL [a_lines_matching $ASETCL {ase::run_using_report $state}]
+set L15CMD  [a_lines_matching $ASETCL {$run_cmd $state $deckpath}]
+set L15ORD 0
+if {[llength $L15PFG] == 1 && [llength $L15CALL] == 1 && [llength $L15CMD] == 1} {
+  set L15ORD [expr {([lindex $L15CALL 0] > [lindex $L15PFG 0]) &&
+                    ([lindex $L15CALL 0] > [lindex $L15CMD 0])}]
+}
+a_reset
+check {L15 a run the pre-flight refuses never told the user it was starting a\
+ simulator -- the say sits below the last gate that can refuse and below the\
+ line that composes the command, so the channel a user reads to find out which\
+ build ran never carries a start that did not happen} \
+  [list $::a_l15_rc $L15STARTS $L15DSTARTS $::l15d $L15ORD \
+        [llength $L15PFG] [llength $L15CALL] [llength $L15CMD]] \
+  [list 1 0 1 ng-l15 1 1 1 1]
 
 # --- teardown ----------------------------------------------------------------
 a_reset

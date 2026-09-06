@@ -4028,7 +4028,17 @@ proc simconf_dialog_open {} {
 # ALL OF IT GOES WITH THE STORE IT EDITED (the `annotate` merge). Those fields
 # now live on the ASE-L simulator registry entry, which has its own front door
 # -- ASE-L, Setup > Simulators… -- with CRUD, validation, a capability probe and
-# a saved list that survives a restart. Two dialogs editing two records that
+# a saved list that survives a restart.
+#
+# ⚠ THE PROMISE ABOVE WAS NOT KEPT FOR TEN MONTHS, AND ISSUE 1371 IS WHAT IT
+# COST. The store moved and the door was never built: `ase::ui::simdlg_editor`
+# offered Name and Program only, so the case mode could be set solely by hand
+# editing the saved list -- and pressing Edit… on an entry that had been hand
+# edited erased it again. A user whose build was measured `fold preserve
+# distinguish` got `v(vbg)` instead of `v(VBG)` on every run and had nothing to
+# read that explained why. The Case and -n rows exist in that dialog now. The
+# Help text below said otherwise until the same fix; do not re-point either of
+# them at this window. Two dialogs editing two records that
 # describe one machine is worse than one dialog, however good each was: it is
 # the shape in which a user's case mode can end up describing a binary they are
 # no longer running.
@@ -4313,39 +4323,18 @@ If no ~/.xschem/simrc is present then a minimal default setup is presented.
 To reset to default use the corresponding button or just delete the
 ~/.xschem/simrc file manually.
 
-SIMULATOR PROFILE (the second line of each row)
+WHICH PROGRAM RUNS, AND HOW IT TREATS UPPER CASE
 
- - Exe: the simulator executable, as an absolute path or a bare name looked
-   up on PATH. It may contain variable references ($env(HOME)/...). EMPTY
-   means "behave exactly as before": the row runs its cmd string, and ASE-L
-   falls back to a bare ngspice on PATH.
- - Args: extra arguments, as a Tcl list, composed after Exe.
- - Case: the case mode this simulator is ASKED for
-   (fold / preserve / distinguish; ngspice -D casemode=...).
-   THE MENU OFFERS ONLY WHAT THE BINARY WAS MEASURED TO DELIVER. Before a
-   row is probed the only offer is fold, which every ngspice delivers
-   whether or not it is asked. "use global default" leaves the choice to
-   the global sim_case_mode floor. A mode already stored on the row that
-   was never measured is shown marked "NOT measured".
- - -n: pass --no-spiceinit. A .spiceinit -- in the run directory OR in your
-   home directory -- overrides -D casemode=, so the mode you asked for is
-   not always the mode you get. Leave this off unless you know your
-   .spiceinit is the problem.
- - Test: run the executable once per mode and report what it delivers. The
-   answer is recorded on the row and the Case menu is rebuilt from it.
-   A row added with the Add button is probed automatically, but ONLY when
-   the executable is named *ngspice* -- so that adding a licensed simulator
-   never checks out a licence just because a path was typed.
+This window does NOT choose the simulator program. That lives in ASE-L,
+under Setup > Simulators..., where each entry carries the program, its
+extra arguments, the case mode it asks for (fold / preserve / distinguish)
+and whether to pass --no-spiceinit. The saved list is
+~/.xschem/ase_simulators and it comes back at the next start.
 
 Cancel restores the whole configuration to what it was when this window
-opened: every row, every profile field, a measurement the Test button
-recorded, and the ~/.xschem/simrc file itself -- so a 'Reset to default'
-you change your mind about is put back on disk as well as in memory.
-The window manager's close button (X) is Cancel too.
-
-Editing a row's Exe, Args or -n DISCARDS that row's measurement, because a
-measurement belongs to the binary it was taken on. The Case menu drops back
-to offering fold alone until you press Test again.
+opened: every row and the ~/.xschem/simrc file itself -- so a 'Reset to
+default' you change your mind about is put back on disk as well as in
+memory. The window manager's close button (X) is Cancel too.
     } ro
   }
   button .sim.bottom.ok  -text {Accept, Save and Close} -command { simconf_accept 1 }
@@ -14270,7 +14259,55 @@ proc balloon_show {w arg pos} {
       set wmx [expr {[winfo pointerx $w] + 20}]
       set wmy [winfo pointery $w]
     }
-    wm geometry $top [winfo reqwidth $top.txt]x[winfo reqheight $top.txt]+$wmx+$wmy
+    ## ⚠ AND IT IS PULLED BACK ON TO THE SCREEN (issue 1368).  MEASURED on a
+    ## 1920x1080 display: the RDW's aA button sits at the foot of a button
+    ## column on the RIGHT-hand edge of its window, `winfo rootx` 1815, and its
+    ## 564 px tip anchored at the widget's left edge wanted to end at 2379 --
+    ## more than half of it off the screen, on a tooltip whose whole job is to
+    ## be read.  `pos 0` does not help: the pointer is in the same place.
+    ##
+    ## A tip that ALREADY FITS is not moved at all.  A tip that does not fit is
+    ## moved, and that is the point -- including at the two `pos 0` call sites
+    ## in the file browser (:9659 and :9674), whose tips are wide and multi-line.
+    ##
+    ## ⚠ AND A MOVED TIP MUST NOT LAND UNDER THE POINTER.  `balloon`'s own
+    ## <Leave> destroys the tip, so a tip that maps under the pointer is torn
+    ## down in the instant it appears and the <Enter> that follows re-arms it:
+    ## a tooltip that flickers forever and is never read.  MEASURED on :99 with
+    ## a first spelling of this clamp that slid every tip left: with the pointer
+    ## in the rightmost 564 px of a 1920 px screen a `pos 0` tip showed 25 times
+    ## in 1.5 s and was on screen for 2 samples out of 60; the same widget at
+    ## `pos 1`, where the anchor is the WIDGET and not the pointer, was fine.
+    ## So the two anchors are pulled back DIFFERENTLY: a widget-anchored tip
+    ## slides to the screen edge, a pointer-anchored one MIRRORS to the other
+    ## side of the pointer, and a final guard pushes any tip that still covers
+    ## the pointer clear of it.
+    ##
+    ## Vertically a widget-anchored tip FLIPS above the widget rather than
+    ## sliding, for the same reason.  Both axes are finally clamped to 0 -- a
+    ## NEGATIVE offset in a Tk geometry string means "from the far edge", so an
+    ## unclamped value would not merely be off-screen, it would be on the wrong
+    ## side of the display.  Reachable: a tip WIDER or TALLER than the screen.
+    ##
+    ## Fenced by rows FZ11 (the horizontal slide and the no-op), FZ17 (the flip
+    ## and both zero clamps) and FZ18 (the pointer guard) of
+    ## tests/headless/test_rdw_window_1245.tcl.
+    set _bw [winfo reqwidth $top.txt] ; set _bh [winfo reqheight $top.txt]
+    set _sw [winfo screenwidth $w]    ; set _sh [winfo screenheight $w]
+    set _px [winfo pointerx $w]       ; set _py [winfo pointery $w]
+    if {$wmx + $_bw > $_sw} {
+      if {$pos} { set wmx [expr {$_sw - $_bw}] } else { set wmx [expr {$_px - 20 - $_bw}] }
+    }
+    if {$wmy + $_bh > $_sh} {
+      if {$pos} { set wmy [expr {[winfo rooty $w] - $_bh}] } else { set wmy [expr {$_py - 20 - $_bh}] }
+    }
+    if {$wmx < 0} { set wmx 0 }
+    if {$wmy < 0} { set wmy 0 }
+    if {$_px >= $wmx && $_px < $wmx + $_bw && $_py >= $wmy && $_py < $wmy + $_bh} {
+      if {$_py - 20 - $_bh >= 0} { set wmy [expr {$_py - 20 - $_bh}] } \
+      elseif {$_py + 20 + $_bh <= $_sh} { set wmy [expr {$_py + 20}] }
+    }
+    wm geometry $top ${_bw}x${_bh}+$wmx+$wmy
     raise $top
 }
 
@@ -18673,6 +18710,19 @@ set_ne cadence_compat 0
 ## --script rc, so a later assignment here reaches nothing. See src/cadence_style_rc,
 ## which bumps it for the Cadence-style workarea.
 set_ne ciw_font_size 10
+## RDW text size, in points, for the Results Display Window's dump pane and its
+## bold block headers (issue 1368).  0 -- or anything outside rdw::font_limits --
+## means "follow TkFixedFont", so an ~/.xschem/xschemrc can pick the starting size
+## without knowing the window's internals.  Change it at runtime with
+## `rdw::set_font_size N`, or with the window's own aA button: plain click +1,
+## Ctrl+click -1.
+##
+## ⚠ THE TWO PANES USE PRIVATE NAMED FONTS (RdwPaneFont / RdwHdrFont, src/rdw.tcl)
+## AND NEVER TkFixedFont ITSELF.  Measured on this binary, a bare `text` widget's
+## default -font IS TkFixedFont, so resizing it would move the attribute editor,
+## the symbol-property editor, the text-input dialog, editpaths, the graph dialog,
+## the notify popup and the calculator buffer in the same breath.
+set_ne rdw_font_size 0
 # recent-files protection: the recent-views list ($USER_CONF_DIR/recent_files) belongs to the USER.
 # C sets no_recent_files=1 for a hard-gated automation session (--nogui or --pipe -- all test
 # harnesses -- or --norecent); those must never create/rewrite the file, so update below FORCES

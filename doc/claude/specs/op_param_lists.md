@@ -963,11 +963,15 @@ element-lettered — `@m.x1.x1.xm2.msky130_fd_pr__nfet_01v8_lvt`. Question Q6.
 >                                             string — what a user pastes into
 >                                             ngspice; invariant I1, B3 builds
 >                                             no @-name of its own, ever)
-> Not a complete list: these are the operating-point columns this run saved
-> for this device, not everything the device has.        <- tag note, DD-1's
+> Not everything the device has - only what this run saved.
+>                                                        <- tag note, DD-1's
 >                                                           corollary, only when
 >                                                           complete=0 AND state
 >                                                           ok AND union non-empty
+>                                                           (ISSUE 1374 cut this
+>                                                           from 121 chars; the
+>                                                           gate and the fact are
+>                                                           unchanged)
 >   @r.xr1.x0.rend1                        <- per-primitive sub-header, needed by
 >     i     : 1e-06                           D-3 (two primitives of one XR1 both
 >   @r.xr1.x0.rend2                           publish a parameter spelled `i`);
@@ -1221,6 +1225,39 @@ shipped editing action for cadence-profile users only. Question Q5.
 > and by the statement. Whether it SHOULD is issue **1357**, unratified. Five
 > new sentences, rule debt **1355**. Fenced by section **LX** and row **BT31**
 > of `test_rdw_window_1245.tcl` and section **LK** of `test_rdw_keys_1245.tcl`.
+
+> ✅ **ISSUE 1372, 2026-09-06 — ADD FROM LIST 3 NOW SUCCEEDS, AND THE OLD
+> REFUSAL'S STATED REASON WAS MEASURABLY FALSE.** The user: *"I put cursor on
+> cgs and the clicked Add button and said add to all mos … for summary list,
+> but, later, when I send summary list with 2 key, it never shows up."*
+> MEASURED end to end on their own `M18:/x1/x1` with the `ngspice-ver50`
+> registry live: **nothing downstream dropped it — nothing was ever written.**
+> `rdw::_find_triple` was the only source of a triple and looked in exactly
+> three places, all of which answered the same six sky130 rows because
+> `~/.xschem/op_param_lists.conf` owns none; `cgs` is not among the six, so the
+> Add was refused. Scale: list 3 offers **88 rows for M18 and Add was accepted
+> for 0 of them** — 82 "no declaration", 6 "already in the list" — on **both**
+> target lists. Order: the scope dialog was raised **before** the refusal was
+> computed, which is why the report reads *"it never shows up"* rather than
+> *"it refused"*. And the refusal's own reason (*a guessed kind writes a `.save`
+> card that matches nothing*) is **not true of this tree**:
+> `op_annot::_cards_for` emits `.save ${dev}[${param}]` and never reads the
+> kind — measured, a kind-0 row and a kind-1 row produce byte-identical cards.
+> **AS BUILT:** a fourth lookup, reached only when all three declared ones are
+> silent, reads the kind off the **vector name this run published**
+> (`rdw::_run_triple` → `ase::op_vector_for` → `op_annot::_kind_of_vector`, the
+> one inverse of `op_annot::_wrap`'s token.c table). Nothing is guessed: a
+> column the run does not name is still refused by name. The read is gated on
+> **sheet identity** (`rdw::_subject_devpath`, issue 1322's axis), so a block
+> dumped from another sheet mints nothing and says which sheet to go back to.
+> `rdw::_add_why` words the rule once and `rdw::button` asks it **before** the
+> dialog. **⚠ THE HAZARD THE OLD INVARIANT MISNAMED IS STILL LIVE AND IS THE
+> USER'S CALL:** an accepted row joins `_save_set`'s annotation+summary union
+> and therefore the next deck's `.save` cards — measured, `_cards_for M18` grew
+> 6 → 7 — and §3.2 / R5 say `show`'s catalogue is a superset of the savable set.
+> Rule debt **1372**. Fenced by rows **BT18** (rewritten, verdict reversed),
+> **BT33**, **BT34**, **BT35** and **BT36** of
+> `tests/headless/test_rdw_window_1245.tcl` (`RW_FLOOR` 173 → 177).
 
 > ✅ **ISSUE 1356, 2026-09-05 — THE BUTTONS ACT ON THE CURSOR ROW, AND THE
 > WINDOW SAYS SO.** The table above is silent about what a *selection* does, and
@@ -1646,6 +1683,67 @@ different facts with different remedies. Membership is asked of
 `ase::backend_names` **before** `ase::backend_hook` is called, so there is one
 source of truth rather than a parsed error string.
 
+**B8. The text size — the `aA` control (issue 1368).**
+
+The user's own words: *"add a button to allow user to manipulate font size in
+RDW. it can be the 'aa' button you see in e-readers - 2nd a bigger. Key part, as
+soon as user hovers over it, tooltip should be displayed : click to increase
+font one unit. Ctrl+click to decrease font one unit"*.
+
+`.rdw.b.fontsize`, at the foot of B7's column and **deliberately outside
+`rdw::_buttons`** — it is not a list action, it is never greyed, and an entry in
+that table would put "aA" into the chrome sentence *"only Up, Down, Delete, Add
+and Save do anything"*. Plain click `rdw::font_step 1`, `<Control-Button-1>`
+`rdw::font_step -1 ; break`. The hover goes through `balloon`, the tree's ONE
+tooltip mechanism, carrying the user's sentence verbatim.
+
+> ✅ **ISSUE 1368, 2026-09-06 — BUILT, AND BOTH ONE-LINERS WERE DEFECTS.**
+> `.rdw.p.t` was `-font TkFixedFont`, and MEASURED on this binary a bare `text`
+> widget's default `-font` **IS** `TkFixedFont` — so `font configure TkFixedFont
+> -size N` is a **global** font control wearing a window-local label, moving the
+> attribute editor, the symbol-property editor, the text-input dialog,
+> editpaths, the graph dialog, the notify popup and the calculator buffer in the
+> same click. The pane and the `hdr` tag now own **private** named fonts,
+> `RdwPaneFont` / `RdwHdrFont`, derived from `font configure TkFixedFont` so the
+> family (monospace — the dumps are column-aligned with spaces) and any pixel
+> spelling are inherited. And the `hdr` tag was `font actual TkFixedFont`, a
+> font **description** and not a **name**: a FROZEN SNAPSHOT, measured at
+> linespace 17 while the pane had moved to 27, so every block header would have
+> stayed small while its body grew.
+>
+> **The model is the integer, never the font**: `font actual <f> -size` answers
+> POINTS for a font spelled in PIXELS (measured, `-14` → `10`), so a control
+> that increments what it reads back changes the user's units on the first
+> click. `::rdw_font_size` (`set_ne … 0` in `xschem.tcl`, the rc door) is the
+> record; `rdw::font_limits` is the band `{6 32}` in one place;
+> `rdw::_accept_size` **refuses** rather than clamps, which is also what keeps
+> `-size 0` — a LIVE value meaning "system default", measured at 12 here —
+> unreachable; `rdw::font_step` is the one arithmetic door and is **silent on
+> the accepted path**, speaking only at the two limits.
+>
+> **The pane is sized in CHARACTER units**, so `rdw::_apply_font` recomputes
+> `-width`/`-height` from the new metrics in the same breath as the font.
+> Without that, one step to size 20 measured `893x498+1025+557` →
+> `1757x914+161+141` — nearly the whole screen, re-placed by the window manager,
+> and it happens at OPEN time for a window built at a chosen size.
+>
+> **What does NOT follow the size**: the status line (`-font TkTextFont`), the
+> chrome label and the button labels keep the platform UI font. The pane is the
+> artifact the user pastes into a design review (ruling **DD-5**); the rest is
+> furniture whose scaling fights `rdw::_status_refit`, whose whole design (issue
+> **1362**) is "ask the widget, never a font constant". Arguable, and a pixel
+> question — rule debt **1368**, with the band and the button's placement.
+>
+> Persistence across a close and a reopen is free and is fenced; persistence
+> across SESSIONS is deliberately **not** shipped — the tree's own precedent
+> (`net_hilight_style`, `xschem.tcl:689-731`) writes that kind of preference
+> only on an explicit Save, "because it could change appearance in the user's
+> OTHER projects". Rule debt **1368**.
+>
+> Fenced by section **FZ** (FZ1..FZ11) of `test_rdw_window_1245.tcl`, ten
+> sabotages, `RW_FLOOR` 168 → 172. Pure Tcl: no new file, so the issue **0424**
+> Makefile trap does not apply.
+
 ### 4.3 The class map
 
 §3.4 says `nmos` and `pmos` are separate tokens and the resistor spelling
@@ -1695,6 +1793,52 @@ override that wins when present.**
 > **⚠ `apply` GATES ON THIS MAP AND SO CANNOT REACH AN UNMAPPED TOKEN** — the
 > identity fallback works for `class` and `effective` and fails for `apply`,
 > leaving a stored, correct, **invisible** list. Issue **1279**, not fixed.
+
+#### 4.3.1 The class **key** and the class **display name** are two things (issue 1373)
+
+The right-hand side of the map above is the store's **primary key**. It indexes
+`lists`, `owned` and `warned`; `_flavor_matches_class` compares it with `eq`;
+and it is a **field the user types by hand** into `op_param_lists.conf`
+(`list class mos annotation`, `param class mos …`, `class nmos mos`). It is
+therefore **case-sensitive and immovable**: measured, `get_list class MOS
+annotation` is empty and `governs MOS annotation foo.sym` answers nothing.
+
+This spec has written **MOS** in prose since §2.2 and §3.4 while the
+implementation printed `mos` at every user-facing surface — the user's own
+report, verbatim: *"said add to all mos (why is that not uppercase? MOS is an
+acronym!)"*. So there is a second concept, and it is **display only**:
+
+* **`op_param_lists::class_label <class-key>`** is the ONE accessor. Table
+  lookup with an **identity fallthrough**, exactly like `class` above, so a key
+  the table has never heard of prints as itself rather than being mangled.
+* It ships `mos → MOS`, `npn → NPN`, `pnp → PNP`, `esd → ESD` and **nothing
+  else**. The rule is the user's — *acronyms upper case* — not *everything
+  upper case*: `class`'s identity fallthrough really does mint
+  `pwell_resistor`, `high_precision_p` and `subcircuit` from shipped `type=`
+  tokens, and a blind `string toupper` would shout all three. `resistor`,
+  `capacitor`, `diode` and `bipolar` are already their own human spelling and
+  reach the reader through the same identity return an unmapped key takes.
+  `set_class_label` is the rc extension door, matching `set_class`.
+* **It lives in the store, and there is no `rdw::` wrapper.** This file may not
+  call `rdw::` (source-time purity, §5), so an accessor over there could never
+  be reached by the store's own sentences — and a second copy is the
+  two-wordings drift `rdw::_list_name` exists to prevent. Every one of the
+  fifteen class interpolations in `rdw.tcl` calls this one proc.
+* **Where it must NOT be used**: any message that prints the class as a
+  *settings-file field the user types back* — `_dup_why`, `_key_why`,
+  `set_list`'s key reports, `seed`'s divergence report (which names the type
+  tokens beside it), and the parser's reports. A user who reads `MOS` there and
+  writes `list class MOS annotation` gets a silently dead entry. `MOS` has no
+  space, so unlike a two-word gloss it *looks* like a key; that is the whole
+  hazard.
+
+Fenced by rows CL1–CL5 of `test_op_param_store_1245.tcl` and CL6–CL10 of
+`test_rdw_window_1245.tcl`. The wrong-direction fix — routing a key-shaped
+store message through the accessor — reds the pre-existing row RD4.
+
+**Unratified, on rule debt 1373:** whether the table should also carry prose
+for the snake_case sky130 keys (`pwell_resistor` → "p-well resistor" and
+friends), and whether `bipolar` should read **BJT**.
 
 ### 4.4 The settings file
 
@@ -2635,10 +2779,33 @@ Still open:
     ⚠ **And the obvious fix is wrong.** `[string match .rdw* [focus]]` — the
     predicate issue 1306's own "Recommended fix" prints — matches the
     **descendant** as readily as the toplevel, so the click is still bounced;
-    measured 3/3 on both arms by three independent agents. **The discriminator
-    is the one the WM supplies: the map-time grant lands on the TOPLEVEL, every
-    deliberate landing lands on a CHILD.** Test exact equality, and keep
-    `string match` out of the proc with a structural row.
+    measured 3/3 on both arms by three independent agents.
+    ⚠ **AND SO IS THE FIX THAT REPLACED IT — CORRECTED 2026-09-06 BY ISSUE
+    1369.** "The map-time grant lands on the TOPLEVEL, every deliberate landing
+    lands on a CHILD" is true **only until the user's first click in the
+    window**. Tk keeps a focus record **per toplevel**: once any child has held
+    the Tk focus, every later grant is resolved by Tk to that child, and the
+    toplevel sees the grant as a `FocusIn` with detail `NotifyVirtual` while
+    `[focus]` already reads the child. Measured under openbox in a minimal
+    two-toplevel program: clean record → `NotifyAncestor`, `[focus]` = the
+    toplevel; after one click in a `-state disabled` text pane → `NotifyVirtual`,
+    `[focus]` = the pane. So an **exact equality declines the grant for ever**
+    after one ordinary click, which is issue 1369. The landing test is
+    `winfo toplevel` — *did the keyboard land IN this window* — and the
+    discriminator that tells the user's own click from the grant is the
+    **`<ButtonPress>` on the toplevel tag**, not the landing at all. Both event
+    orders are measured, the second through XTEST so a real click-to-focus WM's
+    passive grab is involved: on Tk's own path the press runs before the queued
+    `FocusIn` (the disarm wins); on a real WM the `FocusIn` arrives **first** and
+    the click still wins, because `tk::TextButton1`'s own `focus $w` takes the
+    keyboard straight back. Keep `string match` out of the proc with a
+    structural row.
+    ⚠ **AND `-state disabled` DOES NOT KEEP A `text` OUT OF THE FOCUS.**
+    `tk::TextButton1` calls `focus $w` unconditionally
+    (`/usr/share/tcltk/tk8.6/text.tcl:579`); only `tk::EntryButton1` checks for
+    `disabled` (`entry.tcl:356`). `-takefocus 0` does not stop it either — that
+    governs Tab traversal. Two widgets in the Results window take the keyboard
+    on a press, and a comment in `rdw.tcl` said neither did.
 21. **A RECOMMENDED FIX IN AN ISSUE FILE IS A HYPOTHESIS, NOT A MEASUREMENT**
     (item B4-3, 2026-09-04). Issue 1306's option (a) was reasoned correctly —
     *decide on where the keyboard landed, not on which window named the event* —

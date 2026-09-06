@@ -747,6 +747,114 @@ check {M3 the map is EXTENDABLE and OVERRIDABLE, not a switch: `class` carries n
   [list 0 1 {diode widget} 1 1 {diode widget mos diode}]
 
 # ============================================================================
+# SECTION CL — ISSUE 1373: THE DISPLAY NAME OF A CLASS, AND WHY IT IS NOT THE
+# KEY SHOUTED
+# ============================================================================
+# The user, on their own M18: "said add to all mos (why is that not uppercase?
+# MOS is an acronym!)". Every surface of the Results Display Window
+# interpolated `$cls` — THIS store's primary key — straight into prose, so the
+# radiobutton read `every device of class mos`. `op_param_lists::class_label`
+# is the ONE accessor that answers the human spelling, and it lives here rather
+# than in rdw.tcl for a reason section M already states one concept over: this
+# file may not call `rdw::` (source-time purity, row J4), so an accessor over
+# there could never be reached by the store's own sentences — and a second copy
+# is the two-wordings drift `rdw::_list_name` was written to stop.
+#
+# ⚠ THE KEY DOES NOT MOVE, AND ROW CL3 IS WHY THAT MATTERS RATHER THAN BEING A
+# STYLE NOTE. A class key indexes `lists`, `owned` and `warned`, is compared
+# with `eq` by `_flavor_matches_class`, and is a FIELD THE USER TYPES into a
+# settings file (`list class mos annotation`). `MOS` has no space, so unlike a
+# two-word gloss it LOOKS like a key — and a user who reads "the MOS annotation
+# list" and writes `list class MOS annotation` gets a silently dead entry.
+#
+# ⚠ AND IT IS A TABLE, NOT `string toupper` — row CL4. The identity
+# fallthrough of `class` (row M2) mints `pwell_resistor`, `high_precision_p`
+# and `subcircuit` from any PDK's `type=` tokens; shouting those would be a
+# second defect wearing the first one's fix. The user's rule is "acronyms upper
+# case", not "everything upper case".
+#
+# ⚠ THE STORE'S OWN KEY-SHAPED MESSAGES ARE DELIBERATELY NOT ROUTED, and row
+# RD4 below already golds one of them (`a second entry for label "id" in class
+# mos annotation`) in the key's own spelling. `_dup_why`, `_key_why`,
+# `set_list`'s key reports, `seed`'s divergence report and the parser's reports
+# all print the class as a settings-file field the user types back; a reader who
+# "fixes" that inconsistency in the wrong direction reds RD4.
+ol_reset
+set CL1_SHIPPED {}
+foreach _c {mos resistor capacitor diode bipolar} {
+  lappend CL1_SHIPPED [ol_ans ::op_param_lists::class_label $_c]
+}
+check {CL1 THE USER'S OWN COMPLAINT, ANSWERED: `mos` reads MOS, and the other four classes the shipped classmap's right-hand side really carries are already their own human spelling and come back UNTOUCHED through the same identity return an unmapped key takes — the table lists only rows whose display differs from the key} \
+  $CL1_SHIPPED {MOS resistor capacitor diode bipolar}
+
+set CL2_ACR {}
+foreach _c {npn pnp esd} { lappend CL2_ACR [ol_ans ::op_param_lists::class_label $_c] }
+set CL2_ID {}
+## ⚠ ONE LINE, DELIBERATELY. A wrapped braced literal carries the newline into
+## its own string representation, so the expected value would never compare
+## equal to the list the loop below rebuilds.
+set CL2_IDK {varactor inductor subcircuit pwell_resistor p_diffusion_resistor n_diffusion_resistor high_precision_p 2N3906 zzz_no_such_class {}}
+foreach _c $CL2_IDK { lappend CL2_ID [ol_ans ::op_param_lists::class_label $_c] }
+check {CL2 THE RULE IS "ACRONYMS UPPER CASE", NOT "EVERYTHING UPPER CASE": the three acronym class keys the identity fallthrough really mints on the shipped sky130 and IHP trees read NPN, PNP and ESD, while every snake_case and part-number key it also mints — and an unmapped key, and the empty string — comes back BYTE-IDENTICAL, neither shouted nor mangled} \
+  [list $CL2_ACR $CL2_ID] [list {NPN PNP ESD} $CL2_IDK]
+
+## THE FENCE THE USER'S DATA DEPENDS ON. The display name is not a key: writing
+## it into a settings file must not silently adopt the list.
+ol_reset
+set CL3_W  [ol_ans ::op_param_lists::set_list class mos annotation {{gm gm 1}}]
+set CL3_D  [ol_ans ::op_param_lists::class_label mos]
+check {CL3 `class_label` NEVER RENAMES ANYTHING: after a real write at `class mos`, the store still answers that list under the KEY and answers NOTHING under the display name — `get_list` empty, `owns` 0, `governs` silent — because keys are compared with `eq`, so a fix that had renamed the key would have killed every `list class mos annotation` row a user has already typed} \
+  [list $CL3_W $CL3_D \
+        [ol_ans ::op_param_lists::get_list class mos annotation] \
+        [ol_ans ::op_param_lists::owns class mos annotation] \
+        [ol_ans ::op_param_lists::get_list class $CL3_D annotation] \
+        [ol_ans ::op_param_lists::owns class $CL3_D annotation] \
+        [ol_ans ::op_param_lists::governs mos annotation foo.sym] \
+        [ol_ans ::op_param_lists::governs $CL3_D annotation foo.sym]] \
+  [list 1 MOS {{gm gm 1}} 1 {} 0 {class mos} {}]
+
+## SOURCE-TIME PURITY AND THE ANTI-`toupper` FENCE, IN ONE ROW. The table is a
+## LITERAL namespace variable guarded exactly as `classmap` is (row J4's
+## contract), and the accessor's body carries no case-folding command at all —
+## which is what stops the obvious wrong fix from being reintroduced by a later
+## reader who sees `MOS` and reaches for the one-liner.
+set CL4_RC1 NOFILE ; set CL4_RC2 NOFILE ; set CL4_A {} ; set CL4_B {}
+if {[file isfile $OL_TCL]} {
+  catch {interp delete ol_cl4}
+  interp create ol_cl4
+  set CL4_RC1 [catch {ol_cl4 eval [list source $OL_TCL]} CL4_E1]
+  set CL4_A [ol_cl4 eval {::op_param_lists::class_label mos}]
+  ## a user's own override must survive a SECOND source of the file
+  ol_cl4 eval {::op_param_lists::set_class_label mos {metal-oxide}}
+  set CL4_RC2 [catch {ol_cl4 eval [list source $OL_TCL]} CL4_E2]
+  set CL4_B [ol_cl4 eval {::op_param_lists::class_label mos}]
+  interp delete ol_cl4
+}
+set CL4_BODY [ol_body ::op_param_lists::class_label]
+check {CL4 THE TABLE IS DATA AND THE ACCESSOR IS PURE: it answers inside a BARE Tcl interpreter with no xschem command, a second source does not reset an override the way an unguarded `array set` would, and the body carries no `string toupper`, `string totitle` or `string map` — the blind case fold is the wrong fix this row exists to keep out} \
+  [list $CL4_RC1 $CL4_A $CL4_RC2 $CL4_B \
+        [ol_count $CL4_BODY {toupper}] [ol_count $CL4_BODY {totitle}] \
+        [ol_count $CL4_BODY {string map}] [ol_count $CL4_BODY {switch}]] \
+  [list 0 MOS 0 {metal-oxide} 0 0 0 0]
+
+## THE EXTENSION DOOR, matching `set_class` (row M3): a PDK whose class keys
+## this table has never heard of gets in from an rc, and the two tables stay
+## separate — a display name is not a classification and must not become one.
+## ⚠ THE KEY IS ONE THIS SUITE NEVER READS AGAIN. There is no `unset` door,
+## so a row that overrode a REAL class key would leave the override standing
+## for every later row in the file.
+ol_reset
+set CL5_SET [ol_ans ::op_param_lists::set_class_label cl5_gan_hemt {GaN HEMT}]
+check {CL5 the display table is EXTENDABLE from an rc and is a SECOND table, not a second classification: naming a display for a class key this build has never heard of changes what a person reads, leaves `class` — the token-to-class map — untouched for that same token, does not disturb the shipped rows, and marks nothing dirty, because a display name is not a settings-file row for the writer to round-trip} \
+  [list $CL5_SET [ol_ans ::op_param_lists::class_label cl5_gan_hemt] \
+        [ol_ans ::op_param_lists::class cl5_gan_hemt] \
+        [ol_ans ::op_param_lists::class_label mos] \
+        [ol_ans ::op_param_lists::class_label resistor] \
+        [ol_count [ol_body ::op_param_lists::set_class_label] {_mark_dirty}]] \
+  [list {GaN HEMT} {GaN HEMT} cl5_gan_hemt MOS resistor 0]
+ol_reset
+
+# ============================================================================
 # SECTION S — THE PDK SEED (D-7), AND THE THREE MEASUREMENTS
 # ============================================================================
 # The registry is EMPTY at a bare headless launch: descriptors arrive when a
@@ -2835,6 +2943,16 @@ proc ol_index_of {lst param} {
 }
 ## Add consults the two effective lists and THEN the seed, and refuses when all
 ## three are silent — ruling D-4: it will not guess a raw-name shape.
+## ⚠ AND THAT IS STILL THE WHOLE OF THE MODEL THIS COPY REDUCES, AFTER ISSUE
+## 1372.  The shipped `rdw::_find_triple` grew a FOURTH lookup: when all three
+## declared sources are silent it may read the kind off the vector name THIS
+## RUN published (`rdw::_run_triple` -> `ase::op_vector_for` ->
+## `op_annot::_kind_of_vector`).  It is reached only through an optional
+## `devpath` argument that this copy passes none of, and there is no raw loaded
+## here in any case, so every row below measures exactly the three declared
+## lookups it always did.  The mint is fenced where it lives, in section BT of
+## tests/headless/test_rdw_window_1245.tcl (rows BT18, BT33, BT34, BT35, BT36).
+## It is still not a GUESS: an unmeasurable shape is still refused by name.
 proc ol_find_triple {cls param} {
   foreach ln {annotation summary} {
     set t [ol_triple_in [ol_ans ::op_param_lists::effective $cls $ln] $param]
@@ -4360,10 +4478,16 @@ check {BE3 the row Delete removed is still SAVED and still COMPUTED: _cards_for 
 ## four halves must hold: the deck still asks for `gds`, `params` still carries
 ## it, `seed` is byte-identical to what the PDK registered, and Add is ACCEPTED.
 ##
-## ⚠ Add finds its triple through `_find_triple`, whose LAST fallback is
+## ⚠ Add finds its triple through `_find_triple`, whose last DECLARED lookup is
 ## `seed $cls`. Neither list names `gds` any more, so this Add reaches the
 ## declaration and nothing else -- which is precisely why it is the fence for
 ## DD-13 and not merely for Add.
+## ⚠ AND ISSUE 1372's FOURTH LOOKUP CANNOT REACH THIS ROW, WHICH IS WHY IT DID
+## NOT MOVE.  `rdw::_run_triple` runs only when all three declared sources are
+## silent; the declaration answers here, so it wins as it always did.  This row
+## would keep its verdict even if it did run -- no raw is loaded in this suite
+## and `ase::op_vector_for` catches the raise -- but the reason the row is
+## still a DD-13 fence is the ORDER, not the absence of a database.
 set ::be_dlg_answer {scope broad list summary}
 ol_ans ::rdw::set_list summary
 ol_ans ::rdw::set_row 11
@@ -4802,11 +4926,21 @@ check {H1 HYGIENE the suite creates no untitled* anywhere and no .xschem directo
 #
 # 114 (HEAD 59ef24af) + 13 (item B5's preserved button-column rows, sections BG
 # and BE) + 3 (item B5-3's section DL) = 130.
+#
+# ⚠ AND RAISED 130 -> 135 BY ISSUE 1373, IN THE SAME COMMIT AS SECTION CL's
+# FIVE ROWS: CL1 (the user's own complaint — `mos` reads MOS while the other
+# four classmap classes come back untouched), CL2 (acronyms upper case, and
+# every snake_case / part-number / unmapped key byte-identical), CL3 (the fence
+# the user's data depends on: after a real write at `class mos` the store
+# answers NOTHING under the display name, so the accessor renamed no key), CL4
+# (source-time purity plus the anti-`string toupper` fence) and CL5 (the rc
+# extension door, and the two tables staying two). All five run on BOTH arms.
+# A floor is raised when rows are added and NEVER lowered to make a run pass.
 ## Issue 1345: put the reader's own precision back before the verdict.
 if {$OL_EVP_SAVE eq {NOVAR}} { catch {unset ::ev_precision} } \
 else { set ::ev_precision $OL_EVP_SAVE }
 
-set OL_FLOOR 130
+set OL_FLOOR 135
 set OL_RAN [expr {$npass + $fail}]
 if {$OL_RAN < $OL_FLOOR} {
   puts "FAIL: OLFLOOR the suite ran only $OL_RAN checks, below its floor of\

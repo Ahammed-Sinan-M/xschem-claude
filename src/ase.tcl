@@ -120,6 +120,29 @@ namespace eval ase {
   # session_update/save/load/revert. Default {} (headless: nothing runs);
   # ase::ui (ase_window.tcl) points it at its title-refresh handler.
   variable session_notify {}
+  # THE SECOND NOTIFY SEAM, AND IT IS ABOUT THE REGISTRY, NOT A SESSION (issue
+  # 1370, found by that item's adversary). Command prefix invoked with NO
+  # arguments after every gesture that changes which program a run would start
+  # -- register, unregister, select, clear. Default {} (headless: nothing
+  # runs); ase::ui points it at ase::ui::refresh_status_all.
+  #
+  # WHY IT EXISTS. The bottom bar's `Simulator:` segment names what will run,
+  # and 1370 hung its refresh off ase::ui::simdlg_fill alone. That covers all
+  # five gestures of the Simulators DIALOG and nothing else -- and the registry
+  # is reachable without the dialog: `ase::sim_register <name> <path>` followed
+  # by `ase::sim_select <name>` typed into the CIW is the pre-0937 path, and is
+  # how this user's own ngspice-ver50 entry was first created. Measured live
+  # with a window open on `Simulator: ngspice-ver50`: registering and selecting
+  # a second entry left the bar reading `ngspice-ver50` while ase::sim_label
+  # already answered the new name, so the bar was naming a simulator that would
+  # NOT run -- the exact class the user's rule forbids -- until the next
+  # session update healed it, or until the run itself did, which is the moment
+  # the bar was supposed to PREDICT.
+  #
+  # KEYED ON NOTHING, deliberately: the registry is process-global while a
+  # session key is per-window, so the one thing this can say is "it changed",
+  # and every open window has to be told.
+  variable sim_notify {}
 }
 
 # --- the user-visible-message seam (issue 0207) ------------------------------
@@ -699,6 +722,49 @@ proc ase::sim_plural {n one many} {
   return $many
 }
 
+# `run_using` (issue 1370) IS THE ONLY KIND HERE THAT IS NOT ABOUT A PROBLEM,
+# and it exists because the user could not answer "which version of ngspice did
+# the most recent run use?" from anything they read. Measured on their own
+# /tmp/Xschem.log.8: 16 `ase:` lines, six completed runs, fourteen occurrences
+# of the word "simulator" -- and ZERO occurrences of `ngspice-ver50` or of the
+# build directory it points at. It names BOTH halves on purpose, the entry the
+# user typed and the program it resolves to, because the entry alone is what
+# they already know and the program alone is what the ASE run log's `command :`
+# line already carried, one line under a `simulator : ngspice` that contradicted
+# it. Said once per run, from ase::run_using_report.
+# THE `casemode_` KINDS (issue 1371) ARE ABOUT A PROGRAM, so they name
+# the file and never the entry -- the same location-first rule the 0948 kinds
+# follow, and for the same reason: a user with three builds registered needs to
+# know which file was tried, and the entry's name is already in the field above
+# the sentence. They exist because the row editor's Case chooser must say what
+# it knows and how the user changes it, and a dialog that composed its own
+# wording for that would be ruling D5-4's defect. `casemode_measured` has two
+# arms because an empty measured set is a REAL answer -- a probe that completed
+# and recognised nothing (see the two-empties note on
+# ase::sim_casemode_selectable) -- and "can hand net names back these ways: ."
+# is not a sentence.
+#
+# THE SIX EXTRA KINDS ARE THE ITEM'S OWN REFUTATION, and each one is a state
+# that was MEASURED reaching the user as `casemode_unmeasured` -- "has not been
+# tried yet ... press Detect to try it" -- immediately after they pressed
+# Detect. Measured through the real button on 2026-09-06:
+#
+#   a program that exists, is executable and ANSWERED the probe but published
+#     no casemode key (`known 1 usable 0 ...`, i.e. every executable that is
+#     not an ngspice)                                       -> casemode_nokey
+#   a program whose file has gone, while the SAME dialog's Problem column two
+#     widgets away carried the correct sentence           -> casemode_noprogram
+#   a backend with no probe hook at all                     -> casemode_noprobe
+#   a program that was still running when the budget ran out (the user has just
+#     waited up to 31.2 s for this)                          -> casemode_slow
+#   a simulation folder nothing can be written into (issue 0949's category
+#     error, which is about the FOLDER)                    -> casemode_noplace
+#   Detect pressed with the Program field empty, which printed two sentences
+#     with no subject and a leading space                   -> casemode_nopath
+#
+# A false claim plus an instruction to press the button that was just pressed
+# is worse than silence, and `casemode_unmeasured` now means only what it says:
+# nobody has asked yet. ase::casemode_status is the proc that may still say it.
 proc ase::sim_why {kind name path {extra {}}} {
   switch -- $kind {
     empty_path {
@@ -755,6 +821,9 @@ proc ase::sim_why {kind name path {extra {}}} {
     path_in_force {
       return "You have not picked a simulator of your own, so xschem will start the program named $name that your system finds on your PATH. Add one to the list, or pick one that is already on it, if you would rather run a build of your own."
     }
+    run_using {
+      return "This run is starting the simulator you named $name, and the program it is running is $path."
+    }
     cap_no_append {
       return "$path, which is the program that will run your simulation, keeps only the last analysis of a run and throws the earlier ones away as it goes. Your run has more than one analysis in it, so everything but the last one would be lost. Run one analysis at a time, or use a build that adds each analysis to the results file."
     }
@@ -763,6 +832,41 @@ proc ase::sim_why {kind name path {extra {}}} {
     }
     cap_no_answer {
       return "$path, which is the program the simulator you picked will start, was given a tiny test circuit to try and had still not finished with it after $extra seconds, so there was no way to find out what it can do. It may simply be slow to start. Your run is going ahead anyway, and this will be tried again the next time you press Run."
+    }
+    casemode_measuring {
+      return "Trying $path now, to find out which spellings of a net name it can hand back."
+    }
+    casemode_measured {
+      if {[llength $extra]} {
+        return "$path can hand net names back these ways: [join $extra {, }]."
+      }
+      return "$path was tried, and it handed net names back in none of the ways this window can offer."
+    }
+    casemode_unmeasured {
+      return "$path has not been tried yet, so fold is all that can be offered; press Detect to try it."
+    }
+    casemode_nokey {
+      return "$path was tried, but it did not say which spellings of a net name it can hand back, so fold is all that can be offered."
+    }
+    casemode_noprogram {
+      switch -- $extra {
+        notfile { set what "$path is a folder, not a program" }
+        notexec { set what "$path is not marked as a program you can run" }
+        default { set what "there is no file at $path" }
+      }
+      return "Nothing was tried: $what."
+    }
+    casemode_noprobe {
+      return "xschem has no way to try $path, so fold is all that can be offered."
+    }
+    casemode_slow {
+      return "$path was still not finished with a tiny test circuit after $extra seconds, so there was no way to find out which spellings of a net name it can hand back."
+    }
+    casemode_noplace {
+      return "$path could not be tried, because there was nowhere to write a test result. Check that the simulation folder can be written to."
+    }
+    casemode_nopath {
+      return "Type the location of a program in the Program field, then press Detect."
     }
     op_tier_blanket {
       return "Your simulator can hand back all of one device's operating-point numbers in a single request, so this run asked once per device instead of once per number. The requests are made just before the operating point and nowhere else, so nothing is recorded at every step of a transient that happens to be in the same run."
@@ -1028,6 +1132,24 @@ proc ase::sim_entry_why {name} {
   return [ase::sim_why $kind $name $p]
 }
 
+# Fire the registry notify seam (issue 1370's repair). Called by every gesture
+# that changes which program a run would start, AFTER the change has landed and
+# after anything that gesture had to say, so a hook that reads the registry
+# back sees the new answer and a hook that reads ase::sim_said sees the words.
+#
+# ⚠ GUARDED, for ase::session_notify_fire's reason, and here the reason is
+# sharper: these mutators are called from ase::sim_conf_load at startup, once
+# per line of the user's ~/.xschem/ase_simulators, and from every suite's reset.
+# A broken GUI hook must never cost a user their simulator list at startup or
+# abort a registration that has already happened.
+proc ase::sim_notify_fire {} {
+  variable sim_notify
+  if {$sim_notify ne {}} {
+    catch {uplevel #0 $sim_notify}
+  }
+  return {}
+}
+
 # Register simulator `name` at `path`. Options: -args <extra argv list>,
 # -backend <backend name, or empty for any>.
 #
@@ -1172,6 +1294,10 @@ proc ase::sim_register {name path args} {
   # re-implemented there. Row D12 of tests/headless/test_ase_simcaps_0948.tcl
   # reddens on that placement, which no behavioural row can see.
   ase::sim_caps_clear
+  ## 1370's repair: and every open bottom bar follows, because this proc is the
+  ## OTHER door onto the registry -- the Command window one, which the dialog's
+  ## own refresh cannot see.
+  ase::sim_notify_fire
   return [expr {$kind eq {} ? 1 : 0}]
 }
 
@@ -1229,6 +1355,7 @@ proc ase::sim_unregister {name} {
   # the list can change which program will start, so what was remembered about
   # the old one must not be served about the new one.
   ase::sim_caps_clear
+  ase::sim_notify_fire
   # NOT the sentence. Every caller here tests this as a boolean, and row E13
   # pins it at 1 for a removal that also had two things to say.
   return 1
@@ -1248,16 +1375,36 @@ proc ase::sim_list {{backend {}}} {
   return $out
 }
 
+# ONE REGISTERED ENTRY BY NAME, or {} when nothing is registered under that
+# name (issue 1371).
+#
+# ase::sim_status answers about the entry IN FORCE. That is the wrong question
+# for a dialog, which is editing whichever row the user clicked -- measured on
+# this tree: with two entries registered and the second one selected, every
+# accessor keyed on the resolver answered about the second while the row editor
+# was showing the first. Before this proc both ase::ui::simdlg_editor and
+# ase::ui::simdlg_ok hand-rolled the same `foreach e [ase::sim_list]` walk, so
+# the window file carried two copies of a lookup that belongs here.
+#
+# {} IS A REAL ANSWER and every caller must test for it: the Add flavour of the
+# row editor is exactly a name nobody has registered.
+proc ase::sim_entry {name} {
+  variable simulators
+  if {$name eq {} || ![dict exists $simulators $name]} { return {} }
+  return [dict get $simulators $name]
+}
+
 # Put one registered simulator in force. An empty name clears the choice,
 # which puts the program on the PATH back in charge.
 proc ase::sim_select {name} {
   variable simulators
   variable sim_use
-  if {$name eq {}} { set sim_use {} ; return {} }
+  if {$name eq {}} { set sim_use {} ; ase::sim_notify_fire ; return {} }
   if {![dict exists $simulators $name]} {
     return -code error "ase: [ase::sim_why noentry $name {} [dict keys $simulators]]"
   }
   set sim_use $name
+  ase::sim_notify_fire
   return $name
 }
 
@@ -1281,6 +1428,7 @@ proc ase::sim_clear {} {
   # and then reads back what one later gesture said would otherwise get every
   # sentence from before the clear glued in front of it.
   set sim_said {}
+  ase::sim_notify_fire
   return 1
 }
 
@@ -1371,6 +1519,99 @@ proc ase::sim_exe {backend} {
   return [dict get $s exe]
 }
 
+# WHAT TO CALL THE SIMULATOR ON A ONE-LINE SURFACE (issue 1370). The ASE-L
+# bottom bar's `Simulator:` segment used to render `[ase::state_get $st
+# simulator]` -- the state's BACKEND word, which is the schema default
+# `ngspice` written once in ase::state_default and never touched by the
+# registry. Measured on a live .ase4 window with a registered `ngspice-ver50`
+# in force: the bar read `Simulator: ngspice` with the entry selected, with the
+# choice cleared, and with it re-selected -- three different registry states,
+# one byte-identical bar. The user's words: "If user has designated
+# (registered) a new instance of ngspice named ngspice-ver50, and the 'use this
+# one:' field shows that, then the status bar in ASE-L should show that."
+#
+# THE NAME IS THE REGISTRY ENTRY'S, NOT ase::sim_use's. `entry` is what the
+# resolver says ANSWERED, and it is deliberately empty in the ghost arm (a
+# choice naming an entry nobody registered, pinned by row D2 of
+# tests/headless/test_ase_simreg_0931.tcl), where the run falls to the PATH
+# program. Printing the ghost's name there would put a name on the bar for a
+# simulator that does not exist -- the one thing this segment must never do.
+#
+# ⚠ THE "WILL IT RUN" TEST IS FOUR TERMS AND EVERY ONE OF THEM IS
+# LOAD-BEARING. `ok` alone is NOT the discriminator, because the PATH arm never
+# validates anything: measured with an empty PATH and nothing registered,
+# ase::sim_status answers `ok 1` with `resolved` EMPTY, and ase::run_profile
+# packages that as `status ok`. So:
+#   ok        the user's own choice can be honoured
+#   resolved  something was actually located -- the resolver's own header says
+#             this "is the field a caller asking 'is a simulator available'
+#             wants"
+#   backend   the state's simulator word is one ase::backend_hook can serve.
+#             Catches a state whose `simulator` is `spectre` (no hooks, and
+#             ase::run_deck raises on it), a generic entry answering for such a
+#             backend, and the empty-`simulator` state -- where sim_status
+#             cheerfully answers `entry ngspice-ver50` about a state
+#             ase::run_deck refuses with "state has no simulator".
+#   composes  and the backend's own `run_cmd` really BUILDS its command from
+#             this registry. THE FOURTH TERM WAS ADDED BY 1370'S ADVERSARY and
+#             it closes a latent FALSE NAME, not a live one: today
+#             ase::backend_names answers `{ngspice}` and ngspice is the one
+#             backend that composes from the registry, so `known` and
+#             `composes` coincide and no arm moves. Register a SECOND backend
+#             with its own hardcoded run_cmd (the shape
+#             ase::run_composes_registry exists to detect -- test_ase_core E2
+#             is one) and a GENERIC entry beside it (`-backend {}`, which is
+#             exactly how this user's own ngspice-ver50 is registered), and the
+#             first three terms all answer yes about a run that starts the
+#             OTHER backend's hardcoded binary. The bar would then print the
+#             entry's name for a program that is not going to start, which is
+#             the one thing the user's rule forbids. The nine-row state table
+#             in doc/claude/issues/1370-*.md gets its sibling case right only
+#             because `spectre` has no hooks at all, which hid this rather
+#             than closed it.
+#
+# ⚠ AND A NAME IS ALWAYS PRINTED. `who` falls back to the backend word, and the
+# backend word can itself be empty -- a state whose `simulator` key is missing,
+# which ase::sim_label is called with directly (row L6). Before this fallback
+# the bar rendered `Simulator:  — will not run`: a marker with no name and a
+# double space where the name should be, which is byte for byte the shape row
+# Z8 of tests/headless/test_ase_optier_0963.tcl exists to forbid of a sentence.
+# `(none)` is the same spelling ase::ui::simdlg_none_label already uses in the
+# dialog's own combobox, so the two surfaces name an absence the same way.
+#
+# NEVER RAISES, for ase::sim_named_path's reason: this feeds a label that is
+# redrawn on every session update, and a status bar is no place to discover a
+# stack trace.
+#
+# THE MARKER IS A LABEL, NOT A SENTENCE, so it is not in ase::sim_why's mint.
+# The mint holds the SENTENCES a user is meant to read and act on; each of the
+# arms marked here already has one, and the Simulators dialog's own status line
+# shows it verbatim. What the bar owes the user is the shortest true thing that
+# fits beside four other segments. It is still written HERE, in ase.tcl and in
+# exactly one place, so ruling D5-4 holds and row R9's "none of them is written
+# in the window file" stays true of it too.
+#
+# ⚠ THE WORDING OF THE MARKER IS THE USER'S RULING and is on their queue as
+# issue 1370 (`owed.sh` kind `rule`, --eyes: it is a pixel decision on a
+# five-segment bar). Change it here and the suites follow -- they read the
+# marker from one place.
+proc ase::sim_label {backend} {
+  set s {}
+  if {[catch {ase::sim_status $backend} s]} { return $backend }
+  set who {}
+  catch {set who [dict get $s entry]}
+  if {[string trim $who] eq {}} { set who $backend }
+  if {[string trim $who] eq {}} { set who {(none)} }
+  set ok 0        ; catch {set ok [dict get $s ok]}
+  set resolved {} ; catch {set resolved [dict get $s resolved]}
+  set known 0
+  catch {set known [expr {[lsearch -exact [ase::backend_names] $backend] >= 0}]}
+  set composes 0
+  catch {set composes [ase::run_composes_registry $backend]}
+  if {$ok && [string trim $resolved] ne {} && $known && $composes} { return $who }
+  return "$who — will not run"
+}
+
 # --- What the registered simulator can actually do (issue 0948) --------------
 #
 # THE PROBLEM THIS SECTION EXISTS FOR, MEASURED, NOT ARGUED. The deck ASE-L
@@ -1441,6 +1682,27 @@ proc ase::cap_stale {stored live} {
   if {[catch {string equal $stored $live} same]} { return 1 }
   return [expr {$same ? 0 : 1}]
 }
+
+# WHAT ONE REMEMBERED ANSWER IS ABOUT: A PROGRAM **AND THE WORDS IT IS STARTED
+# WITH**. Issue 1371's adversary: the key was the resolved path alone, and the
+# probe has always run the program with the entry's own extra arguments
+# (ruling A2 -- probe with the real argv). So two questions about one file with
+# two argument lists shared one answer, and the FIRST one taken won.
+#
+# MEASURED 2026-09-06, and it is an A1 breach at the far end. A stub that
+# reports no casemode feature when it is given `-q` and all three modes when it
+# is not, registered with `-args -q`, in force:
+#
+#   dialog-side Detect on the same file with no arguments -> fold preserve distinguish
+#   ase::sim_casemode_selectable ngspice, immediately     -> fold preserve distinguish
+#   the same, after ase::sim_caps_clear                   -> fold
+#
+# The middle line is the defect: the in-force accessor -- the one the run and
+# the chooser both read -- answered about an argv the user's entry does not
+# use, so `preserve` was offered for a program that folds. The path-only key
+# predates issue 1371 (0948/0950), but before it nothing except the in-force
+# route could write the cache, so no two argument lists could meet.
+proc ase::cap_key {resolved eargs} { return [list $resolved $eargs] }
 
 # Forget every measured answer, so the next ask measures again. The lever for
 # a user who knows something changed that a file stamp cannot see -- a rebuild
@@ -1816,18 +2078,42 @@ proc ase::cap_run {exe exeargs workdir secs} {
 #     yes; ase::register_backend keeps `capabilities` optional for exactly the
 #     backends that reach this line.
 proc ase::sim_capabilities {backend} {
-  variable sim_caps
-  variable backends
   set s [ase::sim_status $backend]
   if {[dict get $s ok] == 0} { return [dict create known 0] }
-  set resolved [dict get $s resolved]
+  return [ase::sim_capabilities_at $backend [dict get $s resolved] \
+            [dict get $s args]]
+}
+
+# THE SAME MEASUREMENT, ASKED ABOUT A NAMED PROGRAM RATHER THAN ABOUT THE ONE
+# IN FORCE (issue 1371). The cache read, the stamp, the private workdir, the
+# probe and the "only a `known 1` answer is remembered" rule are all HERE, so
+# there is exactly one of each however the question arrives.
+#
+# GUARDS 2 AND 3 OF THE THREE ABOVE MOVED IN WITH THE BODY, and they had to:
+# they are preconditions of measuring ANYTHING -- a cache keyed on an empty
+# string fuses two unrunnable backends into one answer about neither (issue
+# 0935), and a backend with no probe must answer "not known" rather than a
+# guessed yes. Guard 1 stays in the wrapper above, because "the resolver
+# refused" is a fact about the IN-FORCE choice and has no meaning for a caller
+# that already knows which file it is asking about.
+#
+# ⚠ THE PATH MUST NEVER COME FROM auto_execok ON THIS ROUTE. That is the whole
+# of issue 0935: a refused resolution still carries a `resolved` naming the
+# file a WRONG choice would have started, and measuring it would attribute the
+# answer to a simulator the user is not running. Every caller of this proc
+# hands it a path the user themselves named -- a registered entry's own
+# `path`, or what they typed in the Program field.
+proc ase::sim_capabilities_at {backend resolved eargs} {
+  variable sim_caps
+  variable backends
   if {$resolved eq {}} { return [dict create known 0] }
   if {![dict exists $backends $backend capabilities]} {
     return [dict create known 0]
   }
+  set ckey [ase::cap_key $resolved $eargs]
   set live [ase::cap_stamp $resolved]
-  if {[dict exists $sim_caps $resolved]} {
-    set stored [dict get $sim_caps $resolved]
+  if {[dict exists $sim_caps $ckey]} {
+    set stored [dict get $sim_caps $ckey]
     if {![ase::cap_stale [dict get $stored stamp] $live]} {
       return [dict get $stored caps]
     }
@@ -1844,7 +2130,7 @@ proc ase::sim_capabilities {backend} {
   # BLEW UP -- and the failure is then RE-RAISED, so a defect in a probe stays
   # as loud as it was. Tidying up must not swallow it.
   set rc [catch {[ase::backend_hook $backend capabilities] $resolved \
-                   [dict get $s args] $wd} caps]
+                   $eargs $wd} caps]
   set einfo $::errorInfo
   set ecode $::errorCode
   ase::cap_workdir_done $wd
@@ -1859,9 +2145,119 @@ proc ase::sim_capabilities {backend} {
   # be written into, the program that did not answer in time, and every reason
   # anyone adds later, because all of them say `known 0`.
   if {[dict exists $caps known] && [dict get $caps known] == 1} {
-    dict set sim_caps $resolved [list stamp $live caps $caps]
+    dict set sim_caps $ckey [list stamp $live caps $caps]
   }
   return $caps
+}
+
+# WHAT THE PROGRAM AT `path` CAN DO. The filesystem guards are ase::sim_check's
+# own four -- the same ones registration uses -- so a location with nothing at
+# it, a folder, or a file without its executable bit answers "not measured"
+# instead of being handed to `exec`. A location written the portable way
+# ($::PDK_ROOT/bin/ngspice) is expanded first, exactly as ase::sim_register
+# expands it, and a literal that already names a real file is left alone
+# (issues 0938 and 0945).
+#
+# NEVER RAISES: its callers are a dialog being built and a button being
+# pressed, and both would turn a stack trace into a dead window.
+proc ase::sim_capabilities_path {backend path {eargs {}}} {
+  if {$path eq {}} { return [dict create known 0] }
+  set p $path
+  if {![catch {ase::expand_path $p} out]} { set p $out }
+  if {[ase::sim_check $p] ne {}} { return [dict create known 0] }
+  set caps [dict create known 0]
+  # ⚠ THE CATCH IS FOR THE WINDOW, NOT FOR THE DEFECT. ase::sim_capabilities_at
+  # deliberately RE-RAISES a probe that blew up, so "a defect in a probe stays
+  # as loud as it was" (issue 0950); swallowing it here silently would make
+  # this the one route where a broken probe looks like an unmeasured program.
+  # The dialog still survives -- a stack trace out of a proc that builds a
+  # combobox is a dead window -- but the failure goes to the CIW, where every
+  # other ASE failure goes. Not a mint kind: it carries a Tcl error message, so
+  # it is a defect report to a developer, not a sentence for the user (ruling
+  # D5-4 is about the second kind).
+  if {[catch {set caps [ase::sim_capabilities_at $backend \
+                          [file normalize $p] $eargs]} zerr]} {
+    ase::echo "ase: measuring $p raised: $zerr" error
+    set caps [dict create known 0]
+  }
+  return $caps
+}
+
+# WHAT THE PROGRAM OF THE ENTRY NAMED `name` CAN DO -- the question a dialog
+# editing one row is actually asking. An entry nobody registered, and one the
+# registry already recorded as unrunnable, both answer "not measured": nothing
+# is started for either.
+#
+# THE ENTRY'S OWN BACKEND WINS when it has one. An entry registered for a
+# backend with no probe hook then answers `known 0` through the core's guard 3
+# rather than being measured with another backend's probe.
+#
+# ⚠ NO PRODUCTION CALLER, AND THAT IS ON PURPOSE -- say it out loud rather than
+# let the next reader believe the dialog uses it (issue 1371's adversary read
+# the write-up and believed exactly that). This proc, ase::sim_casemode_selectable_for
+# and ase::sim_caps_have are the ENTRY-KEYED question; the row editor asks the
+# PATH-KEYED one, because the Program field can name a program no entry has and
+# because that field is what OK is about to register. What the entry-keyed three
+# are for is the suite's INDEPENDENT ORACLE: rows S24-S27 and S36 compare what
+# the chooser offers against what the registry says about the row the user
+# clicked, and an oracle that re-derived the dialog's own key would stop
+# proving that the offer describes THAT row. Deleting them would cost the rows
+# their independence, which is why they stay.
+proc ase::sim_capabilities_for {name {backend ngspice}} {
+  set e [ase::sim_entry $name]
+  if {$e eq {}} { return [dict create known 0] }
+  if {![ase::state_get $e ok 0]} { return [dict create known 0] }
+  set eb [ase::state_get $e backend {}]
+  if {$eb ne {}} { set backend $eb }
+  return [ase::sim_capabilities_path $backend [ase::state_get $e path {}] \
+            [ase::state_get $e args {}]]
+}
+
+# IS A FRESH ANSWER ALREADY IN HAND FOR THE PROGRAM AT `path`? A PEEK, and the
+# word is exact: it reads the cache and the file's stamp and starts NOTHING.
+#
+# WHY IT EXISTS (issue 1371). ase::sim_casemode_selectable and its relatives
+# LAUNCH the program when the answer is not cached. Measured on the user's own
+# build: 447 ms cold, 0 ms warm -- and 31.2 seconds for a program that exists,
+# is executable and never answers, because ase::cap_budget_ms is 30000 and Tk
+# is frozen for every one of them. A dialog that asked on the way up would
+# inherit that, so the row editor asks THIS first and offers the measured set
+# only when asking is free. The Detect button is the door to the other case.
+proc ase::sim_caps_have_path {backend path {eargs {}}} {
+  variable sim_caps
+  variable backends
+  if {$path eq {}} { return 0 }
+  set p $path
+  if {![catch {ase::expand_path $p} out]} { set p $out }
+  if {[ase::sim_check $p] ne {}} { return 0 }
+  if {![dict exists $backends $backend capabilities]} { return 0 }
+  set p [file normalize $p]
+  set ckey [ase::cap_key $p $eargs]
+  if {![dict exists $sim_caps $ckey]} { return 0 }
+  set stored {}
+  catch {set stored [dict get $sim_caps $ckey stamp]}
+  return [expr {[ase::cap_stale $stored [ase::cap_stamp $p]] ? 0 : 1}]
+}
+
+# The same peek, asked about a registered entry.
+proc ase::sim_caps_have {name {backend ngspice}} {
+  set e [ase::sim_entry $name]
+  if {$e eq {}} { return 0 }
+  if {![ase::state_get $e ok 0]} { return 0 }
+  set eb [ase::state_get $e backend {}]
+  if {$eb ne {}} { set backend $eb }
+  return [ase::sim_caps_have_path $backend [ase::state_get $e path {}] \
+            [ase::state_get $e args {}]]
+}
+
+# Does this backend have any way to measure a program at all? The one thing
+# ase::casemode_report and ase::casemode_status cannot tell from a capability
+# dict: guard 3 of ase::sim_capabilities_at answers `known 0` for a backend
+# with no probe hook, which is indistinguishable from every other `known 0`
+# once the dict is in hand.
+proc ase::sim_has_probe {backend} {
+  variable backends
+  return [expr {[dict exists $backends $backend capabilities] ? 1 : 0}]
 }
 
 # --- CASE MODE, AS A PROPERTY OF THE REGISTERED SIMULATOR --------------------
@@ -1895,15 +2291,117 @@ proc ase::sim_capabilities {backend} {
 # and a capability answer with no casemode key both mean -- see the ⚠ on
 # ase::sim_capabilities: absent is never a no.
 proc ase::sim_casemode_detected {backend} {
-  set c [ase::sim_capabilities $backend]
-  if {![dict exists $c known] || [dict get $c known] == 0} { return {} }
-  if {![dict exists $c casemode_detected]} { return {} }
-  set d [dict get $c casemode_detected]
+  return [ase::casemode_detected_in [ase::sim_capabilities $backend]]
+}
+
+# THE TWO RULES ABOVE AND BELOW, WRITTEN ONCE, AGAINST A CAPABILITY DICT
+# (issue 1371). There are three ways to ask the question now -- about the
+# simulator in force, about a registered entry, and about a program the user
+# has only typed the location of -- and A1 is a rule about the ANSWER, not
+# about which door it came through. Keeping the rule beside the dict means a
+# second door cannot arrive carrying a second copy of it, which is exactly how
+# `fluid-editing`'s eleven `sim_profile_*` procs got out of step.
+proc ase::casemode_detected_in {caps} {
+  if {![dict exists $caps known] || [dict get $caps known] == 0} { return {} }
+  if {![dict exists $caps casemode_detected]} { return {} }
+  set d [dict get $caps casemode_detected]
   set r {}
   foreach m {fold preserve distinguish} {
     if {[lsearch -exact $d $m] >= 0} { lappend r $m }
   }
   return $r
+}
+
+proc ase::casemode_selectable_in {caps} {
+  if {[dict exists $caps known] && [dict get $caps known] == 1 \
+      && [dict exists $caps casemode_detected]} {
+    return [ase::casemode_detected_in $caps]
+  }
+  return fold
+}
+
+# WHAT TO SAY ABOUT A MEASUREMENT THAT WAS JUST TAKEN. The third reader of the
+# two-empties rule, and it is here rather than in the dialog for the reason the
+# other two are: a window file that asked the dict this question itself would
+# hold a second copy of A1's precondition, and row S31 of
+# tests/headless/test_ase_simdlg_0937.tcl reddens on exactly that.
+#
+# ⚠ IT USED TO COLLAPSE EVERY UNHAPPY STATE ONTO "has not been tried yet ...
+# press Detect to try it", AND THAT WAS ISSUE 1371's REFUTATION. Measured
+# through the real Detect button in three reachable states -- a program that
+# answered the probe and published no casemode key, a program whose file has
+# gone, and a backend with no probe hook -- the user pressed Detect, waited,
+# and was told the thing had not been tried and that they should press Detect.
+# A false statement plus an instruction to repeat the gesture that produced it.
+# Every arm below is a state that was measured arriving here; the mint holds
+# the words (ruling D5-4) and rows S35 and S36 read them back out of it.
+#
+# THE ONE STATE THIS PROC MAY NOT REPORT is "nobody has asked yet", because
+# every caller has just asked. It survives only as the fall-through, which
+# after a real Detect means the probe itself raised -- and that already went to
+# the CIW from ase::sim_capabilities_path. ase::casemode_status is the proc
+# that says it honestly, before anything is tried.
+proc ase::casemode_report {backend path caps} {
+  if {$path eq {}} { return [ase::sim_why casemode_nopath {} {}] }
+  if {[dict exists $caps known] && [dict get $caps known] == 1} {
+    if {[dict exists $caps casemode_detected]} {
+      return [ase::sim_why casemode_measured {} $path \
+                [ase::casemode_detected_in $caps]]
+    }
+    return [ase::sim_why casemode_nokey {} $path]
+  }
+  set kind {}
+  set p $path
+  if {![catch {ase::expand_path $p} out]} { set p $out }
+  catch {set kind [ase::sim_check $p]}
+  if {$kind ne {}} { return [ase::sim_why casemode_noprogram {} $p $kind] }
+  if {![ase::sim_has_probe $backend]} {
+    return [ase::sim_why casemode_noprobe {} $p]
+  }
+  if {[dict exists $caps unmeasured]} {
+    switch -- [dict get $caps unmeasured] {
+      timeout {
+        set secs {}
+        catch {set secs [dict get $caps secs]}
+        return [ase::sim_why casemode_slow {} $p $secs]
+      }
+      noplace { return [ase::sim_why casemode_noplace {} $p] }
+    }
+  }
+  return [ase::sim_why casemode_unmeasured {} $p]
+}
+
+# WHAT IS KNOWN RIGHT NOW, MEASURING NOTHING. The row editor's status line at
+# the moment it opens, and after the Program field changes: the same rule as
+# ase::casemode_report, minus the launch, so the sentence a user reads before
+# they press anything is about the state the chooser is actually in.
+#
+# WHY IT EXISTS (issue 1371's third refutation). The item's own answer to the
+# user told them to open Edit… and pick `preserve` from the chooser. On a COLD
+# session the chooser offers `fold` alone -- correctly, because nothing has
+# been measured and A1 forbids the rest -- and NOTHING SAID SO, so the gesture
+# the issue file described looks exactly like the bug it was filed about.
+# Detect is one click away and the editor now says so, in the mint's words.
+#
+# ⚠ IT MUST NEVER LAUNCH. ase::sim_caps_have_path is the peek that guarantees
+# it: ase::sim_capabilities_path is reached only when a fresh answer is already
+# in hand, where it is a pure cache read. Row S27 measures that opening the
+# editor starts nothing, and it still does.
+proc ase::casemode_status {backend path {eargs {}}} {
+  if {$path eq {}} { return [ase::sim_why casemode_nopath {} {}] }
+  set p $path
+  if {![catch {ase::expand_path $p} out]} { set p $out }
+  set kind {}
+  catch {set kind [ase::sim_check $p]}
+  if {$kind ne {}} { return [ase::sim_why casemode_noprogram {} $p $kind] }
+  if {![ase::sim_has_probe $backend]} {
+    return [ase::sim_why casemode_noprobe {} $p]
+  }
+  if {[ase::sim_caps_have_path $backend $path $eargs]} {
+    return [ase::casemode_report $backend $path \
+              [ase::sim_capabilities_path $backend $path $eargs]]
+  }
+  return [ase::sim_why casemode_unmeasured {} $p]
 }
 
 # THE MODES A USER MAY SELECT (A1). Measured => exactly what was measured, the
@@ -1917,17 +2415,42 @@ proc ase::sim_casemode_detected {backend} {
 # a probe that never ran publishes no key at all. ase::sim_casemode_detected
 # collapses both to `{}`, so this proc must ask the dict itself.
 proc ase::sim_casemode_selectable {backend} {
-  set c [ase::sim_capabilities $backend]
-  if {[dict exists $c known] && [dict get $c known] == 1 \
-      && [dict exists $c casemode_detected]} {
-    return [ase::sim_casemode_detected $backend]
-  }
-  return fold
+  return [ase::casemode_selectable_in [ase::sim_capabilities $backend]]
+}
+
+# THE SAME RULE, KEYED ON A REGISTERED ENTRY AND ON A BARE LOCATION (issue
+# 1371). The row editor's Case chooser is built from these, never from the
+# in-force accessor above: measured on this tree with two entries registered,
+# `ase::sim_casemode_selectable ngspice` answered `fold preserve distinguish`
+# or `fold` depending only on WHICH ROW WAS SELECTED, so a chooser built from
+# it would offer one program's modes while the user edited another's -- an A1
+# breach introduced by the door meant to enforce A1.
+#
+# ⚠ THESE LAUNCH THE PROGRAM when nothing is cached, exactly as the in-force
+# one does. ase::sim_caps_have_path is the free question; ask it first.
+proc ase::sim_casemode_selectable_path {backend path {eargs {}}} {
+  return [ase::casemode_selectable_in \
+            [ase::sim_capabilities_path $backend $path $eargs]]
+}
+
+proc ase::sim_casemode_selectable_for {name {backend ngspice}} {
+  return [ase::casemode_selectable_in [ase::sim_capabilities_for $name $backend]]
 }
 
 # THE MODE THIS SIMULATOR REQUESTS: its own field, else the global floor, else
 # `fold` (B1). The floor is validated here too -- a `set sim_case_mode sideways`
 # in an rc must not become a request.
+# THE GLOBAL FLOOR, VALIDATED, IN ONE PLACE. A `set sim_case_mode sideways` in
+# an rc must never become a request, and the row editor's "global default"
+# line has to name the same mode this proc would fall to or the chooser would
+# be describing a floor nobody stands on.
+proc ase::sim_casemode_floor {} {
+  if {[info exists ::sim_case_mode] && [sim_casemode_valid $::sim_case_mode]} {
+    return $::sim_case_mode
+  }
+  return fold
+}
+
 proc ase::sim_casemode_requested {backend} {
   set s [ase::sim_status $backend]
   # ⚠ A REFUSED RESOLUTION YIELDS NO MODE OF ITS OWN. `ok 0` still carries an
@@ -1936,12 +2459,7 @@ proc ase::sim_casemode_requested {backend} {
   # request to a simulator that is not going to run. The floor answers instead,
   # which is what a backend with nothing registered gets, and is the same answer
   # this proc gave before anybody registered anything.
-  if {![dict get $s ok]} {
-    if {[info exists ::sim_case_mode] && [sim_casemode_valid $::sim_case_mode]} {
-      return $::sim_case_mode
-    }
-    return fold
-  }
+  if {![dict get $s ok]} { return [ase::sim_casemode_floor] }
   set e [dict get $s entry]
   if {$e ne {}} {
     variable simulators
@@ -1950,10 +2468,7 @@ proc ase::sim_casemode_requested {backend} {
       if {$m ne {} && [sim_casemode_valid $m]} { return $m }
     }
   }
-  if {[info exists ::sim_case_mode] && [sim_casemode_valid $::sim_case_mode]} {
-    return $::sim_case_mode
-  }
-  return fold
+  return [ase::sim_casemode_floor]
 }
 
 # Does this simulator want ngspice's `--no-spiceinit`? A field of the registry
@@ -3892,6 +4407,47 @@ proc ase::op_dev_covers {req dev} {
   return 0
 }
 
+# WHAT DID THIS RUN CALL <devpath>'s <param> COLUMN?  The whole name, in the
+# results file's own spelling, or {} when the run published none (issue 1372).
+#
+# ⚠ IT ANSWERS THE NAME AND NOT THE KIND, AND THAT LINE IS INVARIANT I1's.
+# ase::op_param_split's own comment already says why: it "strips whatever
+# wrapper is present rather than re-encoding token.c's 0/1/2 kind table, which
+# is op_annot::_wrap's job and must stay spelled once". So does this. The
+# caller that wants a kind hands the name to op_annot::_kind_of_vector, which
+# is that table's one inverse.
+#
+# ⚠ IT EXISTS BECAUSE op_param_set THROWS THE NAME AWAY. The backend's
+# op_param_set walks this same raw and hands back {device param value}, which
+# is everything the RDW needs to DRAW a row and nothing it needs to ADD one:
+# the spelling is the only measured evidence of the shape, and it is discarded
+# one line after it is read. A caller re-cutting the bracket of its own is the
+# drift ase::op_param_split was written to prevent, so the walk lives here,
+# beside the two verbs it is made of.
+#
+# ⚠ FIRST MATCH IN RAW ORDER, AND THAT IS A STATED PROPERTY. Two things can
+# make a device+param pair appear twice: a request that is a PARTIAL path
+# (op_dev_covers descends, deliberately -- ruling D-3), and one run whose deck
+# carried per-device cards while its sidecar dump was merged in on top, which
+# puts `i(@dev[id])` and `@dev[id]` in one database. Raw order answers the
+# first spelling the run wrote, which in the second case is the DECK's -- the
+# wrapped one, which op_annot::_wrap_alts then reads with the bare one as its
+# documented fallback. Choosing the other way round is the lossy direction:
+# _wrap_alts for kind 1 tries the bare spelling ALONE.
+proc ase::op_vector_for {devpath param} {
+  if {$devpath eq {} || $param eq {}} { return {} }
+  set rl {}
+  if {[catch {xschem raw list} rl]} { return {} }
+  foreach v [split [string trimright $rl "\n"] "\n"] {
+    set sp [ase::op_param_split $v]
+    if {$sp eq {}} { continue }
+    if {[lindex $sp 1] ne $param} { continue }
+    if {![ase::op_dev_covers $devpath [lindex $sp 0]]} { continue }
+    return $v
+  }
+  return {}
+}
+
 # The distinct devices a captured block names, in block order, with the
 # `[param]` suffix cut off — one entry per device however many parameters it
 # carries. This is what shape b puts on the write line.
@@ -4328,6 +4884,46 @@ proc ase::op_tier_report {sim state netlist_text} {
     ase::sim_say op_tier_forced $sim $path {} note
   }
   return $kind
+}
+
+# SAY WHICH REGISTERED SIMULATOR THIS RUN IS STARTING, ONCE (issue 1370).
+# Called from ase::run_deck; returns the entry that was named, or {} when there
+# was nothing to say -- a real answer, not an absence. The user's question was
+# "which version of ngspice did the MOST RECENT run use?", which is a per-run
+# question, so this fires on every run rather than only when the choice changes.
+#
+# ⚠ SILENT WHEN NO ENTRY IS IN FORCE. A user who has registered nothing runs
+# whatever their PATH finds, and ase::sim_why's `path_in_force` is the sentence
+# for that state; a line naming an entry here would be naming one that does not
+# exist. So an ordinary installation's CIW is byte-identical to before.
+#
+# ⚠ HERE AND NOT IN ase::run_precheck, and that is a correction to this item's
+# own plan. run_precheck is the GATE, and its silence on a healthy resolve is
+# asserted on purpose: row CS187b of tests/headless/test_sim_run_profile.tcl
+# pins `said=<0>` for an `ok` resolve and its own comment calls itself "the only
+# thing asserting the precheck's silence" (CS180b pins the same). A say added
+# there would have traded that control away for a sentence that belongs to the
+# RUN, not to the gate. ase::op_tier_report is the precedent and the neighbour:
+# one sentence per run, said from run_deck, caught there.
+#
+# ⚠ AND NOT AT THE TOP OF ase::run_deck EITHER, which is where 1370 first put
+# the call and where its adversary measured it lying. Called before
+# ase::preflight_gate, this says a run is starting and the pre-flight then
+# REFUSES it, generating no deck, no raw and no log -- so the channel the user
+# reads to answer "which version did the most recent run use?" carried a start
+# for a run that never started. The call now sits immediately after `cmd` is
+# composed and immediately before the launch; see the block there.
+#
+# ⚠ AND NOT IN ase::backend::ngspice::run_cmd either, for op_tier_report's
+# reason: rows D1/D4/D5 of tests/headless/test_ase_simreg_0931.tcl pin that
+# proc's returned command AND its echo behaviour byte for byte.
+proc ase::run_using_report {state} {
+  set p [ase::run_profile $state]
+  if {[dict get $p status] ne {ok}} { return {} }
+  set who [dict get $p entry]
+  if {[string trim $who] eq {}} { return {} }
+  ase::sim_say run_using $who [dict get $p exe] {} note
+  return $who
 }
 
 # ============================================================================
@@ -4804,6 +5400,7 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   # half-written can be left behind; a `preserve` mismatch returns the line to
   # put in the run log and has already reached the CIW pane.
   set casenote {}
+  set using {}
   if {[ase::run_composes_registry $sim]} {
     set casenote [ase::run_precheck $state]
   }
@@ -4975,6 +5572,42 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   set logpath [$log_file $state]
   set cmd [$run_cmd $state $deckpath]
 
+  ## 1370: WHICH REGISTERED SIMULATOR THIS RUN IS STARTING, IN BOTH CHANNELS
+  ## AND ONCE IN EACH. `ase::run_using_report` says the sentence to the CIW and
+  ## the action log -- the channel the user was reading when they asked "which
+  ## version of ngspice did the most recent run use?" -- and hands back the
+  ## entry's name, which travels in the run record below as `using` for
+  ## ase::run_log_header's own field. One resolve, so the name in the log and
+  ## the name in the sentence cannot be answers about two different instants.
+  ##
+  ## ⚠ HERE, AND NOT BESIDE ase::run_precheck AT THE TOP OF THIS PROC, AND THAT
+  ## IS 1370'S REPAIR. It stood beside the precheck, ELEVEN LINES ABOVE
+  ## ase::preflight_gate and above the `open $netlistfile` -- so a run the
+  ## pre-flight REFUSED, and a run whose netlist file was not there, both said
+  ## "This run is starting the simulator you named <name>, and the program it
+  ## is running is <path>." and were then refused with "Nothing was generated:
+  ## no deck, no raw, no log." Measured, both of them, by this item's adversary.
+  ## The one channel a user reads to answer "which version did the most recent
+  ## run use?" was claiming starts for runs that never started.
+  ##
+  ## SO IT SITS AT THE LAST INSTANT BEFORE THE LAUNCH: the gate has passed, the
+  ## cosim models are built, the deck is written, and `cmd` -- the very argument
+  ## list `execute` is about to be handed -- is composed one line up. What can
+  ## still go wrong from here is `execute` itself returning -1, and that case
+  ## leaves the run log this proc is about to write, so the sentence and the
+  ## header agree about what was attempted. `ase::op_tier_report` is the
+  ## precedent and it is likewise after the gate.
+  ##
+  ## GATED ON ase::run_composes_registry: a backend with its own run_cmd
+  ## hardcodes its binary and consults no registry, so an entry named for it
+  ## would be a name for a program that is not going to start.
+  ##
+  ## CAUGHT, for ase::op_tier_report's reason -- everything it says is advisory
+  ## and nothing downstream reads it, so a defect in it must never stop a run.
+  if {[ase::run_composes_registry $sim]} {
+    catch {set using [ase::run_using_report $state]}
+  }
+
   ## --- 0618: the log's provenance ------------------------------------------
   ## MEASURED BEFORE THE CHANGE: `string equal $logtext $::execute(data,last)`
   ## was 1 — the log file WAS the simulator's stdout and nothing else, and a
@@ -5009,7 +5642,7 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   set meta [dict create cell $cell simulator $sim cmd $cmd dir $rd \
                         deck $deckpath started [clock seconds] \
                         opblock $opblock casenote $casenote optier $optier \
-                        t0 [clock milliseconds]]
+                        using $using t0 [clock milliseconds]]
   catch {ase::run_log_write $logpath $meta {} {}}
 
   set ::execute(callback) [list ase::run_done $logpath $state $callback $meta]
@@ -5032,14 +5665,30 @@ proc ase::run_deck {state netlistfile {callback {}}} {
 # chatter. Split into three tiny procs because each is a separate claim a test
 # can pin, and because ase::run_log_body is the one that must never do anything.
 
-# The five facts, as the file's opening block. Ends with the delimiter line, so
-# a caller that has nothing else to write (the pre-launch call) still produces a
-# file that reads as a complete header.
+# The facts, as the file's opening block. Ends with the delimiter line, so a
+# caller that has nothing else to write (the pre-launch call) still produces a
+# file that reads as a complete header. Five of them are 0618's own and always
+# written; `using` (1370) and `notes` (the casemode note) write nothing at all
+# when they are empty, so an ordinary run's log is byte-identical to 0618's.
 proc ase::run_log_header {meta} {
   set when {}
   catch {set when [clock format [ase::state_get $meta started [clock seconds]]]}
   set out "=== ase run [ase::state_get $meta cell] $when ===\n"
   append out "simulator : [ase::state_get $meta simulator]\n"
+  ## 1370: A FIELD IS ADDED, THE EXISTING ONE IS NOT RE-POINTED. `simulator :`
+  ## is the BACKEND word and stays it -- row E1e of tests/headless/test_ase_core
+  ## asserts the literal `ngspice` there and that suite runs under the
+  ## developer's own HOME, so a re-pointed field would make a shipped suite's
+  ## expectation depend on whose ~/.xschem/ase_simulators is live. The user's
+  ## confusion started one line below this, where `command :` carried
+  ## `.../build-ver_50/src/ngspice` under a `simulator : ngspice` that
+  ## contradicted it; `using :` is the word that joins the two.
+  ##
+  ## EMPTY WRITES NOTHING, the `casenote` field's own discipline: a run with no
+  ## registered simulator in force produces a log byte-identical to 0618's
+  ## committed framing.
+  set using [ase::state_get $meta using {}]
+  if {$using ne {}} { append out "using     : $using\n" }
   append out "command   : [ase::state_get $meta cmd]\n"
   append out "directory : [ase::state_get $meta dir]\n"
   append out "deck      : [ase::state_get $meta deck]\n"

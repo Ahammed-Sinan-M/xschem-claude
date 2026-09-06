@@ -73,10 +73,14 @@
 # ============================================================================
 #   pure      _cadence_path  _rowdevs  _incomplete_line  _nonfinite_text
 #             _state_sentence  format_answer  block_text  button_state
+#             font_limits  _accept_size  _chosen_size  font_size
+#             set_font_size  font_step  _font_tip                (issue 1368)
 #   context   header  sim  dump  dump_devpath  push  status   (xschem/op_annot,
 #             still no Tk)
-#   Tk        have_tk  open  close  build  render_pane  set_list  inert
-#             palette  color
+#   Tk        have_tk  open  close  build  render_pane  set_list
+#             palette  color  _font  _pane_chars  _apply_font    (issue 1368)
+# (illustrative, not exhaustive -- `rdw::inert` was in this list until item B5
+# deleted the proc, and the list is where that showed.)
 #
 # ⚠ SURVIVING --nogui BY NOT BEING CONSTRUCTED.  This file is reached by the
 # UNGUARDED bare `source` block in xschem.tcl, so a single Tk command executed
@@ -164,11 +168,26 @@ proc rdw::_rowdevs {ans} {
 # union -- under `no_raw` it would pair "no results are loaded" with "this is
 # what the run saved", and under ok-with-nothing it says the same thing twice
 # as the fifth sentence already does.
+#
+# ⚠ ISSUE 1374 CUT IT TO A LABEL, ON THE USER'S RULING: "This is too verbose!
+# Just say 'annotated list' or 'summary list'".  The obligation is untouched
+# and so is the FACT; what went is 64 of the 121 characters it took to state
+# it.  MEASURED at the shipped geometry (pane -width 96, -wrap word): the old
+# sentence took TWO display lines of a FOUR-line preamble sitting above six
+# rows of data, and this one takes ONE.
+#
+# ⚠ AND THE SHORTENING IS A REPAIR, NOT ONLY A TRIM.  The old wording -- "these
+# are the operating-point columns this run saved for this device" -- POINTS AT
+# THE ROWS ON SCREEN, and on a narrowed block those are six of the eighty-eight
+# the run saved, so the deixis was FALSE and `rdw::_narrow_line` one line below
+# it had to correct it.  This wording states the fact without pointing at
+# anything, so it is true of a narrowed block and of key 3's un-narrowed one
+# alike.  Locked as `RW_INC` in the window suite, which asserts it in 39 rows.
 proc rdw::_incomplete_line {ans} {
     set c 0
     catch {set c [dict get $ans complete]}
     if {[string is boolean -strict $c] && $c} { return {} }
-    return {Not a complete list: these are the operating-point columns this run saved for this device, not everything the device has.}
+    return {Not everything the device has - only what this run saved.}
 }
 
 # OBLIGATION 2.  A column the raw carries for a device that did not converge
@@ -286,13 +305,21 @@ proc rdw::_analysis_line {ctx} {
 # `op_annot::save_cards`.  Row NW8 of the window suite drives a real instance's
 # `.save` cards on all three list identities and golds that they do not move.
 
-# "82 columns are" / "1 column is".  The count and its agreement TOGETHER,
-# because they are always used together and two helpers is how a sentence ends
-# up reading "1 columns are" (issue 1297's family: the analysis kind that read
-# "a op analysis" because the article was a literal).
+# "88 columns" / "1 column".  The count and its agreement TOGETHER, because
+# they are always used together and two helpers is how a sentence ends up
+# reading "1 columns" (issue 1297's family: the analysis kind that read "a op
+# analysis" because the article was a literal).
+#
+# ⚠ ISSUE 1374 MOVED THE AGREEMENT ON TO THE TOTAL, AND DROPPED THE VERB.  It
+# answered "82 columns are" / "1 column is" while the sentence counted what was
+# WITHHELD and made it the subject of a clause.  The label counts what is SHOWN
+# out of the total -- "6 of 88 columns", "1 of 1 column" -- so the noun agrees
+# with the TOTAL and the verb went with the clause.  The proc keeps its whole
+# reason for existing (one helper for count-plus-agreement) and its one caller,
+# `rdw::_narrow_line`.
 proc rdw::_cols_are {n} {
-    if {$n == 1} { return {1 column is} }
-    return "$n columns are"
+    if {$n == 1} { return {1 column} }
+    return "$n columns"
 }
 
 # ⚠ THE NARROWING IS SAID OUT LOUD, AND THAT IS DD-1's OBLIGATION ONE SURFACE
@@ -300,8 +327,23 @@ proc rdw::_cols_are {n} {
 # silently reads as a COMPLETE list; a pane that silently drops 82 of 88 rows
 # has exactly that shape, and worse, because the reader cannot tell it from a
 # device that published six columns.  So a narrowed block says WHICH list
-# narrowed it, HOW MANY rows it withheld, how many of those DID NOT CONVERGE,
-# and that key 3 has them.
+# narrowed it, HOW MANY of the published columns it is showing, how many of the
+# withheld DID NOT CONVERGE, and -- when it is showing none of them -- that key
+# 3 has them.
+#
+# ⚠ ISSUE 1374: IT IS A LABEL, NOT A PARAGRAPH.  The user's ruling, verbatim,
+# about this sentence and the DD-1 one above it: "This is too verbose!  Just
+# say 'annotated list' or 'summary list'".  What they were reading was THREE
+# sentences, 190 characters (226 with a withheld non-convergence), and MEASURED
+# at the shipped geometry it wrapped to two of FOUR preamble display lines
+# sitting above SIX rows of data -- half the block was preamble, re-emitted per
+# device.  Every ⚠ below survives that cut because every one of them argues
+# WHICH FACT must appear, and not one of them was ever an argument for the
+# number of words used to state it.  KEPT: the list's identity, the tense
+# anchor, the counts, the withheld non-convergence, and the pointer on a block
+# with nothing else on it.  GONE: "not in that list and not shown", "this run
+# published N for this device", "Every column this run published for this
+# device is in that list", and the pointer on a block that has rows.
 #
 # ⚠ IT GOES IN THE BLOCK, NOT IN WINDOW CHROME.  The block is what the user
 # pastes into a design review (item R3), and a window title or a label above
@@ -314,16 +356,27 @@ proc rdw::_cols_are {n} {
 # that does NOT lapse is that a standing block is a RECORD and the store is
 # LIVE: `rdw::_reslot_block` is a strict permutation ("adds nothing, removes
 # nothing"), so no edit path re-narrows a block already on screen, and a Delete
-# would leave a present-tense label asserting something false.  "as it stood at
-# this dump" is what makes the sentence true for the life of the block.
+# would leave a present-tense label asserting something false.  "at this dump"
+# is what makes the sentence true for the life of the block -- four words, and
+# issue 1374 kept them for that reason and no other.  Dropping them re-opens
+# issue 1300's option-(c) objection in full.
 #
-# ⚠ THE WITHHELD NON-CONVERGENCE GETS ITS OWN CLAUSE.  Ruling DD-1 and issue
-# 1272 both say a `nonfinite` row is the one fact a designer most wants to be
-# told about -- it means the device did not converge -- so narrowing it away in
-# silence throws away exactly what obligation 2 exists to preserve.  It is
-# still withheld (the alternative is a pane whose length depends on how badly
-# the circuit failed), and it is COUNTED, so the fact survives the narrowing
-# even when the row does not.  DECISION, unratified, on rule debt 1300.
+# ⚠ THE WITHHELD NON-CONVERGENCE GETS ITS OWN CLAUSE, AND KEPT IT THROUGH
+# ISSUE 1374's CUT, AGAINST A GENERAL INSTRUCTION TO BE BRIEF.  Ruling DD-1 and
+# issue 1272 both say a `nonfinite` row is the one fact a designer most wants
+# to be told about -- it means the device did not converge -- so narrowing it
+# away in silence throws away exactly what obligation 2 exists to preserve.  It
+# is still withheld (the alternative is a pane whose length depends on how
+# badly the circuit failed), and it is COUNTED, so the fact survives the
+# narrowing even when the row does not.  THREE reasons it also survived 1374:
+# it is a RESULT the simulator reported, not an EXPLANATION of the display,
+# and explanations are what the user struck out; MEASURED on their own M18 the
+# clause is ABSENT (`wnf == 0`), so deleting it would have shortened the screen
+# they complained about by ZERO characters; and its silence promises nothing,
+# because an empty nonfinite bucket is not proof of convergence (src/save.c
+# turns an ASCII NaN into a confident 0 -- see this file's own head, issue
+# 1272).  It costs 29 characters and, measured, leaves the ordinary shape at 95
+# -- still one display line.  DECISION, unratified, on rule debts 1300 and 1374.
 #
 # ⚠ AND THE WITHHELD-NON-CONVERGENCE CLAUSE IS BUILT BEFORE THE BRANCH, NOT
 # INSIDE ONE OF THEM.  The first revision appended it after the `norder == 0`
@@ -334,18 +387,39 @@ proc rdw::_cols_are {n} {
 # non-empty list said "1 of the withheld did not converge" and under an empty
 # one said nothing, and an empty list is reachable from a shared settings file
 # (`list class mos annotation` with no `param` rows under it sets owned=1 with
-# an empty list).  Row NW12 is the fence and NW4's own golden used to spell the
-# omission.
+# an empty list).  Rows NW12 and NW15 are the fences and NW4's own golden used
+# to spell the omission.
+#
+# ⚠ TWO ARMS WHERE THERE WERE THREE (issue 1374).  The `withheld == 0` arm
+# said "Every column this run published for this device is in that list" in 122
+# characters; "6 of 6 columns" is the same fact in the general arm's own words,
+# and one arm fewer is one place fewer for an arm-specific omission -- which is
+# precisely the defect the paragraph above is about.  What survives as a branch
+# is the ONE thing the counts cannot say: `norder == 0` means the LIST was
+# empty, while `kept == 0` under a non-empty list means the list declares
+# columns THIS RUN DID NOT PUBLISH.  Both show no rows; they are different
+# diagnoses and only the first is fixed in the settings file.
+#
+# ⚠ AND THE POINTER IS ONE RULE, NOT A PROPERTY OF AN ARM: "Press 3" appears
+# exactly when `kept == 0`, i.e. when the block has NO ROWS on it and the
+# pointer is the only next step.  On a block that has rows the counts already
+# say more are being withheld, and the window chrome's head reads "Keys 1/2/3:
+# <list>" -- so a pointer there is navigation, which is the class of thing the
+# user struck out.  ⚠ THE CHROME IS ONE DUMP BEHIND, THOUGH (measured:
+# `rdw::apply_list_state` is called only from `rdw::build` and `rdw::set_list`,
+# and `rdw::push` calls neither), so on the FIRST dump of a session it still
+# reads "Select a device and press 1".  That is issue 1367/1355's surface, not
+# this one's; if it is ever decided the pointer must be on every block, put it
+# back HERE, in the one builder, and not in a second one.
 proc rdw::_narrow_line {name total withheld wnf norder} {
     set nf {}
-    if {$wnf > 0} { set nf " $wnf of the withheld did not converge." }
-    if {$norder == 0} {
-        return "The $name was empty at this dump, so nothing this run published for this device is shown.$nf Press 3 for everything this run published."
-    }
-    if {$withheld == 0} {
-        return "Narrowed to the $name as it stood at this dump. Every column this run published for this device is in that list."
-    }
-    return "Narrowed to the $name as it stood at this dump. [rdw::_cols_are $withheld] not in that list and not shown; this run published $total for this device.$nf Press 3 for everything this run published."
+    if {$wnf > 0} { set nf " $wnf withheld did not converge." }
+    set kept [expr {$total - $withheld}]
+    set what "$kept of [rdw::_cols_are $total]"
+    if {$norder == 0} { set what "empty, $what" }
+    set out "Narrowed to the $name at this dump: $what.$nf"
+    if {$kept == 0} { append out " Press 3 for all $total." }
+    return $out
 }
 
 # THE NAME OF THE LIST THAT REALLY NARROWED THIS BLOCK, IN THE STORE'S OWN
@@ -369,10 +443,13 @@ proc rdw::_narrow_line {name total withheld wnf norder} {
 # itself: before it, passing `{}` for the cell -- silently ignoring every
 # per-cell list -- left window, keys and store all green.
 proc rdw::_narrowed_list {cls listname scope} {
+    # ISSUE 1373: the store's class KEY is not what a person reads.  One
+    # accessor, resolved once, for both arms.
+    set d [::op_param_lists::class_label $cls]
     if {[llength $scope] == 2 && [lindex $scope 0] eq {flavor}} {
-        return "$listname list for cells matching [lindex [lindex $scope 1] 1] of class $cls"
+        return "$listname list for cells matching [lindex [lindex $scope 1] 1] of class $d"
     }
-    return "$cls $listname list"
+    return "$d $listname list"
 }
 
 # Keep only the rows `order` declares, in ALL THREE BUCKETS, and count what was
@@ -1117,7 +1194,7 @@ proc rdw::_active_phrase {kind} {
 #
 # ⚠ AND THIS IS NOT A SECOND ANNOUNCEMENT BESIDE THE BLOCK'S.  Issue 1353's
 # `rdw::_narrow_line` already names a list, in the PAST tense, about THE BLOCK
-# -- "as it stood at this dump" -- because a block is a RECORD that travels
+# -- "at this dump" -- because a block is a RECORD that travels
 # with the paste.  What follows is PRESENT tense and about THE BUTTONS: the
 # identity `::rdw::listkind` holds NOW, which is what Up, Down, Delete and Add
 # will act on whatever dump the user happens to be reading.  Two facts, two
@@ -1712,7 +1789,17 @@ proc rdw::block_subject {block} {
 #     plain raise            no re-map          keyboard stays on .drw
 #     withdraw + deiconify   really re-mapped   KEYBOARD MOVES TO .rdw
 # and it stays there through every later event pump, because a window manager
-# grants focus to a newly MAPPED toplevel.  That is the one thing the user
+# grants focus to a newly MAPPED toplevel.
+#     ⚠ THAT MEASUREMENT IS OF A BARE RE-MAP, AND THE DUMP PATH IS NOT ONE
+# (issue 1369).  Measured on the same display: the same re-map followed at once
+# by the client's own `focus -force` -- which is what rdw::show's
+# rdw::_focus_canvas does -- leaves the keyboard where it was and NO FocusIn
+# ever arrives at all.  So on :99 the grant this window's hand-back exists for
+# never lands, the end-to-end symptom cannot be reproduced here, and a fixture
+# that waits for the grant passes while the defect is live.  The user's own
+# server is a different one (vendor HC-Consult, no EWMH window manager client
+# at all) and there the grant does land, which is the whole of issue 1369.
+# The keyboard in this window is the one thing the user
 # forbade in the same sentence as the request, and it is worse here than
 # elsewhere: the grammar that fills this window -- bare 1/2/3/4 and the
 # command mode's Escape -- lives on the design CANVAS, so a stolen focus
@@ -2106,6 +2193,157 @@ proc rdw::status {msg} {
     return {}
 }
 
+# ===========================================================================
+# THE TEXT SIZE -- ISSUE 1368, THE `aA` CONTROL
+# ===========================================================================
+# THE USER'S OWN WORDS: "add a button to allow user to manipulate font size in
+# RDW.  it can be the 'aa' button you see in e-readers - 2nd a bigger.  Key
+# part, as soon as user hovers over it, tooltip should be displayed : click to
+# increase font one unit.  Ctrl+click to decrease font one unit".
+#
+# ⚠ THE ONE-LINER IS THE TRAP, AND IT IS MEASURED.  `font configure TkFixedFont
+# -size N` looks perfect in this window and is a GLOBAL font control wearing a
+# window-local label: on this binary a bare `text` widget's DEFAULT -font IS
+# TkFixedFont, so the same click also resizes the attribute editor
+# (xschem.tcl:10674 and :10839), the symbol-property editor (:11692), the
+# text-input dialog (:13190), editpaths (:9454), the graph dialog (:6365), the
+# notify popup (ciw.tcl:155) and the calculator buffer (calculator.tcl:1503) --
+# in one click, with nothing on screen saying so, and no suite in the tree
+# watching any of those fonts.  This window owns PRIVATE named fonts instead,
+# exactly as `ciw_font` / `ciw_set_font_size` (ciw.tcl:391,406) already do for
+# the CIW.  Row FZ5 of tests/headless/test_rdw_window_1245.tcl is that fence.
+#
+# ⚠ THE MODEL IS THE INTEGER, NEVER THE FONT.  MEASURED: `font configure X
+# -size -14` -- a PIXEL spelling -- answers `font actual X -size` = 10, in
+# POINTS.  An implementation that increments what it reads back therefore turns
+# a user's pixel size into points and moves it by an unrelated amount on the
+# very first click.  Every step below reads `rdw::font_size` and nothing else.
+#
+# ⚠ AND `-size 0` IS A LIVE VALUE, NOT A NEUTRAL ONE: measured, it resolves to
+# 12 here.  `0` is safe as the "not chosen yet" sentinel in `::rdw_font_size`
+# ONLY because `rdw::_accept_size` can never answer it and `rdw::font_step` can
+# never reach it.  Do not remove that guard.
+
+# THE BAND, ONCE, SO OVERRULING IT COSTS ONE LINE AND ONE GOLDEN (row FZ1).
+# MEASURED on this binary at 1920x1080: size 4 is linespace 8, and 96 columns
+# at size 72 want 5760 px -- three screens.  The CIW's own band is 4..72
+# (ciw.tcl:406) and a consistency argument for widening exists; this control
+# exists for READABILITY, so it ships narrower.  Which band is the USER's to
+# say -- rule debt 1368.
+proc rdw::font_limits {} { return {6 32} }
+
+# THE ONE ADMISSION TEST.  It REFUSES; it does not clamp.  Silently "fixing" an
+# out-of-band value hides which size the caller actually asked for, which is
+# `ciw_set_font_size`'s own recorded reason for refusing too.  Answers the
+# accepted integer, or the empty string.
+#
+# ⚠ IT IS DELIBERATELY NOT CALLED `_clamp_size`.  A name that says clamp over a
+# proc that refuses is this file's own documented defect -- a comment naming a
+# fence that does not fence -- one layer down.
+proc rdw::_accept_size {n} {
+    if {![string is integer -strict $n]} { return {} }
+    lassign [rdw::font_limits] lo hi
+    if {$n < $lo || $n > $hi} { return {} }
+    return $n
+}
+
+# WHAT THE USER HAS CHOSEN, OR THE EMPTY STRING IF THEY HAVE NOT.  Split out
+# because the two consumers differ: `rdw::font_size` needs a number to do
+# arithmetic with, and `rdw::_font` must leave the private font a BYTE-FOR-BYTE
+# copy of TkFixedFont until there is a choice to impose -- including a pixel
+# spelling, which the points model cannot represent.
+proc rdw::_chosen_size {} {
+    if {![info exists ::rdw_font_size]} { return {} }
+    return [rdw::_accept_size $::rdw_font_size]
+}
+
+# THE SHARED FONT'S OWN SIZE, RAW AND UNCLAMPED, OR THE EMPTY STRING.  Split
+# out of `rdw::_base_size` because `rdw::_font` needs to know whether the band
+# actually MOVED it: when it did not, the private font keeps TkFixedFont's own
+# spelling verbatim (a pixel size included); when it did, the private font has
+# to say the number the MODEL says, or the pane renders a size no accessor
+# reports.  With no Tk there is no `font` command AT ALL (measured: `--nogui`
+# dies with `invalid command name "font"` at line 1).
+proc rdw::_shared_size {} {
+    if {![llength [info commands font]]} { return {} }
+    set n {}
+    if {[catch {font actual TkFixedFont -size} n]} { return {} }
+    if {![string is integer -strict $n]} { return {} }
+    return $n
+}
+
+# WHAT THE WINDOW IS AT WHEN THE USER HAS NOT CHOSEN: the SHARED font's own
+# size, so an ~/.xschem/xschemrc that re-sizes or re-families TkFixedFont before
+# this window is built is honoured.  CLAMPED into the band rather than refused
+# -- this is a value the user did not choose, so there is nobody to tell.
+#
+# ⚠ AND THE CLAMP OBLIGES `rdw::_font` TO IMPOSE IT.  MEASURED with
+# `font configure TkFixedFont -size 40` and no choice made: this proc answered
+# 32, `rdw::font_size` answered 32, the pane rendered 40, the plain click
+# refused with "already the largest (32)" while the text stood at 40 and the
+# Ctrl arm stepped 40 -> 31 in one click.  A number the model reports and the
+# screen contradicts is worse than either bound.  Row FZ15 fences it
+# behaviourally and row FZ13 structurally, on the arm that has no font at all.
+proc rdw::_base_size {} {
+    lassign [rdw::font_limits] lo hi
+    set n [rdw::_shared_size]
+    if {$n eq {}} { set n 10 }
+    if {$n < $lo} { return $lo }
+    if {$n > $hi} { return $hi }
+    return $n
+}
+
+# THE EFFECTIVE SIZE, AS AN INTEGER.  `::rdw_font_size` is `set_ne`'d to 0 in
+# xschem.tcl beside `ciw_font_size`; 0 -- or anything out of band -- means
+# "follow TkFixedFont", which is what lets an xschemrc or a --script rc pick the
+# starting size without knowing this proc exists.
+proc rdw::font_size {} {
+    set n [rdw::_chosen_size]
+    if {$n ne {}} { return $n }
+    return [rdw::_base_size]
+}
+
+# THE ONE SETTER.  Order-independent exactly as `ciw_set_font_size` is: an rc
+# may call it BEFORE or AFTER the window is built, because it records the model
+# and `rdw::_apply_font` is a no-op without a window.  1 accepted, 0 refused.
+proc rdw::set_font_size {n} {
+    set ok [rdw::_accept_size $n]
+    if {$ok eq {}} { return 0 }
+    set ::rdw_font_size $ok
+    rdw::_apply_font
+    return 1
+}
+
+# THE ONE ARITHMETIC DOOR: the button's plain click is +1, its Ctrl+click -1.
+#
+# ⚠ IT WRITES NOTHING ON THE ACCEPTED PATH.  The pane visibly changing IS the
+# confirmation, and a status write per click would evict the button column's
+# real verdicts -- the calculator's own rule (calculator.tcl:1985), and this
+# window's status line is the one surface issue 1362 exists about.
+#
+# ⚠ AND IT MUST SPEAK AT THE LIMITS.  A visible, enabled control that does
+# nothing and says nothing is indistinguishable from a broken one, which is
+# `rdw::inert`'s standing obligation ("THE BUTTON COLUMN", foot of this file).
+# The cost is real and is recorded in the issue file: a refusal overwrites
+# whatever verdict the button column had just written.  It happens only at the
+# two ends.
+proc rdw::font_step {dir} {
+    if {$dir ne {1} && $dir ne {-1}} { return 0 }
+    if {[rdw::set_font_size [expr {[rdw::font_size] + $dir}]]} { return 1 }
+    lassign [rdw::font_limits] lo hi
+    if {$dir < 0} {
+        rdw::status "Text size: already the smallest ($lo)."
+    } else {
+        rdw::status "Text size: already the largest ($hi)."
+    }
+    return 0
+}
+
+# THE TOOLTIP'S STRING, ONCE.  The user's own words, verbatim.
+proc rdw::_font_tip {} {
+    return {click to increase font one unit. Ctrl+click to decrease font one unit}
+}
+
 # ---------------------------------------------------------------------------
 # THE Tk LAYER.  Every command below sits behind rdw::have_tk.
 
@@ -2257,6 +2495,168 @@ proc rdw::color {role} {
     return [rdw::_color_fallback $role]
 }
 
+# ---------------------------------------------------------------------------
+# THE TEXT SIZE, Tk HALF -- ISSUE 1368.  Nothing below may be reached without a
+# display: `--nogui` has no `font` command AT ALL, measured, which is the same
+# trap the head of this file records for every other Tk command.
+
+# THE TWO PRIVATE NAMED FONTS, CREATED ON FIRST USE AND NEVER TkFixedFont.
+#
+# ⚠ DERIVED FROM `font configure TkFixedFont`, NOT FROM `font actual`.
+# `configure` answers the spelling AS CONFIGURED, so a TkFixedFont spelled in
+# PIXELS (a negative -size) is copied verbatim; `font actual` would have
+# converted it to points behind the user's back (measured: -14 -> 10).  With no
+# choice recorded the size is RE-COPIED from that spelling on every call, so an
+# untouched window is byte-for-byte the window that shipped.
+#
+# ⚠ AND THE SIZE IS SET ON EVERY CALL, NOT ONLY WHILE A CHOICE STANDS.  These
+# fonts outlive the widget and the window; a version that imposed a size only
+# while `rdw::_chosen_size` answered something could never PUT ONE BACK.
+# MEASURED with that version: `rdw::set_font_size 20` then withdrawing the
+# choice (`set ::rdw_font_size 0`) left the model answering 10 while the pane
+# still rendered 20, and the next PLAIN click -- the `+` arm -- shrank the text
+# from 20 to 11.  The same hole ran the other way through the clamp in
+# `rdw::_base_size`.  So: a choice wins; with none, the band's own answer wins
+# when the band moved the shared size, and TkFixedFont's verbatim spelling wins
+# when it did not.  Rows FZ15 (behaviour) and FZ13 (structure).
+#
+# ⚠ MONOSPACE, BECAUSE THE DUMPS ARE COLUMN-ALIGNED WITH SPACES.  Inheriting
+# TkFixedFont's FAMILY is what keeps `    %-*s : %s` lined up and what honours
+# an rc that re-families it before this window opens.  A proportional font
+# would destroy every block in the pane.  Row FZ16 asserts it directly --
+# `font metrics -fixed` and four glyphs advancing the same width -- because a
+# substituted family whose `0` advance happened to match would otherwise be
+# caught by nothing but FZ4's character count, and only by luck.
+#
+# ⚠ `font create` RAISES ON A NAME THAT ALREADY EXISTS, so the lsearch guard is
+# load-bearing rather than tidy (`ciw_font`, ciw.tcl:391, is the shape).  The
+# fallback answers TkFixedFont -- a window in the stock size beats no window --
+# and on that path it configures NOTHING, which is what keeps the shared font
+# out of reach even when everything else has gone wrong.
+proc rdw::_font {which} {
+    set name [expr {$which eq {hdr} ? {RdwHdrFont} : {RdwPaneFont}}]
+    if {![llength [info commands font]]} { return TkFixedFont }
+    ## A READ of the shared font, never a write -- and spelled without a
+    ## trailing option so row FZ4's write-needle stays exact.
+    set spec {}
+    if {[catch {font configure TkFixedFont} spec]} { set spec {} }
+    if {[lsearch -exact [font names] $name] < 0} {
+        if {[catch {font create $name {*}$spec}]} { return TkFixedFont }
+        if {$which eq {hdr}} { catch {font configure $name -weight bold} }
+    }
+    set want [rdw::_chosen_size]
+    if {$want eq {}} {
+        set raw [rdw::_shared_size]
+        set eff [rdw::_base_size]
+        if {$raw ne {} && $raw == $eff && [dict exists $spec -size]} {
+            set want [dict get $spec -size]
+        } else {
+            set want $eff
+        }
+    }
+    catch {font configure $name -size $want}
+    return $name
+}
+
+# THE METRIC REFERENCE THE PANE'S CHARACTER SHAPE IS SCALED AGAINST: the
+# SHARED font as it stands, EXCEPT when `rdw::font_limits` has refused its size
+# -- in which case it is the shared font at the band's own answer, because that
+# is the size this window actually renders.  Answered as a font DESCRIPTION
+# (an option/value list), never as a third named font: `font measure` and
+# `font metrics` both take one, and a third entry in `font names` would be a
+# second thing to keep in step.
+#
+# ⚠ THE `!=` ARM IS THE ONLY ONE THAT SUBSTITUTES, AND THAT IS DELIBERATE.
+# TkFixedFont may be spelled in PIXELS; `rdw::_base_size` is in POINTS, so
+# rewriting the size unconditionally would silently re-metric a pixel-spelled
+# font the band never objected to.  Same rule, and the same two accessors, as
+# `rdw::_font` uses one layer up.
+proc rdw::_ref_font {} {
+    set spec {}
+    if {[catch {font configure TkFixedFont} spec]} { return TkFixedFont }
+    if {![dict exists $spec -size]} { return TkFixedFont }
+    set raw [rdw::_shared_size]
+    set eff [rdw::_base_size]
+    if {$raw eq {} || $raw == $eff} { return TkFixedFont }
+    dict set spec -size $eff
+    return $spec
+}
+
+# THE GEOMETRY DEFENCE, AND IT IS NOT A REFINEMENT.
+#
+# The pane is sized in CHARACTER units, so a bigger font re-requests the
+# toplevel's size.  MEASURED, unmitigated: one step to size 20 took this window
+# from 893x498+1025+557 to 1757x914+161+141 -- nearly the whole 1920x1080
+# screen, and the window manager re-placed it across the desktop.  That is the
+# failure a user reports as "the button broke my window", and on a size the
+# window is BUILT at it happens at open time with no click at all.
+#
+# Scaling the 96x26 design shape by the ratio of the SHARED font's metrics to
+# the private font's holds the toplevel inside a couple of lines of 893x498
+# across the whole band -- measured 885..895 x 485..504 over sizes 6..24, with
+# the position unmoved, returning to EXACTLY 96x26 / 893x498 at the base size.
+#
+# ⚠ RECOMPUTED FROM THE CONSTANTS EVERY TIME, never stepped from the last
+# answer, so a hundred clicks accumulate no drift.
+#
+# ⚠ AND NO PIXEL CONSTANT APPEARS HERE.  Both metrics are ASKED of the real
+# fonts, exactly as `rdw::_status_show` asks the real widget (issue 1362): the
+# user's own X server is a different one from the dev display and is free to
+# substitute a family with different metrics.
+#
+# ⚠ THE REFERENCE IS THE BAND'S OWN ANSWER, NOT THE RAW SHARED FONT -- see
+# rdw::_ref_font.  Anchoring on a TkFixedFont the band had already refused
+# would have made the clamp buy nothing: MEASURED at
+# `font configure TkFixedFont -size 40`, a reference of 96 raw cells asked for
+# a 3284x1752 toplevel on a 1920x1080 screen while the pane itself rendered the
+# clamped 32.  Row FZ15.
+proc rdw::_pane_chars {} {
+    set W 96 ; set H 26
+    if {![llength [info commands font]]} { return [list $W $H] }
+    set f [rdw::_font pane]
+    set r [rdw::_ref_font]
+    set bw 0 ; set bh 0 ; set cw 0 ; set ch 0
+    catch {set bw [font measure $r 0]}
+    catch {set bh [font metrics $r -linespace]}
+    catch {set cw [font measure $f 0]}
+    catch {set ch [font metrics $f -linespace]}
+    if {[string is integer -strict $bw] && [string is integer -strict $cw] \
+        && $bw > 0 && $cw > 0} { set W [expr {round(96.0 * $bw / $cw)}] }
+    if {[string is integer -strict $bh] && [string is integer -strict $ch] \
+        && $bh > 0 && $ch > 0} { set H [expr {round(26.0 * $bh / $ch)}] }
+    if {$W < 20} { set W 20 }
+    if {$H < 4}  { set H 4 }
+    return [list $W $H]
+}
+
+# THE ONE PAINTER: both fonts, the pane's character shape, and the status
+# line's re-fit.  `rdw::build` calls it on its way out and `rdw::set_font_size`
+# calls it on every accepted step, so a window BUILT at a size chosen in an
+# earlier open opens at the right PIXEL size instead of at 1757x914.
+#
+# ⚠ THE `hdr` TAG IS SET HERE AND NOWHERE ELSE, AND THAT IS THE LOAD-BEARING
+# HALF.  It used to be `set hf [font actual TkFixedFont] ; dict set hf -weight
+# bold`, which captures a font DESCRIPTION, not a NAME -- a FROZEN SNAPSHOT.
+# MEASURED: after a size change the pane reported linespace 27 while the `hdr`
+# tag was still at linespace 17, so every block's own header line stayed small
+# while its body grew.  A named font is the only spelling that follows.  Row
+# FZ6 asserts both halves move together.
+#
+# ⚠ AND IT IS THE ONE PLACE THE PANE'S -width/-height ARE SET.  A copy of them
+# on the widget line in `build` would be a second setter for the same fact --
+# this file's own two-builders drift -- and would leave `_apply_font` unfenced.
+proc rdw::_apply_font {} {
+    if {![rdw::have_tk]} { return 0 }
+    if {![winfo exists .rdw.p.t]} { return 0 }
+    set pf [rdw::_font pane]
+    set hf [rdw::_font hdr]
+    lassign [rdw::_pane_chars] W H
+    catch {.rdw.p.t configure -font $pf -width $W -height $H}
+    catch {.rdw.p.t tag configure hdr -font $hf}
+    rdw::_status_show
+    return 1
+}
+
 # Raise-or-open, the calculator's singleton shape (calculator.tcl:412) plus the
 # live-Tk guard calc::open does not need and this one does: item B4 reaches
 # rdw::open from a key binding, and this window's own suite calls it under
@@ -2318,6 +2718,14 @@ proc rdw::build {} {
     ## rdw::_focus_handback catches that one grant and gives the keyboard back
     ## to the canvas; it is inert unless a dump path armed it.
     bind .rdw <FocusIn> {rdw::_focus_handback %W}
+    ## ⚠ AND THE PRESS THAT SAYS THE USER CAME HERE ON PURPOSE -- ISSUE 1369.
+    ## The hand-back's landing test asks whether the keyboard is IN this
+    ## window, which a grant re-routed to `.rdw.p.t` and a click on
+    ## `.rdw.p.t` both satisfy; this is the discriminator that tells them
+    ## apart.  It fires for every descendant (the toplevel's name is in every
+    ## child's bindtags, the same mechanism the FocusIn comment describes) and
+    ## it neither breaks nor moves the focus -- see rdw::_focus_click.
+    bind .rdw <ButtonPress> {rdw::_focus_click %W}
     ## ⚠ ESCAPE HAS TO LIVE HERE TOO -- ISSUE 1308, RULING DD-12.
     ## The command mode's `1`/`2`/`3`/`4` and `<Key-Escape>` are bound on the
     ## CANVAS. Issue 1306's fix let this window keep the keyboard when the user
@@ -2445,12 +2853,19 @@ proc rdw::build {} {
     ## surface underneath it.  See rdw::_status_show for the costed alternatives.
     ##
     ## ⚠ `-state disabled`, WHICH IS THE `text` SPELLING OF `readonly` FOR
-    ## ISSUE 1308's PURPOSE.  tk::TextButton1 takes the keyboard only when the
-    ## state is `normal`, exactly as tk::EntryButton1 did for the readonly
-    ## entry, so a click here still leaves the focus where it was -- and the
-    ## Text class bindings still select on a drag, which is what ruling DD-5
-    ## and rows CP14/CP16 need: the settings-file path item B5 writes here is
-    ## the most copy-worthy string in the window.
+    ## ISSUE 1308's PURPOSE: nothing typed here can reach a record of a
+    ## simulation, and the Text class bindings still select on a drag, which is
+    ## what ruling DD-5 and rows CP14/CP16 need -- the settings-file path item
+    ## B5 writes here is the most copy-worthy string in the window.
+    ##
+    ## ⚠ AND IT DOES NOT KEEP THE KEYBOARD OUT, WHICH THIS COMMENT USED TO
+    ## CLAIM IT DID (issue 1369).  `tk::TextButton1` calls `focus $w`
+    ## UNCONDITIONALLY (/usr/share/tcltk/tk8.6/text.tcl:579); only
+    ## `tk::EntryButton1` checks for `disabled` (entry.tcl:356), and that is
+    ## the readonly ENTRY this surface replaced.  So one Button-1 here really
+    ## does take the keyboard, `-takefocus 0` and all, and it writes Tk's
+    ## per-toplevel focus record -- which is what broke the dump's hand-back
+    ## until the landing test was widened.  See rdw::_focus_handback.
     ##
     ## ⚠ AND NO -textvariable, BECAUSE A `text` HAS NONE AND BECAUSE IT WOULD BE
     ## A SECOND WRITER.  `rdw::_status_show` is the one painter (row SL2); the
@@ -2545,11 +2960,74 @@ proc rdw::build {} {
         ::button .rdw.b.$id -text $label -width 8 -command [list rdw::button $id]
         pack .rdw.b.$id -side top -fill x -padx 4 -pady 2
     }
+    # ITEM 1368 -- THE TEXT SIZE CONTROL, IN THE USER'S OWN WORDS: "the 'aa'
+    # button you see in e-readers - 2nd a bigger".
+    #
+    # ⚠ `aA` AND NOT TWO RENDERED SIZES.  A Tk button has exactly ONE font, so
+    # the "2nd a bigger" is the capital's CAP HEIGHT against the lowercase
+    # x-height.  The two widgets that could really render two sizes -- a canvas
+    # and a text -- can both take the keyboard, which issue 1308 forbids for
+    # every widget in this window.
+    #
+    # ⚠ IT IS NOT IN `rdw::_buttons`, AND THAT IS NOT AN OVERSIGHT.  That table
+    # feeds `rdw::button_state`, `rdw::_active_buttons` and
+    # `rdw::_active_phrase`, so an entry there would put "aA" into the chrome
+    # sentence "only Up, Down, Delete, Add and Save do anything".  A font
+    # control is not a list action; it is never greyed and never refuses on a
+    # list identity.  `-side bottom` with a gap says the same thing visually.
+    #
+    # ⚠ AND THE Ctrl ARM ENDS IN `break`.  MEASURED: the `break` stops the
+    # Button class <Button-1>, so `tk::ButtonUp` never invokes -command and
+    # exactly one of the two arms fires -- under Control, Control+NumLock and
+    # Control+CapsLock alike.  WITHOUT it a Ctrl+click steps DOWN and then
+    # straight back UP, which reads on screen as a button that ignores Ctrl.
+    # The 0x4c modifier mask `rdw::_digit` uses is deliberately NOT copied
+    # here: that mask exists so a chord the CANVAS spends is not swallowed, and
+    # a button press has no such conflict -- Shift+click and Alt+click read as
+    # plain clicks, which is Tk's own modifier matching.
+    #
+    # ⚠ AND THE `break` COSTS THE TOPLEVEL'S OWN <ButtonPress> BINDING, SO THIS
+    # SCRIPT PAYS IT BACK BY HAND.  `bindtags .rdw.b.fontsize` is
+    # `.rdw.b.fontsize Button .rdw all`: a `break` in the WIDGET tag's script
+    # stops `Button` -- which is what it is for -- and stops `.rdw` and `all`
+    # with it.  MEASURED on :99 with issue 1369's disarm live: after a real
+    # plain click on this button `rdw::focus_pending` is 0, after a click on
+    # `.rdw.b.up` 0, after a click in `.rdw.p.t` 0, and after a real Ctrl+click
+    # on this button 1 -- the ONE gesture in the window that left the one-shot
+    # armed, so the next focus grant handed the keyboard to the CANVAS while
+    # the plain arm of the same button leaves it here.  `rdw::_focus_click`
+    # neither breaks nor moves the focus (see its own comment), so calling it
+    # first restores exactly what the toplevel binding would have done.  Row
+    # FZ14 fences the behaviour and row FZ12 the script; without them FZ7 sees
+    # only the size delta and the two arms differ in nothing it looks at.
+    ::button .rdw.b.fontsize -text {aA} -width 8 -command {rdw::font_step 1}
+    bind .rdw.b.fontsize <Control-Button-1> \
+        {rdw::_focus_click %W ; rdw::font_step -1 ; break}
+    ## THE TREE HAS EXACTLY ONE TOOLTIP MECHANISM -- `balloon` (xschem.tcl:14238)
+    ## -- and it bakes a FIXED string into <Enter>, which is precisely the shape
+    ## this fixed tip needs.  No second mechanism is warranted and none is
+    ## written.  ⚠ `balloon` RE-BINDS <Enter>/<Leave> on every call
+    ## (calculator.tcl:1119 records this), so it is called ONCE, here.
+    ## ⚠ THE 300 ms IS A DEPARTURE from the 1000 ms every other call site in the
+    ## tree takes, on the user's own words "as soon as user hovers over it".
+    ## Unratified -- rule debt 1368.
+    catch {::balloon .rdw.b.fontsize [rdw::_font_tip] 1 0 300}
+    pack .rdw.b.fontsize -side bottom -fill x -padx 4 -pady {8 2}
     pack .rdw.b -side right -fill y
 
     # The pane.  Read-only, selectable, exporting the X selection.
     frame .rdw.p -background [rdw::color panel]
-    text .rdw.p.t -width 96 -height 26 -font TkFixedFont -wrap word \
+    ## ⚠ NO -width / -height AND NO TkFixedFont HERE -- ISSUE 1368.
+    ## The pane's character shape and both its fonts are `rdw::_apply_font`'s,
+    ## called at the foot of this proc: ONE setter, so a size the user chose in
+    ## an earlier open cannot be honoured by the font and contradicted by the
+    ## widget's 96x26.  Nothing between here and there pumps the event loop, so
+    ## the pane is never MAPPED at the wrong shape.
+    ##
+    ## ⚠ AND THE FONT IS PRIVATE.  `-font TkFixedFont` is the SHARED named font
+    ## every bare `text` widget in the tree defaults to (measured), so a size
+    ## control over it would resize eight other windows on the same click.
+    text .rdw.p.t -font [rdw::_font pane] -wrap word \
         -state [rdw::_pane_state] -exportselection [rdw::_exportsel] \
         -borderwidth 1 -relief sunken \
         -background [rdw::color field] \
@@ -2558,16 +3036,20 @@ proc rdw::build {} {
         -selectforeground [rdw::color selectfg] \
         -yscrollcommand {.rdw.p.ys set}
     scrollbar .rdw.p.ys -command {.rdw.p.t yview}
-    # `-wrap word` rather than a horizontal scrollbar: the incompleteness
-    # sentence and the five silences are long, and a sentence clipped off the
-    # right edge is a sentence the user does not read.  Wrapping is a DISPLAY
+    # `-wrap word` rather than a horizontal scrollbar: the five silences are
+    # long (RW_NOTOP is ~250 characters), and a sentence clipped off the right
+    # edge is a sentence the user does not read.  Wrapping is a DISPLAY
     # property -- a copied selection still carries the original lines, so the
     # paste shape is unaffected.
-    catch {
-        set hf [font actual TkFixedFont]
-        dict set hf -weight bold
-        .rdw.p.t tag configure hdr -font $hf
-    }
+    # (ISSUE 1374: the incompleteness sentence used to be named here too.  At
+    # 57 characters it no longer wraps at this width; the silences still do,
+    # and they are what this line is for.)
+    ## ⚠ THE `hdr` TAG'S FONT IS SET BY `rdw::_apply_font`, NOT HERE -- ISSUE
+    ## 1368.  This line used to be `set hf [font actual TkFixedFont] ; dict set
+    ## hf -weight bold`, which captures a font DESCRIPTION and not a NAME: a
+    ## FROZEN SNAPSHOT that follows nothing.  MEASURED after a size change --
+    ## pane linespace 27, `hdr` tag still 17 -- so every block header stayed
+    ## small while its body grew.
     .rdw.p.t tag configure dim  -foreground [rdw::color disabledfg]
     .rdw.p.t tag configure dev  -foreground [rdw::color accent]
     .rdw.p.t tag configure note -foreground [rdw::color notefg]
@@ -2652,6 +3134,11 @@ proc rdw::build {} {
     pack .rdw.p.t -side left -fill both -expand 1
     pack .rdw.p -side left -fill both -expand 1
 
+    ## ITEM 1368.  The ONE painter for both fonts and for the pane's character
+    ## shape.  MEASURED: without it a reopen comes back at TkFixedFont size 10
+    ## with the user's chosen size still standing in the model, and the `hdr`
+    ## tag carries no font at all.
+    rdw::_apply_font
     rdw::apply_list_state
     rdw::render_pane
     return .rdw
@@ -2714,8 +3201,9 @@ proc rdw::render_pane {} {
 # on a 96-column pane holding a 12-character parameter row that is a stub of
 # colour rather than a line.  Ending at the START of the next line is what
 # paints past the last character to the right edge.  A WRAPPED line (the pane
-# is -wrap word and the incompleteness sentence really does wrap) is one
-# logical line and is shaded whole by the same span.
+# is -wrap word and the five silences really do wrap -- the incompleteness
+# sentence did too until issue 1374 cut it to 57 characters) is one logical
+# line and is shaded whole by the same span.
 #
 # The `insert` mark follows, so anything that reads the widget agrees with the
 # variable -- issue 1324's measured disagreement (insert 9, targetrow 3) is
@@ -3539,9 +4027,9 @@ proc rdw::_focus_canvas {} {
 #   * ONLY WHEN A MAP IS ACTUALLY COMING.  A dump into an already-mapped window
 #     arms nothing: there is no grant to catch, and an armed flag left lying
 #     around is a bounce waiting to happen.
-#   * ONLY WHEN THE KEYBOARD LANDED ON THE TOPLEVEL ITSELF.  The decision is
-#     WHERE THE KEYBOARD ENDED UP -- `[focus]` -- and not which window named
-#     the event.  Issue 1306: deciding on `%W` alone shipped a hand-back that
+#   * ONLY WHEN THE KEYBOARD LANDED IN THIS WINDOW.  The decision is WHERE
+#     THE KEYBOARD ENDED UP -- `[focus]` -- and not which window named the
+#     event.  Issue 1306: deciding on `%W` alone shipped a hand-back that
 #     BOUNCED the user's deliberate click into the text pane, which is the one
 #     focus this window is entitled to keep and the whole reason the window
 #     exists (select a block, copy it into a design-review document).
@@ -3558,25 +4046,64 @@ proc rdw::_focus_canvas {} {
 #         NotifyNonlinearVirtual, along the ANCESTOR chain.  `%W` is then
 #         literally `.rdw` for a click on the pane, so no `%W` test whatever
 #         can tell that click from the window manager's map-time grant.
-#     The discriminator that CAN is the one the WM itself supplies: the grant
-#     lands on the TOPLEVEL (`[focus]` eq `.rdw`, detail NotifyAncestor), while
-#     every deliberate landing lands on a CHILD (`[focus]` eq `.rdw.p.t`).
 #
-#     ⚠ AND THE OBVIOUS GLOB IS WRONG.  `[string match .rdw* [focus]]` -- the
-#     line issue 1306's own recommended fix prints -- matches the DESCENDANT
-#     `.rdw.p.t` exactly as readily as `.rdw`, so the click is still bounced.
-#     Measured 3/3 under a WM and 3/3 WM-less.  The test is EXACT EQUALITY
-#     against the toplevel, and row K16 of the window suite keeps `string
-#     match` out of this proc so nobody reintroduces it as a simplification.
+#     ⚠ AND THE LANDING TEST USED TO BE `[focus] eq .rdw`, WHICH IS TRUE ONLY
+#     UNTIL THE USER'S FIRST CLICK IN THIS WINDOW -- ISSUE 1369, IN THE USER'S
+#     OWN WORDS: "another click to look at another device's OP info does not
+#     have intended effect - it just focuses the schematic window and doesn't
+#     send the OP info for that device to RDW".  TK KEEPS A FOCUS RECORD PER
+#     TOPLEVEL: once any window INSIDE `.rdw` has held the Tk focus, every
+#     later grant to this toplevel is resolved by Tk to THAT CHILD, and the
+#     toplevel sees the grant as a FocusIn with detail NotifyVirtual while
+#     `[focus]` already reads the child.  MEASURED on :99 under openbox, one
+#     toplevel with one `-state disabled` text pane in it, the keyboard parked
+#     in another window before each re-map:
+#         record clean           re-map -> FocusIn .t d=NotifyAncestor, [focus] .t
+#         after one pane click   re-map -> FocusIn .t d=NotifyVirtual,  [focus] .t.p
+#     ONE ORDINARY GESTURE WRITES THAT RECORD, and it is a gesture this window
+#     asks for: `tk::TextButton1` calls `focus $w` UNCONDITIONALLY
+#     (/usr/share/tcltk/tk8.6/text.tcl:579), unlike `tk::EntryButton1`, which
+#     skips a `disabled` widget (entry.tcl:356).  So one Button-1 in
+#     `.rdw.p.t` -- or in `.rdw.s.msg`, `-takefocus 0` and all -- is enough,
+#     and from that click on the equality never fired again: the one-shot
+#     stayed armed for ever and this window kept the keyboard after every
+#     dump.  The record is freed only by `rdw::close`'s `destroy`, which is
+#     why closing and reopening the window used to "fix" it for one click.
+#     The question is therefore not "did the keyboard land ON the toplevel"
+#     but "did it land IN this window", and `winfo toplevel` is what asks it.
 #
-# COST, STATED (rejected alternatives are in the receipt), AND IT IS TRUE FOR
-# THE FIRST TIME: a deliberate landing does NOT spend the one shot -- only a
-# real grant does -- so if a window manager maps this window and never focuses
-# it, the armed flag survives, and the user's next click on the window's FRAME
-# or on its BUTTON COLUMN (Tk buttons do not take focus on X, so `[focus]`
-# stays at `.rdw`) hands the keyboard back to the canvas exactly once.  A click
-# on the TEXT never does.  A timer disarm would remove that wart and
-# reintroduce the flakiness this fix exists to delete.
+#     ⚠ AND THE OBVIOUS GLOB IS STILL WRONG.  `[string match .rdw* [focus]]`
+#     -- the line issue 1306's own recommended fix prints -- was refuted there
+#     because it matches the DESCENDANT `.rdw.p.t` (measured 3/3 under a WM and
+#     3/3 WM-less), and it stays refuted here for a second reason: it also
+#     matches a SIBLING toplevel named `.rdwfoo`, because it asks a question
+#     about a STRING where this one is about the widget tree.  Row K16 of the
+#     window suite keeps `string match` out of this proc so nobody
+#     reintroduces it as a simplification.
+#
+# THE DELIBERATE CLICK IS NOT DECIDED BY THE LANDING AT ALL ANY MORE -- IT IS
+# DISARMED BEFORE IT LANDS.  Once the landing test asks "in this window", a
+# grant re-routed to `.rdw.p.t` and the user's own click into `.rdw.p.t` look
+# identical at the FocusIn, so the discriminator moves to the gesture:
+# `rdw::_focus_click`, bound to `<ButtonPress>` on the toplevel tag in
+# rdw::build, spends the one-shot the moment a press arrives anywhere in this
+# window.  BOTH ORDERS MEASURED, and they are not the same order:
+#   * TK'S OWN PATH -- a `focus` call, which is what `event generate` produces
+#     and what a WM-less server leaves Tk to do: the press bindings run
+#     SYNCHRONOUSLY inside the press and the FocusIn Tk queues for `.rdw` is
+#     processed after them, so the disarm wins and the pane keeps the keyboard.
+#     Rows F3 and F4 of the keys suite are that fence.
+#   * A REAL CLICK-TO-FOCUS WINDOW MANAGER -- openbox on :99, driven through
+#     XTEST so the WM's own passive grab is really involved: the WM sets the
+#     input focus FIRST and REPLAYS the press, so the FocusIn arrives BEFORE
+#     the ButtonPress and the hand-back does fire.  The click still wins,
+#     because `tk::TextButton1`'s own `focus $w` then takes the keyboard
+#     straight back -- measured with the one-shot armed, deliberate click on
+#     the pane: `[focus]` ends on the pane, with the press disarm and without
+#     it.  So the disarm is what protects the Tk-side order, and the class
+#     binding is what protects the WM-side one.
+# That also deletes the wart the previous revision recorded here: a flag left
+# armed because no grant ever came no longer bounces the user's next click.
 #
 # ⚠ `remapping` IS THE SECOND NARROWING'S ESCAPE HATCH, NOT A HOLE IN IT
 # (issue 1340).  "Only when a map is actually coming" is a statement about the
@@ -3604,11 +4131,46 @@ proc rdw::_focus_handback {{w {}}} {
     ## THE DECISION.  Strictly BELOW the focus_pending early return, because
     ## --nogui has no `focus` command at all and this proc survives headless
     ## only by returning before it gets here.
+    ##
+    ## ⚠ `winfo toplevel`, AND NEITHER AN EQUALITY NOR A GLOB (issue 1369):
+    ## after one click anywhere in this window Tk resolves every later grant to
+    ## the child that click focused, so the keyboard lands IN the window
+    ## without ever landing ON it.  `winfo exists` first, because `[focus]` is
+    ## the empty string when no window of this application has the keyboard and
+    ## `winfo toplevel` raises on it.
     set land {} ; catch {set land [focus]}
-    if {$land ne {.rdw}} { return 0 }
+    if {$land eq {} || ![winfo exists $land]} { return 0 }
+    set top {} ; catch {set top [winfo toplevel $land]}
+    if {$top ne {.rdw}} { return 0 }
     set focus_pending 0
     rdw::_focus_canvas
     return 1
+}
+
+# THE GESTURE THE LANDING TEST CAN NO LONGER TELL FROM THE WINDOW MANAGER'S
+# GRANT -- AND THE REASON IT NO LONGER HAS TO.  A press anywhere in this window
+# means the user came here on purpose, so it spends the pending hand-back
+# without moving the keyboard.  Bound to `<ButtonPress>` on the TOPLEVEL tag,
+# which is in every child's bindtags, so one binding covers the pane, the
+# status surface, the five buttons, the `aA` button and the frame.
+#
+# ⚠ WITH EXACTLY ONE EXCEPTION, AND IT CALLS THIS PROC BY NAME.  The `aA`
+# button's `<Control-Button-1>` script ends in `break` -- it has to, or
+# `tk::ButtonUp` fires the plain arm on top of the Ctrl one -- and a `break` in
+# a WIDGET tag's script stops the `.rdw` tag as well as `Button`.  MEASURED
+# before it was repaired: a real Ctrl+click on `aA` was the one gesture in this
+# window that left `rdw::focus_pending` at 1.  That binding therefore calls
+# `rdw::_focus_click %W` itself (rdw::build, issue 1368); row FZ14 asserts the
+# two arms of that button leave the one-shot in the same state.
+#
+# ⚠ IT MUST NOT `break` AND MUST NOT MOVE THE FOCUS.  The Text class binding
+# that runs after it sets the insert mark and the selection anchor that item
+# R3 (issues 1339 and 1344) depends on: the record pollution above is cured by
+# deciding correctly, never by disarming Tk.
+proc rdw::_focus_click {{w {}}} {
+    variable focus_pending
+    set focus_pending 0
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -4497,17 +5059,169 @@ proc rdw::_triple_in {lst param} {
     return [lindex $lst $i]
 }
 
-# ⚠ ADD MINTS NO `kind`, EVER (invariant I1, measured rule R3).  The kind is
-# the raw-name SHAPE -- 0 is i(<dev>[p]), 1 is bare, 2 is v(<dev>[p]) -- so a
-# guessed one writes a `.save` card that matches nothing, and one bogus card
-# destroys the whole operating point.  A parameter with no declared triple
-# anywhere is refused by name instead.
-proc rdw::_find_triple {cls cell param} {
+# ⚠ ADD GUESSES NO `kind`, EVER (invariant I1, measured rule R3) -- AND
+# THIS PARAGRAPH USED TO SAY "MINTS NO `kind`, EVER" AND TO GIVE A REASON THAT
+# IS NOT TRUE OF THIS TREE (issue 1372).  It said: the kind is the raw-name
+# SHAPE, "so a guessed one writes a `.save` card that matches nothing, and one
+# bogus card destroys the whole operating point".  MEASURED on the user's own
+# M18, both halves: `op_annot::_cards_for` (op_annot.tcl) emits
+# `.save ${dev}[${param}]` and NEVER READS THE KIND, so a kind-0 row and a
+# kind-1 row produce BYTE-IDENTICAL cards and no kind can make a card bogus.
+# The kind is read at READ time only, by `op_annot::_wrap` / `_wrap_alts`, and
+# `_wrap_alts` already falls back to the bare spelling.  An invariant whose
+# stated reason is refuted is worse than no invariant: the next reader either
+# obeys a rule nobody can justify or deletes it along with the real hazard it
+# was standing in front of.
+#
+# THE REAL HAZARD IS THE PARAM NAME, NOT THE KIND, AND IT IS STILL HERE.  An
+# accepted row joins `op_param_lists::_save_set`'s annotation+summary UNION,
+# `apply` writes that union into the descriptor's `params`, and `_cards_for`
+# turns `params` into the NEXT deck's `.save` cards -- MEASURED: an accepted
+# summary Add of `cgs` grew `_cards_for M18` from six cards to seven.  Spec
+# op_param_lists.md §3.2 / rule R5 records that `show`'s catalogue is a
+# SUPERSET of the savable set (`ib` is the named example), that good cards plus
+# ONE bogus card give a silent zero column, and that an all-bogus set makes
+# ngspice write no raw at all.  So the name a user adds from list 3 on a
+# dump-tier simulator can still poison a run on a per-device-card one.  That
+# trade is on the owed ledger as rule debt 1372.
+#
+# WHAT THE THREE LOOKUPS BELOW ARE, IN ORDER.  A DECLARED triple always wins,
+# and all three lookups are byte-for-byte the ones that were here: the two
+# effective lists, then the PDK's declaration.  Only when all three are silent
+# does `devpath` get its turn -- and then the kind is READ OFF THE RAW VECTOR
+# THIS RUN PUBLISHED (`rdw::_run_triple`), never picked.  A run that names no
+# such column for this device still answers {}, and the button still refuses by
+# name.  `devpath` is optional so that no existing caller's arity moves: a
+# caller that passes none -- the store suite's reduced copy of this model, and
+# any future one with no sheet to stand on -- gets exactly the three declared
+# lookups it got before, which is why no row of this feature's suite moves
+# except the one whose verdict this item reverses.
+proc rdw::_find_triple {cls cell param {devpath {}}} {
     foreach ln {annotation summary} {
         set t [rdw::_triple_in [::op_param_lists::effective $cls $ln $cell] $param]
         if {$t ne {}} { return $t }
     }
-    return [rdw::_triple_in [::op_param_lists::seed $cls] $param]
+    set t [rdw::_triple_in [::op_param_lists::seed $cls] $param]
+    if {$t ne {}} { return $t }
+    return [rdw::_run_triple $devpath $param]
+}
+
+# THE LAST RESORT, AND EVERY FIELD OF IT IS MEASURED (issue 1372).
+#
+# The user's complaint: "I put cursor on cgs and the clicked Add button and
+# said add to all mos ... for summary list, but, later, when I send summary
+# list with 2 key, it never shows up."  MEASURED end to end on their own bench:
+# nothing downstream dropped it, because nothing was ever written.  List 3
+# offers 88 rows for M18 and the sky130 declaration names six, so Add was
+# refused for 82 of the 88 on BOTH target lists and accepted for 0 -- the user
+# did not hit an edge case, they hit the only behaviour.
+#
+# `xschem raw list` is the run's own catalogue, so the spelling it holds is a
+# MEASUREMENT of the shape and not an inference about it: for M18 every merged
+# column comes back BARE (`@m.x1.x1.xm18.msky130_fd_pr__nfet_01v8_lvt[cgs]`),
+# kind 1 by _wrap's own table, because `op_annot::opdump_read` injects the
+# sidecar dump with `xschem raw add`.
+#
+# ⚠ THE LABEL IS THE PARAM, AND THAT IS NOT A GUESS EITHER.  A DISPLAY LABEL
+# that differs from the raw name (`{id ids 0}`, IHP's shipped shape) is a PDK
+# decision, and the only honest label for a column no PDK has named is the
+# column's own name.  `op_param_lists::set_list` keeps one entry per label, so
+# a mint whose label collided with a declared row would silently replace it
+# (issue 1288) -- the store says so, in its own words, through `_store_tail`.
+#
+# ⚠ THREE `catch`es AND NO RAISE.  This runs inside a button's decision core,
+# which must answer even with no raw loaded, no seam registered and no ase.tcl
+# at all -- the --nogui arm of this feature's suite is exactly that.  Every
+# failure is the same fact, "this run does not tell me", and the caller refuses
+# by name.
+#
+# STATED COST, and it is the one direction this can be wrong in: if a raw
+# carries the column ONLY as `i(@dev[p])` while some OTHER spelling was written
+# first, the minted kind reads that other column.  `ase::op_vector_for` answers
+# first-in-raw-order for exactly this reason and says so; the residual is a
+# blank row, which is an error in the EMPTY direction and never a wrong number.
+proc rdw::_run_triple {devpath param} {
+    if {$devpath eq {} || $param eq {}} { return {} }
+    set v {}
+    catch {set v [::ase::op_vector_for $devpath $param]}
+    if {$v eq {}} { return {} }
+    set k {}
+    catch {set k [::op_annot::_kind_of_vector $v]}
+    if {$k eq {}} { return {} }
+    return [list $param $param $k]
+}
+
+# THE DEVICE PATH AN ADD MAY READ THE RUN WITH, OR {} -- GUARDED ON SHEET
+# IDENTITY (issue 1372, on issue 1322's own axis).
+#
+# ⚠ A BLOCK OUTLIVES THE RAW AND THE SHEET IT CAME FROM, ON PURPOSE.
+# `rdw::close` keeps the dumps so they can be worked with later, and issue 1322
+# is explicit that reviewing two sheets side by side is what this window is
+# for.  So "the live raw" and "the run this row was read out of" are two
+# different things the moment the user loads another sheet, and reading the
+# first while claiming the second is how a number gets attributed to the wrong
+# device -- 1322's own defect, one door along.
+#
+# The stamp is the axis: `rdw::_capture_subject` records `schname` AT DUMP TIME
+# and this proc mints nothing unless the sheet then open is still that one.  A
+# stale block therefore gets the three declared lookups and today's refusal,
+# and the refusal SAYS SO (`rdw::_add_why`) -- otherwise the user reads it as
+# the same bug coming back.
+#
+# ⚠ IT DOES NOT REFUSE THE EDIT.  Ruling DD-16 rules the cross-sheet edit
+# ALLOWED and `rdw::_sheet_note` says so on the success arm; this guard narrows
+# only what may be MEASURED, which is a different question with a different
+# answer.  A plain string compare, for `_sheet_note`'s own three reasons
+# (issues 1327, 1329, row BT22) -- and its cost is the same one: a sheet opened
+# through a symlink mints nothing and is refused.  Empty in the empty
+# direction.
+proc rdw::_subject_devpath {subject} {
+    set src {}
+    catch {set src [dict get $subject schname]}
+    if {$src eq {}} { return {} }
+    set now {}
+    catch {set now [xschem get schname]}
+    if {$now eq {} || $src ne $now} { return {} }
+    set inst {}
+    catch {set inst [dict get $subject instname]}
+    if {$inst eq {}} { return {} }
+    set dp {}
+    catch {set dp [::op_annot::devpath $inst]}
+    return $dp
+}
+
+# CAN AN ADD OF THIS PARAMETER BE WRITTEN AT ALL?  {} when it can, the refusal
+# sentence when it cannot (issue 1372).
+#
+# ⚠ IT EXISTS SO THE USER IS NOT CHARGED A MODAL FOR A REFUSAL.  MEASURED on
+# their own bench: `rdw::button` raised `rdw::scope_dialog` FIRST and reached
+# `rdw::_edit` only after it, so the user answered a two-part modal question --
+# which devices, which list -- and was THEN told the whole thing was
+# impossible, once, into a four-line status pane.  That is why the report reads
+# "it never shows up" and not "it refused".
+#
+# ⚠ ONE RULE, TWO DOORS, WHICH IS `op_param_lists::reduce_why`'s AND
+# `governs`' OWN SHAPE.  The rule is `rdw::_find_triple` returning {} and it is
+# asked in exactly one place; this proc only words it, and `rdw::_edit` keeps
+# its own call unchanged, so a caller reaching the decision core directly -- a
+# key, a menu, a suite row -- gets the same verdict with the same sentence.
+#
+# ⚠ AND IT ANSWERS ONLY THE LIST-INDEPENDENT HALF.  "Already in the list" is
+# the other way an Add is refused, and WHICH list is precisely what the dialog
+# is being raised to ask -- so that one still costs a dialog, correctly: the
+# answer determined it.
+proc rdw::_add_why {subject param} {
+    set cls {}
+    catch {set cls [dict get $subject class]}
+    if {$cls eq {} || $param eq {}} { return {} }
+    set cell {}
+    catch {set cell [dict get $subject cellname]}
+    set dp [rdw::_subject_devpath $subject]
+    if {[rdw::_find_triple $cls $cell $param $dp] ne {}} { return {} }
+    if {$dp eq {}} {
+        return "$param is in no list and no PDK descriptor declares it, and this block was dumped from another sheet, so this run cannot be asked what it calls the column. Press 3 over the device on the sheet it lives on, then Add."
+    }
+    return "$param is in no list, no PDK descriptor declares it, and this run published no column called $param for this device - so this window cannot tell which raw-name shape it has, and it will not guess one. A PDK declares it with op_annot::register."
 }
 
 # The STORE KEY a REORDER writes at: the flavor entry that actually GOVERNS
@@ -4607,6 +5321,32 @@ proc rdw::_write_key {cls cell listname scope} {
 # promise nothing about drawn ORDER, so their sentences are already complete
 # and true; R2 is the item that promises the schematic follows, which is the
 # same argument row RE6 makes for issue 1330.
+# WHERE THE TRIPLE CAME FROM, SAID ONCE, ON THE MINT ARM ONLY (issue 1372).
+#
+# ONE CLAUSE, ON AN ADD THAT MINTED, and `rdw::_drawn_note`'s discipline
+# exactly.  A triple taken from a DECLARATION carries the PDK's own label and
+# kind and needs no clause -- that is the ordinary case and a sentence on every
+# press is noise.  A MINTED one carries the shape THIS RUN published, which is
+# a different fact, is the whole of what issue 1372 changed, and is the one
+# thing the user would otherwise have to take on trust.
+#
+# ⚠ IT RE-ASKS THE RULE RATHER THAN BEING TOLD.  `rdw::_find_triple` with no
+# devpath is the three DECLARED lookups and nothing else, so "all three were
+# silent" is asked here in the same words it is asked in the decision -- a
+# boolean threaded down from the add arm would be a second statement of the
+# same rule, and it is the kind that rots without a row noticing.
+#
+# ⚠ AND IT MUST THEREFORE BE ASKED BEFORE THE WRITE, WHICH IS WHY THE CALL SITE
+# IS THE ADD ARM AND NOT THE PLACE THE CLAUSE IS APPENDED.  `set_list` puts the
+# minted triple INTO the very list `effective` reads, so the same question
+# asked one line after the store call answers "declared" for every accepted Add
+# and this clause would be dead on every press -- vacuous, and green.
+proc rdw::_mint_note {op cls cell param} {
+    if {$op ne {add}} { return {} }
+    if {[rdw::_find_triple $cls $cell $param] ne {}} { return {} }
+    return {No list and no PDK descriptor declares it, so the raw-name shape was read from what this run published.}
+}
+
 proc rdw::_drawn_note {op listname} {
     if {$op ne {up} && $op ne {down}} { return {} }
     if {$listname ne {summary}} { return {} }
@@ -4647,7 +5387,7 @@ proc rdw::_shadow_why {scope cls listname cell skey key} {
     }
     set which [expr {$glob eq {} ? {an entry} : "the device-flavor entry $glob"}]
     if {$scope eq {broad}} {
-        return "The $cls class list moved, but $which in the settings file also matches this cell and wins for it, so this device's own rows did not change - precedence is file order."
+        return "The [::op_param_lists::class_label $cls] class list moved, but $which in the settings file also matches this cell and wins for it, so this device's own rows did not change - precedence is file order."
     }
     if {$scope eq {narrow}} {
         # RULING DD-8: PRECEDENCE IS FILE ORDER AND NOTHING IS RANKED.  A
@@ -4765,6 +5505,12 @@ proc rdw::_sheet_note {subject} {
 proc rdw::_edit {op subject listname scope param} {
     set cls  [dict get $subject class]
     set cell [dict get $subject cellname]
+    ## ⚠ `$cls` IS THE STORE KEY AND `$dcls` IS THE PROSE, AND THEY ARE NOT
+    ## INTERCHANGEABLE (issue 1373).  Every `::op_param_lists::` call below
+    ## keeps taking `$cls`; every sentence takes `$dcls`.  The key is what the
+    ## user types into a settings file and is compared with `eq`, so writing
+    ## the display name into a key would mint a dead entry.
+    set dcls [::op_param_lists::class_label $cls]
     if {$scope eq {governing}} {
         # UP AND DOWN, WHICH RAISE NO DIALOG AND SO HAVE NO ANSWER TO OBEY.
         # They write at whatever entry governs this device today, because a
@@ -4774,14 +5520,19 @@ proc rdw::_edit {op subject listname scope param} {
         set key  [lindex $g 1]
         if {$skey eq {flavor}} {
             set base  [::op_param_lists::effective $cls $listname $cell]
-            set where "for cells matching [lindex $key 1] of class $cls"
+            set where "for cells matching [lindex $key 1] of class $dcls"
         } else {
             set base  [::op_param_lists::effective $cls $listname]
-            set where "for class $cls"
+            set where "for class $dcls"
         }
     } elseif {$scope eq {narrow}} {
+        ## ⚠ THE TWO REFUSALS BELOW POINT AT A BUTTON, so their class wording
+        ## must be BYTE-IDENTICAL to `rdw::scope_dialog_build`'s `.sc.broad`
+        ## -text (issue 1373).  Both sides call `class_label`; a literal on
+        ## either side names a radiobutton that does not exist by that name.
+        ## Row CL8 is the fence.
         if {$cell eq {}} {
-            return [list refused "this device's symbol has no cell name, so there is no device-flavor entry to write. Choose every device of class $cls instead."]
+            return [list refused "this device's symbol has no cell name, so there is no device-flavor entry to write. Choose every device of class $dcls instead."]
         }
         ## ⚠ A NARROW KEY IS A GLOB, AND NOT EVERY CELL NAME IS A GLOB THAT
         ## MATCHES ITSELF (item B5-2).  The flavor key is stored verbatim and
@@ -4798,7 +5549,7 @@ proc rdw::_edit {op subject listname scope param} {
         ## refusing every cell name containing `*` would refuse a legal
         ## filename for a case nobody has hit.
         if {![string match -nocase $cell $cell]} {
-            return [list refused "the cell name $cell contains glob characters, and a device-flavor entry is matched as a glob - a key written from it would never match this device again. Choose every device of class $cls instead."]
+            return [list refused "the cell name $cell contains glob characters, and a device-flavor entry is matched as a glob - a key written from it would never match this device again. Choose every device of class $dcls instead."]
         }
         set g     [rdw::_write_key $cls $cell $listname narrow]
         set skey  [lindex $g 0]
@@ -4810,10 +5561,11 @@ proc rdw::_edit {op subject listname scope param} {
         set skey  [lindex $g 0]
         set key   [lindex $g 1]
         set base  [::op_param_lists::effective $cls $listname]
-        set where "for class $cls"
+        set where "for class $dcls"
     }
+    set mint {}
     set i [rdw::_index_of $base $param]
-    set notin "$param is not in the $cls $listname list. The pane also shows rows this run published that no list declares, and only the list's own rows can be edited here."
+    set notin "$param is not in the $dcls $listname list. The pane also shows rows this run published that no list declares, and only the list's own rows can be edited here."
     ## ⚠ AND ON THE BROAD ARM IT IS NOT ALWAYS TRUE.  The broad base is the
     ## CLASS list, which for a device a flavor entry governs is NOT the list
     ## the pane's rows came from -- so a row the user can plainly see would be
@@ -4823,7 +5575,7 @@ proc rdw::_edit {op subject listname scope param} {
         set seen {}
         catch {set seen [::op_param_lists::effective $cls $listname $cell]}
         if {[rdw::_index_of $seen $param] >= 0} {
-            set notin "$param is in this device's own $listname list but not in the $cls class list, so a class-wide change cannot reach it. Choose this device flavor only instead."
+            set notin "$param is in this device's own $listname list but not in the $dcls class list, so a class-wide change cannot reach it. Choose this device flavor only instead."
         }
     }
     switch -exact -- $op {
@@ -4831,10 +5583,10 @@ proc rdw::_edit {op subject listname scope param} {
         down {
             if {$i < 0} { return [list refused $notin] }
             if {$op eq {up} && $i == 0} {
-                return [list refused "$param is already the first row of the $cls $listname list."]
+                return [list refused "$param is already the first row of the $dcls $listname list."]
             }
             if {$op eq {down} && $i == [expr {[llength $base] - 1}]} {
-                return [list refused "$param is already the last row of the $cls $listname list."]
+                return [list refused "$param is already the last row of the $dcls $listname list."]
             }
             set j [expr {$op eq {up} ? $i - 1 : $i + 1}]
             set new [lreplace $base $i $i [lindex $base $j]]
@@ -4896,12 +5648,25 @@ proc rdw::_edit {op subject listname scope param} {
         }
         add {
             if {$i >= 0} {
-                return [list refused "$param is already in the $cls $listname list."]
+                return [list refused "$param is already in the $dcls $listname list."]
             }
-            set t [rdw::_find_triple $cls $cell $param]
+            ## ⚠ THE DECLARED LOOKUPS FIRST, THE RUN ONLY WHEN THEY ARE ALL
+            ## SILENT (issue 1372).  `rdw::_subject_devpath` is what decides
+            ## whether the run may be read at all -- it refuses a block dumped
+            ## from another sheet -- and `rdw::_find_triple` is the one rule
+            ## `rdw::_add_why` words for the pre-dialog door.  This check is
+            ## NOT removed in favour of that one: a key, a menu or a suite row
+            ## reaching this core directly must get the same verdict with the
+            ## same sentence, which is `op_param_lists::governs`' own
+            ## one-rule-two-doors shape.
+            set t [rdw::_find_triple $cls $cell $param \
+                        [rdw::_subject_devpath $subject]]
             if {$t eq {}} {
-                return [list refused "$param is published by this run, but no list and no PDK descriptor declares it - so this window cannot tell which raw-name shape it has, and it will not guess one. A PDK declares it with op_annot::register."]
+                return [list refused [rdw::_add_why $subject $param]]
             }
+            ## ⚠ BEFORE THE STORE CALL.  `rdw::_mint_note`'s own comment
+            ## says why: the write lands in the list `effective` reads.
+            set mint [rdw::_mint_note $op $cls $cell $param]
             set new [linsert $base end $t]
             set did "added $param to the $listname list"
         }
@@ -4940,6 +5705,11 @@ proc rdw::_edit {op subject listname scope param} {
     ## it corrects never forms.
     set drawn [rdw::_drawn_note $op $listname]
     if {$drawn ne {}} { append say " $drawn" }
+    ## ISSUE 1372, APPENDED HERE FOR THE SAME REASON THE TWO CLAUSES ABOVE
+    ## ARE: the success arm only, at exactly one place, so all three `ok`
+    ## returns carry it and no refusal arm does.  It is COMPUTED in the add
+    ## arm, before the store call -- see `rdw::_mint_note`.
+    if {$mint ne {}} { append say " $mint" }
     set shadow [rdw::_shadow_why $scope $cls $listname $cell $skey $key]
     if {$shadow ne {}} { return [list ok "$say $shadow"] }
     if {$scope ne {narrow}} { return [list ok $say] }
@@ -4948,7 +5718,7 @@ proc rdw::_edit {op subject listname scope param} {
     # per-cell display list cannot be expressed at all without editing
     # op_annot.tcl, which this item may not.  The entry is stored, written and
     # honoured by `effective`; it does not reach the drawn sheet.
-    return [list ok "$say The sheet still draws the $cls class list - a per-cell display list cannot be expressed yet (issue 1310)."]
+    return [list ok "$say The sheet still draws the $dcls class list - a per-cell display list cannot be expressed yet (issue 1310)."]
 }
 
 # Ruling DD-6, both halves, and the sibling types with it.
@@ -5040,7 +5810,7 @@ proc rdw::scope_dialog_build {op subject listname} {
         -text "this device flavor only ([expr {$cell eq {} ? {no cell name} : $cell}])"
     ::radiobutton $w.sc.broad -anchor w -variable ::rdw::scope_choice \
         -value broad -background [rdw::color panel] \
-        -text "every device of class $cls"
+        -text "every device of class [::op_param_lists::class_label $cls]"
     pack $w.sc.narrow $w.sc.broad -side top -fill x
     pack $w.sc -side top -fill x -padx 16
     # THE SECOND LINE, AND IT IS NOW PRESENT IN ALL THREE STATES -- ISSUE 1355.
@@ -5356,6 +6126,26 @@ proc rdw::button {id} {
     ## "which list".  Spec 4.2 B7: an Add from list 2 writes the ANNOTATION
     ## list, which the dialog now says out loud.
     set deflist [rdw::_edit_list $id $listkind]
+    ## ⚠ THE DIALOG IS NOT RAISED IN FRONT OF A REFUSAL (issue 1372).  MEASURED
+    ## on the user's own M18: list 3 offers 88 rows, the sky130 declaration
+    ## names six, and every one of the other 82 answered a two-part modal
+    ## question -- which devices, which list -- and was THEN told, once, into a
+    ## four-line status pane, that the whole thing was impossible.  That is why
+    ## the report reads "it never shows up" rather than "it refused".
+    ##
+    ## ⚠ IT IS THE SAME RULE, NOT A SECOND ONE.  `rdw::_add_why` is
+    ## `rdw::_find_triple` returning {}, worded once, and `rdw::_edit` asks it
+    ## again for itself -- one rule, two doors, exactly the shape
+    ## `op_param_lists::reduce_why` and `governs` set.  A second door with a
+    ## second rule is the disagreement issue 1288 exists to remove.
+    ##
+    ## ⚠ AND ONLY THE LIST-INDEPENDENT HALF.  "Already in the list" is the
+    ## other refusal, and WHICH list is what the dialog is being raised to ask,
+    ## so that one still costs a dialog: the answer determined it.
+    if {$id eq {add}} {
+        set why [rdw::_add_why $subj $param]
+        if {$why ne {}} { return [rdw::_bstatus "$label: $why" $snote] }
+    }
     set ans [rdw::scope_dialog $id $subj $listkind]
     if {$ans eq {}} {
         return [rdw::status "$label: cancelled - nothing was changed."]

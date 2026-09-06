@@ -2117,4 +2117,342 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   both widgets and knows both spellings of the one door. Rows LX17, LX18, LK3
   rewritten, LX7/LX12/LX13 re-pointed, RW_FLOOR 166 -> 168.
 
-**The next free number is 1368.**
+- **1368** — the Results Display Window had no text-size control at all, and the
+  two one-liners that look like they would add one are both defects: `.rdw.p.t`
+  was `-font TkFixedFont`, the SHARED named font that is every bare `text`
+  widget's default in this tree (measured), so `font configure TkFixedFont -size
+  N` is a global font control wearing a window-local label — it moves the
+  attribute editor, the symbol-property editor, the text-input dialog,
+  editpaths, the graph dialog, the notify popup and the calculator buffer in the
+  same click; and the `hdr` tag was `font actual TkFixedFont`, a font
+  DESCRIPTION and not a NAME, so it was a frozen snapshot (measured: pane
+  linespace 27 against a header still at 17). **FIXED** by the user's own `aA`
+  button — plain click +1 unit, Ctrl+click -1, hover tooltip carrying their
+  verbatim sentence through the tree's ONE tooltip mechanism (`balloon`) — over
+  two PRIVATE named fonts (`RdwPaneFont`, `RdwHdrFont`) and a model that is
+  always the integer, never a size read back out of a font (measured: a `-14`
+  PIXEL spelling reads back as `10` POINTS). The pane's `-width`/`-height` are
+  recomputed from the new metrics in the same setter, because the pane is sized
+  in CHARACTER units and one unmitigated step to size 20 took the window from
+  893x498+1025+557 to 1757x914+161+141. Two smaller things taken in the same
+  pass: `set_ne rdw_font_size 0` in `xschem.tcl` gives the rc door, and
+  `balloon_show` now pulls an off-screen tip back on to the screen — measured on
+  this very button, whose 564 px tip wanted to end at 2379 on a 1920 px display,
+  with a tip that already fits left exactly where it was. Fenced by section
+  **FZ** of `tests/headless/test_rdw_window_1245.tcl`, ten sabotages, `RW_FLOOR`
+  168 -> 172. Three decisions are the USER's and are on the owed ledger as a
+  rule debt.
+  **REFUTED AFTER LANDING, AND REPAIRED IN THE SAME BRANCH.** Three real defects
+  and one false sentence: (1) the Ctrl arm's `break` also stopped the `.rdw`
+  bindtag, so a Ctrl+click was the ONE gesture in the window that did not spend
+  issue 1369's focus one-shot and left the keyboard on the schematic canvas
+  where the plain arm leaves it in the window (measured `focus_pending` 1 vs 0);
+  (2) `rdw::_font` imposed a size only WHILE one was chosen and could never put
+  one back, so a withdrawn choice left the model at 10 with the pane at 20 and
+  the next `+` click SHRANK the text 20 -> 11, and the same hole under
+  `_base_size`'s clamp rendered 40 while refusing at "already the largest (32)";
+  (3) the new clamp in the SHARED `balloon_show` slid pointer-anchored (`pos 0`)
+  tips UNDER the pointer, where `balloon`'s own `<Leave>` destroys them — the
+  file browser's two directory tooltips (`xschem.tcl:9659`, `:9674`) never
+  appeared at all and re-armed every 3 s whenever the pointer sat in the
+  rightmost ~555 px (measured 16 shows, visible 0/40); and (4) the write-up's
+  "none of the tree's other 43 call sites changes placement" was false — a tip
+  that does not fit IS moved, which is the point. Repaired with
+  `rdw::_shared_size`, `rdw::_ref_font`, an explicit `rdw::_focus_click %W` on
+  the Ctrl arm, and a pointer-mirroring `pos 0` rule; **seven new rows FZ12..FZ18
+  plus re-spelt FZ7/FZ8, twenty sabotages, `RW_FLOOR` 172 -> 186**. Five
+  surfaces that had no witness at all (the `aA` label, `_base_size` reading
+  TkFixedFont, the monospace requirement, `balloon_show`'s vertical flip and two
+  zero clamps, the 300 ms delay) are now fenced.
+
+- **1369** — the Results Display Window's raise KEPT the keyboard after one
+  click anywhere in the window, so the user's next canvas click was spent
+  re-activating the schematic and sent no dump ("another click to look at
+  another device's OP info does not have intended effect - it just focuses the
+  schematic window and doesn't send the OP info for that device to RDW"). The
+  machinery was all there and its DECISION was wrong: `rdw::_focus_handback`
+  compared the landing against the EXACT toplevel (`[focus] ne {.rdw}`), and Tk
+  keeps a focus record PER TOPLEVEL — once any child has held the Tk focus,
+  every later grant is resolved by Tk to that CHILD, so the equality was never
+  true again, the one-shot stayed armed for ever and the window kept the
+  keyboard after every dump. ONE ordinary gesture writes that record and it is
+  the one the Add/Delete buttons ask for: `tk::TextButton1` calls `focus $w`
+  UNCONDITIONALLY (`text.tcl:579`), unlike `tk::EntryButton1`, which skips a
+  `disabled` widget (`entry.tcl:356`) — so a click in `.rdw.p.t` or in the
+  `-takefocus 0` status surface `.rdw.s.msg` is enough, and `rdw.tcl`'s own
+  comment asserted the opposite, which is why the hole was invisible.
+  **FIXED** by asking `winfo toplevel` of the landing (not an equality, and not
+  the `string match .rdw*` glob issue 1306 already refuted), plus a new
+  `rdw::_focus_click` bound to `<ButtonPress>` on `.rdw`, which spends the
+  one-shot when the user comes here on purpose — because a landing test that
+  can see the whole window can no longer tell that click from the grant.
+  BOTH EVENT ORDERS MEASURED, the second through XTEST so a real click-to-focus
+  WM's passive grab is involved: on Tk's own path the press runs before the
+  queued FocusIn (the disarm wins), on a real WM the FocusIn arrives FIRST and
+  the click still wins because `tk::TextButton1`'s own `focus $w` takes the
+  keyboard straight back. Fenced by rows **F5** and **F6** of
+  `tests/headless/test_rdw_keys_1245.tcl` (`KX_FLOOR` 88 -> 90) and row **K18**
+  of `tests/headless/test_rdw_window_1245.tcl` (`RW_FLOOR` 172 -> 173), with
+  F3/F4/KD1 the fence over the disarm and three sabotages naming their red sets.
+  Whether the raise should keep the WSLg re-map idiom on the user's own
+  (HC-Consult, no EWMH WM) server is a USER ruling on the owed ledger (`--eyes`).
+
+- **1370** — the ASE-L bottom bar's `Simulator:` segment named the **backend**,
+  never the simulator the user registered and picked. `ase::ui::refresh_status`
+  rendered `[ase::state_get $st simulator]` — the schema default `ngspice` set
+  once in `ase::state_default` and never touched by the registry — so the
+  segment carried zero registry information: measured on a live `.ase4` window
+  with the user's own HOME, `Simulator: ngspice` with `ngspice-ver50` in force,
+  with the choice cleared, and with it re-selected, three registry states and
+  one byte-identical bar. Issue **0931** named this in its own problem statement
+  and shipped without it; **0937** then wrote the exclusion down as a decision
+  ("deliberately out of this item's scope"), which the user has now overturned
+  directly — 0937's bullet is amended in place. **FIXED** by a new
+  `ase::sim_label` in `ase.tcl` (the registered `entry`, never `sim_use`, so the
+  ghost arm can never put a name on the bar for a simulator nobody registered;
+  and a three-term "will it run" test — `ok` AND a non-empty `resolved` AND a
+  backend `ase::backend_names` knows — because `ok` alone never validates on the
+  PATH arm: measured `ok 1` with `resolved` EMPTY on an empty PATH), plus
+  `ase::ui::refresh_status_all` called from the last line of
+  `ase::ui::simdlg_fill`, the one proc all five registry gestures funnel
+  through, so every open session window's bar follows a gesture made in any of
+  them. The log half of the same complaint: a new `run_using` mint kind said
+  once per run from `ase::run_deck` via `ase::run_using_report` (NOT from
+  `run_precheck`, whose silence on a healthy resolve is pinned by `CS187b` /
+  `CS180b` of `test_sim_run_profile.tcl` — a correction to this item's own
+  plan), and a `using :` field ADDED to the run-log header beside
+  `simulator :`, never re-pointing it, because row `E1e` of `test_ase_core.tcl`
+  asserts the literal `ngspice` there and runs under the developer's own HOME.
+  Fenced by section **L** (L0..L11) of
+  `tests/headless/test_ase_simreg_0931.tcl` and rows **S20..S23** of
+  `tests/headless/test_ase_simdlg_0937.tcl`; neither carries a check-count
+  floor, so none was raised. The marker's WORDING is a user ruling on the owed
+  ledger (`--eyes`); no suite retypes it.
+  **REFUTED AFTER LANDING, THEN REPAIRED** (2026-09-06). Three adversaries;
+  six real findings, four rejected with the measurement. (1) The say was called
+  ABOVE `ase::preflight_gate`, so a refused run said "This run is starting …"
+  and was then refused with "Nothing was generated" — moved below the gate and
+  below the line composing the command. (2) `Q6` and `S11` of
+  `test_ase_optier_0963.tcl` were RED because of this item — Q6 bans the code
+  words `optier`/`tier` in anything a run says and the new sentence quotes the
+  fixture's own entry NAME; both are TEST-ROW repairs, Q6 now lifting the user's
+  substitutions out before the ban scan (row `L8`'s own discipline) and S11
+  dropping a named list of foreign kinds, both proven still-toothed by sabotage.
+  (3) The three-term test became FOUR — `ase::run_composes_registry` — closing a
+  latent false name (a generic entry plus a backend with its own hardcoded
+  `run_cmd`). (4) The bar went stale on the registry's OTHER door
+  (`ase::sim_register`/`sim_select` from the Command window, the pre-0937 path
+  and how this user's own entry was created): new single-slot `ase::sim_notify`
+  seam fired by all four mutators, pointed at `refresh_status_all`. (5) A label
+  with no name printed the marker after a double space — now `(none)`.
+  (6) `L9`/`L10`'s literal call-text pins loosened to shape matches. Rows
+  **L12..L15** and **S32** added; simreg 79 -> **83**, simdlg 40 -> **41**.
+  The "hangs at N3" claim in the first write-up is half wrong: the optier suite
+  DOES stall (inside `N4`'s `xschem load` of the bandgap, 4/4 reproduced,
+  0% CPU on a futex) but `Q6` and `S11` print inside 40 s and were always
+  measurable. Two more user rulings recorded: `1370_none_word` and
+  `1370_ase_prefix`.
+
+* **1371** — *a measured case-mode capability has no GUI door.* The user:
+  "If the run *is* using ver_50, then why is case-mode support not showing up?
+  … I plot the VBG net … and it plots v(vbg) not v(VBG). What's going on? I
+  thought we nailed this weeks ago." Measured on their own bench: their build IS
+  in force and WAS measured — `casemode_detected` and `casemode_selectable` both
+  `fold preserve distinguish` — but their registry entry carried `casemode {}`,
+  so the request fell to the global floor `fold`, and a `fold` request
+  deliberately emits no `-D casemode=`. **The only broken link was that nothing
+  could ask:** `ase::ui::simdlg_editor` built exactly two rows, `Name:` and
+  `Program:`. `fluid-editing`'s casemode item 13 HAD that door (Exe / Args /
+  Case / -n / Test); it was deleted at the annotate merge on the promise that
+  Setup > Simulators… is now their one door — **the store moved and the door was
+  never built**, and the stale `simconf` Help text went on documenting the
+  removed controls. Worse, `ase::ui::simdlg_ok` rebuilt the entry from `args`
+  and `backend` alone, so pressing Edit… and OK on a hand-edited entry ERASED
+  `casemode` and `nospiceinit` and saved the erasure, while its own comment
+  claimed the opposite and row S9 asserted that claim for two fields only.
+  **FIXED** by `Case:` and `-n:` rows in that editor, built from cached
+  measurements ONLY (`ase::sim_caps_have_path`, a peek) with an explicit
+  `Detect` as the sole control that may launch anything — 447 ms cold on their
+  build, 0 ms warm, **31.2 s** on a program that never answers, Tk frozen
+  throughout, and a licensed tool would check out a licence. New model half:
+  `ase::sim_entry`, `ase::sim_capabilities` split into a path-keyed core plus
+  `_at`/`_path`/`_for`, the peeks `sim_caps_have{,_path}`, the A1 rule written
+  once against a capability dict (`casemode_{detected,selectable}_in`,
+  `casemode_report`), `sim_casemode_selectable_{path,for}` and
+  `sim_casemode_floor`, and three new `sim_why` kinds. The entry-keyed
+  accessors are load-bearing, not tidiness: measured, the in-force accessor
+  answered about whichever row was SELECTED, so a chooser built from it offers
+  one program's modes while the user edits another's. Fenced by rows **S9**
+  (extended) and **S24..S31** of `tests/headless/test_ase_simdlg_0937.tcl`
+  (32 → 40 checks; no floor, so none was raised), each proved non-vacuous by
+  six separate sabotages. The ruling *may opening Edit… launch the user's
+  simulator* is on the owed ledger. Adjacent and deliberately NOT swept in: the
+  global floor `sim_case_mode` has no GUI door either (`set_ne`, rc-only).
+  **REFUTED AFTER LANDING, AND REPAIRED IN PLACE (2026-09-06).** The single
+  named "correction" — keying the chooser on the program in the FIELD — was
+  fenced by nothing and did not do what it claimed: the offer was BUILT only at
+  editor-open and by Detect, so retyping the Program field (or `Browse…`) left
+  the previous program's modes on offer and OK saved one, emitting
+  `-D casemode=preserve` for a build measured to deliver `fold` alone. Also
+  measured: `ase::casemode_report` said "has not been tried yet … press Detect
+  to try it" **after Detect** in every state but the happy one (a program that
+  answered with no casemode key, a file that has gone, no probe hook, an empty
+  Program field); the mark `(NOT measured)` was a false statement about a
+  measurement taken 449 ms earlier; `casemode_measuring` was asserted by no test
+  in the tree; and the capability cache, keyed on the path alone while the probe
+  runs the entry's own argv, let one dialog-side Detect answer for the run
+  (proved: an in-force `-args -q` entry that really folds answering
+  `fold preserve distinguish`). Repaired with `ase::cap_key` (path AND argv),
+  `ase::casemode_status`, an arm per state in `casemode_report`, six more
+  `sim_why` kinds, two mark words, and the Program field's own `-validate`.
+  Rows **S33..S39** (41 → 48 on `:99`, 4 → 5 on `--nogui`), nine sabotages red
+  by name, including the adversary's own three, and two of the first pass's own
+  sabotages re-run to prove the refactor left no existing fence vacuous. A second ruling is on the ledger
+  (`1371_marked_mode_is_saved`) and the three pixel questions moved from the
+  self-clearing `suite` debt to a `look`.
+
+* **1372** — *an Add from list 3 into the summary list never showed up on key 2.*
+  The user: "I put cursor on cgs and the clicked Add button and said add to all
+  mos … for summary list, but, later, when I send summary list with 2 key, it
+  never shows up." Reproduced end to end on their own `M18:/x1/x1` under
+  `tb_bandgap` with the `ngspice-ver50` registry live. **Nothing downstream
+  dropped it — nothing was ever written.** `rdw::_find_triple` (src/rdw.tcl) was
+  the ONLY source of the `{label param kind}` triple an Add inserts and looked in
+  exactly three places (`effective <cls> annotation`, `effective <cls> summary`,
+  `seed <cls>`), all three of which answered the SAME six sky130 rows because
+  `~/.xschem/op_param_lists.conf` owns no rows at all; `cgs` is not among the six,
+  so the Add returned `refused` and the store was byte-identical before and after
+  the press. Three aggravating facts, all measured: **SCALE** — list 3 offers 88
+  rows for M18 and Add was accepted for **0** of them, 82 "no declaration" and 6
+  "already in the list", on BOTH target lists; **ORDER** — `rdw::button` raised
+  `rdw::scope_dialog` BEFORE it computed the refusal, so the user answered a
+  two-part modal question and was then told once, into a four-line status pane,
+  that it was impossible, which is why the report reads "it never shows up";
+  **THE REFUSAL'S STATED REASON IS FALSE** — the ALL-CAPS invariant said a
+  guessed kind "writes a `.save` card that matches nothing", but
+  `op_annot::_cards_for` emits `.save ${dev}[${param}]` and never reads the kind
+  (a kind-0 row and a kind-1 row produce byte-identical cards). **FIXED** by a
+  FOURTH lookup that is reached only when all three declared ones are silent and
+  that reads the kind off the vector name THIS RUN PUBLISHED — `rdw::_run_triple`
+  → the new `ase::op_vector_for` (beside `op_param_split`/`op_dev_covers`, the
+  two verbs it is made of) → the new `op_annot::_kind_of_vector` (beside
+  `op_annot::_wrap`, whose token.c table it is the one inverse of, so the tree
+  gains no second copy). Nothing is guessed: a column the run does not name is
+  still refused by name. The read is gated on SHEET IDENTITY
+  (`rdw::_subject_devpath`, issue 1322's own axis) because blocks deliberately
+  outlive the raw and the sheet they came from, and a stale block gets a refusal
+  that says which sheet to go back to. `rdw::_add_why` words that one rule once
+  and `rdw::button` asks it BEFORE the dialog, so an unanswerable Add no longer
+  costs a modal; `rdw::_mint_note` says on the success arm, once, that the shape
+  came from the run. The ALL-CAPS invariant at `rdw::_find_triple` and the old
+  row BT18 are REWRITTEN in place, not deleted, and both now name the hazard the
+  invariant really was standing in front of: an accepted row joins
+  `op_param_lists::_save_set`'s union and therefore the NEXT deck's `.save` cards
+  (measured, `_cards_for M18` 6 → 7), where spec §3.2 / rule R5 say `show`'s
+  catalogue is a SUPERSET of the savable set. **Whether an Add may accept a
+  run-published column no list and no PDK declares is a USER ruling** on the owed
+  ledger (rule debt 1372), with the four options recorded in the issue file.
+  Fenced by rows **BT18** (rewritten, verdict reversed), **BT33**, **BT34**,
+  **BT35** and **BT36** of `tests/headless/test_rdw_window_1245.tcl`
+  (`RW_FLOOR` 173 → 177), each proved non-vacuous by seven sabotages.
+
+* **1373** — `doc/claude/issues/1373-class-acronyms-printed-in-the-key-spelling.md`
+  — *Device-class acronyms printed in the internal lower-case spelling.* The
+  user, on their own M18: "said add to all mos (why is that not uppercase? MOS
+  is an acronym!)". **ROOT CAUSE:** the Results Display Window had no
+  display-name layer for a device class at all — fifteen interpolation sites in
+  four procs (`rdw::_narrowed_list` 2, `rdw::_shadow_why` 1, `rdw::_edit` 11,
+  `rdw::scope_dialog_build` 1) printed `$cls`, the STORE'S PRIMARY KEY, straight
+  into prose, so the radiobutton read `every device of class mos` and the
+  verdict read `gm is already in the mos annotation list` — the user's own two
+  sentences, one missing layer twice. The file had already solved this one
+  concept over (`rdw::_list_name`/`_list_gloss`, written because "four surfaces
+  read these strings and four literals would drift"); classes never got it, and
+  the drift was already on paper — `doc/claude/specs/op_param_lists.md` writes
+  **MOS** in §2.2 and §3.4 while the code printed `mos`. **FIXED** by ONE
+  accessor, `::op_param_lists::class_label`, a literal namespace array plus a
+  pure proc placed in the STORE (not rdw.tcl: that file may not call `rdw::`
+  under its source-time purity contract, so an accessor over there could never
+  reach the store's own sentences, and a second copy is the very drift this item
+  removes — there is deliberately no `rdw::_class_name` wrapper). All fifteen
+  sites route through it; `$cls` itself stays the argument to every
+  `::op_param_lists::` call. **THE CONSTRAINT, MEASURED:** class keys are
+  compared with `eq` and used as array indices, so `MOS` is a DIFFERENT KEY —
+  `get_list class MOS annotation` is empty, `governs MOS …` answers nothing —
+  and the key is a field the user TYPES into `op_param_lists.conf`. So the
+  store's own key-shaped messages (`_dup_why`, `_key_why`, `set_list`'s reports,
+  `seed`'s divergence report, the parser's) keep the key spelling, with a
+  comment at the accessor naming them, and the wrong-direction "fix" reds the
+  pre-existing row RD4. The table is `mos MOS npn NPN pnp PNP esd ESD` and
+  NOTHING else, with an identity fallthrough: a blind `string toupper` would
+  print `PWELL_RESISTOR`, `HIGH_PRECISION_P` and `SUBCIRCUIT`, which
+  `class`'s own identity fallthrough really does mint from shipped `type=`
+  tokens. **ZERO existing goldens moved** — every sentence golden in both suites
+  uses a synthetic class (`nwcls`, `b5cls`, `bs_pdev` …) that an identity
+  fallback prints unchanged, so the change passed 307 checks while doing
+  nothing; the new rows are the only fence. Fenced by **CL1..CL5** of
+  `tests/headless/test_op_param_store_1245.tcl` (`OL_FLOOR` 130 → 135) and
+  **CL6..CL10** of `tests/headless/test_rdw_window_1245.tcl` (`RW_FLOOR`
+  177 → 181; CL10 `live_tk`-gated, not counted), proved non-vacuous by four
+  sabotages — identity (all ten red), blind `toupper`, one-production-proc-at-a-
+  time (CL6 / CL7+CL8 / CL9 / CL10), and the wrong-direction route (RD4).
+  Whether the table should also carry prose for the snake_case sky130 keys and
+  whether `bipolar` should read **BJT** is a USER ruling on the owed ledger
+  (rule debt 1373).
+
+* **1374** —
+  `doc/claude/issues/1374-the-narrowed-dump-preamble-is-three-sentences-where-a-label-was-wanted.md`
+  — *The narrowed-dump preamble is three sentences where a label was wanted.*
+  The user, reading the block the Results Display Window prints for every
+  device: "This is too verbose! Just say 'annotated list' or 'summary list'".
+  **ROOT CAUSE:** two independent note-line builders, each written to a
+  different defensible ruling and never costed against each other on screen.
+  `rdw::_incomplete_line` emits ruling DD-1's honesty flag as a 121-character
+  sentence and `rdw::_narrow_line` emits issue 1353's narrowing decision as
+  three more; `rdw::format_answer` appends both on every narrowed dump.
+  MEASURED in the real pane at the shipped geometry (`.rdw.p.t` is `-width 96
+  -wrap word`): **311 characters over 2 logical lines wrapping to FOUR display
+  lines, above SIX rows of data**, re-emitted per device. The four ⚠ comment
+  blocks around those procs argue at length that each clause is obligatory, and
+  every one of those arguments is about WHICH FACTS must appear — not one is an
+  argument for the number of words. **FIXED** to **123 characters over two
+  display lines** (`Not everything the device has - only what this run saved.` /
+  `Narrowed to the MOS annotation list at this dump: 6 of 88 columns.`), which
+  also REPAIRS a false deixis: the old DD-1 wording said "these are the
+  operating-point columns this run saved" while pointing at six rows out of the
+  88 the run saved, and the next line then corrected it. Three arms of
+  `rdw::_narrow_line` became one builder; `Narrowed to the` stays (it supplies
+  the sentence-initial capital the store's list name cannot, and
+  auto-capitalising would print `Mos` — a collision with 1373), `at this dump`
+  stays (1353 decision 3: a standing block is a record), and `Press 3` survives
+  exactly where `kept == 0`, which now covers BOTH ways a block ends with no
+  rows. **THE WITHHELD NON-CONVERGENCE CLAUSE WAS KEPT AGAINST A GENERAL
+  INSTRUCTION TO CUT** — it is a RESULT and not an explanation, it costs 29
+  characters, and MEASURED it is ABSENT on the user's own M18 (`wnf == 0`), so
+  deleting it would have shortened the screen they complained about by zero
+  characters while losing the one fact DD-1 and issue 1272 both say a designer
+  most wants told. Fenced by **NW14** (the cap in characters, coupled to
+  `rdw::_pane_chars`'s own `set W 96`, plus the five struck-out phrases gone
+  from every shape), **NW15** (the surviving clause, both arms, scaling,
+  silent at zero) and **NW16** (the pointer's one rule) of
+  `tests/headless/test_rdw_window_1245.tcl` (`RW_FLOOR` 181 → 184; the keys
+  suite gains no row and `KX_FLOOR` stays 90), proved non-vacuous by eight
+  sabotages — sabotage 2, deleting the convergence suffix, reds NW15 and is the
+  one a "be brief" reader would reach for. The keys suite's `cu_block` /
+  `cp_block` fixtures were repaired in the same change: they relied on the
+  121-character DD-1 sentence to give line 3 a real WRAP (rows CU11 and CP1),
+  and now carry ruling DD-5's analysis sentence instead. Four wording choices —
+  "annotation" vs the user's "annotated", whether the counts stay, the
+  suffix's words, and the pointer leaning on a chrome that is one dump behind —
+  are a USER ruling on the owed ledger (rule debt 1374).
+
+- **1375** — `xschem descend -fallback` raises `ask_save` gated on `has_x`
+  ALONE, so a `--script` run with a display gets an unclickable modal and hangs
+  for ever. Reproduced at HEAD `5dc7b2c8`, so it is NOT the 1368-1374 batch's
+  doing: `test_ase_optier_0963` is ALL PASS (102) `--nogui` and hangs after row
+  N3 on `:99`. The suite's own comment asserts this cannot happen, under
+  conditions that are exactly the conditions in which it does. **FILED, NOT
+  FIXED** — the fix is a ruling (rule debt 1375). Until then that suite is a
+  `--nogui` suite.
+
+**The next free number is 1376.**

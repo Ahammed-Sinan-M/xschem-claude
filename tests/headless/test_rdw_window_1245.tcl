@@ -321,7 +321,13 @@ proc rw_tags {ans ctx} {
 # All user-visible prose, all on rule debt 1245_B3_window_wording. They are
 # literals here on purpose: this suite is where the wording is locked, and a
 # drift of one character is a change to what a designer reads, not a typo.
-set RW_INC  {Not a complete list: these are the operating-point columns this run saved for this device, not everything the device has.}
+## ⚠ ISSUE 1374 REPLACED THIS ONE, AND IT IS CONSUMED BY 39 ROWS THROUGH THIS
+## VARIABLE ALONE.  The user's ruling was "This is too verbose!"; the FACT is
+## unchanged and DD-1's obligation is untouched.  The old sentence also pointed
+## at the rows on screen ("these are the ... columns this run saved") while a
+## narrowed block shows six of the eighty-eight the run saved, so the deixis
+## was false and the next line had to correct it.  Rows F2 and NW14 fence it.
+set RW_INC  {Not everything the device has - only what this run saved.}
 set RW_ABSN {A blank value means the raw names that column but the simulator did not compute it.}
 set RW_NF   {(did not converge)}
 set RW_NORAW    {No simulation results are loaded. Run a simulation, or load a raw file, then ask again.}
@@ -2466,13 +2472,21 @@ check {K15 STRUCTURAL rdw::show opens the window BEFORE it dumps, rdw::open take
 ## ⚠ AND THE FIX LINE PRINTED IN ISSUE 1306 AND IN THE ITEM BRIEF DOES NOT
 ## WORK. Both print `[string match .rdw* [focus]]`. Applied verbatim to a copy
 ## and measured three times on each arm: STILL BOUNCED, because that glob
-## matches the DESCENDANT `.rdw.p.t` exactly as readily as `.rdw`. The
-## discriminator that does work is the one the window manager itself supplies:
-## its map-time grant lands on the TOPLEVEL (`[focus]` reads `.rdw`) while
-## every deliberate landing lands on a CHILD (`[focus]` reads `.rdw.p.t`). So
-## the test is the EXACT toplevel, and leg 2 keeps the refuted glob out of the
-## tree for good -- describe it in words on a comment LINE, which rw_body
-## strips, rather than in code or in a trailing comment.
+## matches the DESCENDANT `.rdw.p.t` exactly as readily as `.rdw` -- and it
+## would also match a SIBLING toplevel named `.rdwfoo`, because it asks about a
+## STRING where the question is about the widget tree. Leg 3 keeps the refuted
+## glob out of the tree for good -- describe it in words on a comment LINE,
+## which rw_body strips, rather than in code or in a trailing comment.
+##
+## ⚠ AND THE TEST 1306 SHIPPED -- `[focus] eq {.rdw}` -- WAS ITSELF WRONG AFTER
+## ONE CLICK, WHICH IS ISSUE 1369. Tk resolves a grant to this toplevel through
+## its PER-TOPLEVEL focus record, so once any child has held the keyboard the
+## grant lands on that CHILD and the equality declines for ever. The landing
+## test is now `winfo toplevel`, and what this row still fences is the SHAPE
+## that outlived the change: a landing read from `[focus]`, no glob, read
+## strictly below the headless early return, and the one-shot spent. Leg 4's
+## `ne {.rdw}` is the `%W` cut, which did not move. The landing test's own
+## fence is row K18.
 ##
 ## ⚠ THE ORDER LEG IS NOT COSMETIC. `focus` and `winfo` do not exist under
 ## --nogui; this proc survives the headless arm only because the focus_pending
@@ -2482,7 +2496,7 @@ check {K15 STRUCTURAL rdw::show opens the window BEFORE it dumps, rdw::open take
 set K16_FH [rw_body ::rdw::_focus_handback]
 set K16_IP [string first {!$focus_pending} $K16_FH]
 set K16_IF [string first {[focus]} $K16_FH]
-check {K16 STRUCTURAL (issue 1306) the hand-back decides on WHERE THE KEYBOARD LANDED and not on which window named the event: it reads [focus], compares it against the EXACT toplevel, contains no `string match` glob - the refuted `.rdw*` candidate matches the pane itself - reads the landing strictly BELOW the focus_pending early return so --nogui never evaluates it, and still spends the one-shot} \
+check {K16 STRUCTURAL (issue 1306) the hand-back decides on WHERE THE KEYBOARD LANDED and not on which window named the event: it reads [focus], names the exact toplevel the landing must BELONG TO, contains no `string match` glob - the refuted `.rdw*` candidate matches the pane itself and a sibling `.rdwfoo` too - reads the landing strictly BELOW the focus_pending early return so --nogui never evaluates it, and still spends the one-shot} \
   [list [rw_bad $K16_FH] \
         [rw_has $K16_FH {[focus]}] \
         [rw_count $K16_FH {string match}] \
@@ -2490,6 +2504,66 @@ check {K16 STRUCTURAL (issue 1306) the hand-back decides on WHERE THE KEYBOARD L
         [expr {$K16_IP >= 0 && $K16_IF > $K16_IP ? 1 : 0}] \
         [rw_count $K16_FH {set focus_pending 0}]] \
   {0 1 0 1 1 1}
+
+# --- K18  STRUCTURAL, ISSUE 1369: THE LANDING IS A TOPLEVEL QUESTION, AND THE
+# --- PRESS IS WHAT TELLS A DELIBERATE CLICK FROM THE GRANT ------------------
+## THE USER'S WORDS: "When user is in print to RDW mode (1,2,3 key) and then
+## clicks on an instance, RDW needs to be raised, but focus should return to
+## the schematic window. Else, another click to look at another device's OP
+## info does not have intended effect - it just focuses the schematic window
+## and doesn't send the OP info for that device to RDW".
+##
+## THE MACHINERY WAS ALL THERE AND ITS DECISION WAS WRONG. Tk keeps a focus
+## record PER TOPLEVEL: once any window inside `.rdw` has held the Tk focus,
+## every later grant to `.rdw` is resolved by Tk to THAT CHILD, and the
+## toplevel sees the grant as a FocusIn with detail NotifyVirtual while
+## `[focus]` already reads the child. MEASURED on :99 under openbox in a
+## minimal two-toplevel Tk program, the keyboard parked in the other window
+## before each re-map:
+##     record clean           re-map -> FocusIn .t d=NotifyAncestor [focus] .t
+##     after one pane click   re-map -> FocusIn .t d=NotifyVirtual  [focus] .t.p
+## ONE Button-1 in `.rdw.p.t` writes that record -- `tk::TextButton1` calls
+## `focus $w` UNCONDITIONALLY (/usr/share/tcltk/tk8.6/text.tcl:579), unlike
+## `tk::EntryButton1`, which skips a `disabled` widget (entry.tcl:356) -- and
+## `.rdw.s.msg` does it too, `-takefocus 0` and all. From that click on, the
+## equality declined every grant, the one-shot stayed armed for ever and this
+## window kept the keyboard after every dump.
+##
+## SO THE LANDING TEST ASKS `winfo toplevel`, AND THE PRESS IS THE NEW
+## DISCRIMINATOR. A widened landing cannot tell the grant from the user's own
+## click into the pane (issue 1306's requirement), so `rdw::_focus_click`,
+## bound to `<ButtonPress>` on the toplevel tag, spends the one-shot when the
+## user comes here on purpose. BOTH ORDERS MEASURED: on Tk's own path the
+## press bindings run synchronously and the queued FocusIn is processed after
+## them, so the disarm wins; on a real click-to-focus WM (openbox, driven
+## through XTEST) the WM focuses first and REPLAYS the press, so the FocusIn
+## comes first and the hand-back fires -- and the click still wins, because
+## `tk::TextButton1`'s own `focus $w` takes the keyboard straight back
+## (measured `[focus]` on the pane, with the disarm and without it).
+##
+## ⚠ WHY THIS ROW IS STRUCTURAL AND NOT BEHAVIOURAL. `focus`, `winfo` and
+## `bind` do not exist under --nogui, and the keys suite self-SKIPS there, so
+## on the headless arm this is the only fence issue 1369 has. The behavioural
+## half is rows F5 and F6 of test_rdw_keys_1245.tcl.
+##
+## ⚠ AND LEG 6 IS NOT DECORATION. `rdw::_focus_click` must not `break` and must
+## not touch the focus: the Text class binding that follows it sets the insert
+## mark and the selection anchor rows CP6, CP7, CP14 and CP16 depend on.
+set K18_FH [rw_body ::rdw::_focus_handback]
+set K18_FC [rw_body ::rdw::_focus_click]
+set K18_BUILD [rw_body ::rdw::build]
+check {K18 STRUCTURAL (issue 1369) the hand-back asks which TOPLEVEL the keyboard landed in - `winfo toplevel`, not an equality against a widget path that is only ever true until the user's first click in this window - and guards the empty landing `[focus]` answers when no window of this application has the keyboard; the press that says the user came here on purpose is a named rdw::_focus_click bound to <ButtonPress> on .rdw in rdw::build, and it spends the one-shot without breaking and without moving the keyboard} \
+  [list [rw_bad $K18_FH] \
+        [rw_count $K18_FH {winfo toplevel}] \
+        [rw_has $K18_FH {$land eq {}}] \
+        [rw_bad $K18_FC] \
+        [rw_count $K18_FC {set focus_pending 0}] \
+        [expr {[rw_count $K18_FC {focus -force}] == 0 \
+               && [rw_count $K18_FC {break}] == 0 \
+               && [rw_count $K18_FC {_focus_canvas}] == 0 ? 1 : 0}] \
+        [rw_has $K18_BUILD {<ButtonPress>}] \
+        [rw_has $K18_BUILD {rdw::_focus_click}]] \
+  {0 1 1 0 1 1 1 1}
 
 # --- K17  STRUCTURAL, ISSUE 1305: A SUSPENDED MODE IS NOT RE-ARMED IN PLACE --
 ## rdw::pick_start's "already armed" guard deliberately lets a SUSPENDED mode
@@ -3584,22 +3658,229 @@ check {BT17 Add from list 3 consults the dialog with the `all` identity - which 
         [rw_ans ::op_param_lists::get_list class b5cls summary]] \
   [list 1 all 1 {{gm gm 1} {id ids 0}} 0 {{gm gm 1}}]
 
-# --- BT18  ADD MINTS NO KIND -------------------------------------------------
-## `vgs` is drawn by the run and declared in no list and in no PDK seed, so
-## there is no triple to re-add and no honest way to guess its kind. Rule R3:
-## the kind is the raw-name SHAPE, so a wrong one writes a `.save` card that
-## matches nothing - and one bogus card destroys the whole operating point.
+# ============================================================================
+# BT18, BT33 .. BT36 — ISSUE 1372: ADD READS THE KIND, IT DOES NOT GUESS ONE
+# ============================================================================
+# ⚠ BT18's VERDICT IS REVERSED HERE, AND ITS OLD REASON WAS MEASURABLY FALSE.
+# The row used to read "Add from list 3 of a parameter declared in no list and
+# in no PDK seed REFUSES by name, mints no kind and stores nothing", quoting
+# rule R3: "the kind is the raw-name SHAPE, so a wrong one writes a `.save`
+# card that matches nothing - and one bogus card destroys the whole operating
+# point". BOTH HALVES OF THAT SENTENCE WERE MEASURED ON THE USER'S OWN M18 AND
+# THE SECOND IS NOT TRUE OF THIS TREE: `op_annot::_cards_for` emits
+# `.save ${dev}[${param}]` and never reads the kind at all, so a kind-0 row and
+# a kind-1 row produce BYTE-IDENTICAL cards and no kind can make a card bogus.
+# The kind is read at READ time only (`op_annot::_wrap` / `_wrap_alts`).
+#
+# WHAT THE USER MEASURED, IN THEIR OWN WORDS: "I put cursor on cgs and the
+# clicked Add button and said add to all mos ... for summary list, but, later,
+# when I send summary list with 2 key, it never shows up." Reproduced end to
+# end: the Add never wrote anything, because list 3 offers 88 rows for M18 and
+# the sky130 declaration names six -- so Add was refused for 82 of the 88 on
+# BOTH target lists and accepted for 0. That is not an edge case, it is the
+# only behaviour the button had on that bench.
+#
+# THE ROW IS REWRITTEN AND NOT DELETED, because a deleted fence is how the next
+# reader re-derives it. What it fences now is that the kind is READ off the
+# vector name THIS RUN PUBLISHED and is still never picked: a bare column mints
+# 1, an `i(...)` column 0, a `v(...)` column 2, and a column the run does not
+# name at all is still refused. The hazard the old invariant was really
+# standing in front of is the PARAM NAME reaching the next deck's `.save`
+# cards, which is a USER ruling (rule debt 1372), not a kind question.
+#
+# THE RAW IS THE FIXTURE'S OWN, and it carries all three spellings on ONE
+# device on purpose -- issue 0963 measured that one run really can spell three
+# columns three ways. It is attached inside these rows and cleared again on the
+# way out, so no row outside this block sees a database it did not ask for.
+set B5_RAW [file join $scratch b5run.raw]
+set fd [open $B5_RAW w]
+puts $fd "Title: b5"
+puts $fd "Plotname: Operating Point"
+puts $fd "Flags: real"
+puts $fd "No. Variables: 4"
+puts $fd "No. Points: 1"
+puts $fd "Variables:"
+puts $fd "\t0\tv(a)\tvoltage"
+puts $fd "\t1\t@m.m1\[vgs\]\tnotype"
+puts $fd "\t2\ti(@m.m1\[cgs\])\tcurrent"
+puts $fd "\t3\tv(@m.m1\[cbb\])\tvoltage"
+puts $fd "Values:"
+puts $fd "0\t1.5"
+puts $fd "\t0.55"
+puts $fd "\t1.1e-15"
+puts $fd "\t2.2e-15"
+close $fd
+proc b5_raw_on  {} { return [rw_ans ::op_annot::db_attach $::B5_RAW] }
+proc b5_raw_off {} { catch {xschem raw clear} ; return {} }
+## The stored triple for one param of one list, or {} — read from the STORE and
+## never from the pane, so a row cannot pass on a window that agrees with
+## itself and with nothing else.
+proc b5_stored {scope key ln param} {
+  return [rw_ans ::rdw::_triple_in \
+            [rw_ans ::op_param_lists::get_list $scope $key $ln] $param]
+}
+## THE SUBJECT OF THE BLOCK THAT WAS DUMPED FROM <inst>, found by SEARCHING and
+## not by a literal index. The section's own layout comment records that the
+## pane's FIRST block is M2 -- `rdw::push` puts the newest dump on top -- so a
+## `_subject 0` written by hand reads the wrong device, silently, and every
+## sentence about it is still well formed. M1 is the block with four parameter
+## rows, which is the one the raw fixture publishes columns for.
+proc b5_subj_of {inst} {
+  set n 0
+  foreach b $::rdw::blocks {
+    set sj [rw_ans ::rdw::_subject $n]
+    incr n
+    if {[rw_bad $sj] || $sj eq {}} { continue }
+    if {[catch {dict get $sj instname} i]} { continue }
+    if {$i eq $inst} { return $sj }
+  }
+  return {}
+}
+
+# --- BT18  ADD READS THE KIND OFF THE RUN'S OWN SPELLING ---------------------
+## Three columns of ONE device, spelled three ways by one run, none of them
+## declared anywhere. Each Add must store the label and the param as the
+## column's own name and the KIND that spelling carries — 1 for bare, 0 for
+## `i(`, 2 for `v(` — which is `op_annot::_wrap`'s table read backwards by its
+## one inverse, `op_annot::_kind_of_vector`.
 b5_lists_reset
 b5_dlg {scope broad list annotation}
+set BT18_ATT [b5_raw_on]
 rw_ans ::rdw::set_list all
 rw_ans ::rdw::set_row 12
 set BT18_M [b5_press add]
-check {BT18 Add from list 3 of a parameter declared in no list and in no PDK seed REFUSES by name, mints no kind and stores nothing - the kind is the raw-name shape and this file invents none} \
-  [list [b5_ok1 $BT18_M vgs] \
+set BT18_BARE [b5_stored class b5cls annotation vgs]
+b5_lists_reset
+set BT18_I [rw_ans ::rdw::_edit add [b5_subj_of M1] summary broad cgs]
+set BT18_ISTO [b5_stored class b5cls summary cgs]
+b5_lists_reset
+set BT18_V [rw_ans ::rdw::_edit add [b5_subj_of M1] summary broad cbb]
+set BT18_VSTO [b5_stored class b5cls summary cbb]
+b5_raw_off
+check {BT18 an Add of a column this run published that no list and no PDK descriptor declares is ACCEPTED, and the kind stored is the one the RUN's own spelling carries - bare mints 1, i(...) mints 0, v(...) mints 2 - with the label and the param both the column's own name, because a column no PDK has named has no other honest label} \
+  [list [lindex $BT18_ATT 0] [b5_ok1 $BT18_M vgs] $BT18_BARE \
+        [lindex $BT18_I 0] $BT18_ISTO \
+        [lindex $BT18_V 0] $BT18_VSTO] \
+  [list 1 1 {vgs vgs 1} ok {cgs cgs 0} ok {cbb cbb 2}]
+
+# --- BT33  A COLUMN THE RUN DOES NOT NAME IS STILL REFUSED -------------------
+## The floor under BT18: the mint is a MEASUREMENT, so it must be absent
+## exactly when the measurement is. `nosuchp` is in no list, in no declaration
+## and in no raw, so all four lookups are silent and the button refuses by
+## name, stores nothing and says out loud that it will not guess.
+b5_lists_reset
+b5_dlg {scope broad list annotation}
+set BT33_ATT [b5_raw_on]
+set BT33_SUBJ [b5_subj_of M1]
+set BT33_V [rw_ans ::rdw::_edit add $BT33_SUBJ annotation broad nosuchp]
+set BT33_WHY [rw_ans ::rdw::_add_why $BT33_SUBJ nosuchp]
+set BT33_TRIP [rw_ans ::rdw::_run_triple [rw_ans ::rdw::_subject_devpath $BT33_SUBJ] nosuchp]
+b5_raw_off
+check {BT33 a parameter no list, no PDK descriptor and no column of this run names is STILL refused - the mint answers nothing, the sentence names the parameter and says it will not guess a shape, and neither list nor either key is owned afterwards} \
+  [list [lindex $BT33_ATT 0] [lindex $BT33_V 0] \
+        [b5_ok1 [lindex $BT33_V 1] nosuchp] \
+        [b5_ok1 [lindex $BT33_V 1] {will not guess one}] \
+        [expr {$BT33_WHY eq [lindex $BT33_V 1] ? 1 : 0}] \
+        $BT33_TRIP \
         [b5_owns class b5cls annotation] [b5_owns class b5cls summary] \
-        [b5_owns flavor [list b5cls $B5_CELL1] annotation] \
         [b5_eff annotation]] \
-  [list 1 0 0 0 $B5_SEED]
+  [list 1 refused 1 1 1 {} 0 0 $B5_SEED]
+
+# --- BT34  THE SHEET STAMP GATES THE MEASUREMENT (issue 1322's axis) --------
+## A block outlives the raw and the sheet it was dumped from, deliberately
+## (`rdw::close` keeps the dumps; issue 1322 is explicit that reviewing two
+## sheets side by side is what this window is for). So "the live raw" and "the
+## run this row was read out of" are two different things the moment the user
+## loads another sheet, and reading the first while claiming the second is
+## exactly issue 1322's defect one door along. The stamp is the axis, and the
+## refusal SAYS which sheet to go back to - otherwise the user reads it as this
+## same bug returning.
+## ⚠ THE SECOND HALF IS WHAT KEEPS THE FIRST HONEST: the identical param on a
+## LIVE-stamped block is accepted, so the refusal is about the stamp and not
+## about the parameter.
+b5_lists_reset
+b5_dlg {scope broad list annotation}
+set BT34_ATT [b5_raw_on]
+set BT34_LIVE [b5_subj_of M1]
+set BT34_STALE [dict replace $BT34_LIVE schname [file join $scratch elsewhere.sch]]
+set BT34_DPL [rw_ans ::rdw::_subject_devpath $BT34_LIVE]
+set BT34_DPS [rw_ans ::rdw::_subject_devpath $BT34_STALE]
+set BT34_VS [rw_ans ::rdw::_edit add $BT34_STALE summary broad vgs]
+set BT34_OWN1 [b5_owns class b5cls summary]
+set BT34_VL [rw_ans ::rdw::_edit add $BT34_LIVE summary broad vgs]
+b5_raw_off
+check {BT34 a block dumped from ANOTHER sheet mints nothing and is refused with a sentence that names the way back, while the SAME parameter on a live-stamped block is accepted - so the guard is on the stamp and not on the parameter, and a stale press owns nothing} \
+  [list [lindex $BT34_ATT 0] \
+        [expr {$BT34_DPL ne {} ? 1 : 0}] $BT34_DPS \
+        [lindex $BT34_VS 0] [b5_ok1 [lindex $BT34_VS 1] {another sheet}] \
+        [b5_ok1 [lindex $BT34_VS 1] {Press 3}] $BT34_OWN1 \
+        [lindex $BT34_VL 0] [b5_stored class b5cls summary vgs]] \
+  [list 1 1 {} refused 1 1 0 ok {vgs vgs 1}]
+
+# --- BT35  NO DIALOG IN FRONT OF A REFUSAL ---------------------------------
+## The user's report reads "it never shows up" and not "it refused", and this
+## row is why: `rdw::button` raised `rdw::scope_dialog` FIRST and reached
+## `rdw::_edit` only after it, so all 82 undeclared rows of the user's own M18
+## charged a two-part modal question - which devices, which list - and then
+## said, once, into a four-line status pane, that the whole thing was
+## impossible.
+## ⚠ BOTH HALVES, OR THE ROW WOULD PASS ON A BUTTON THAT NEVER ASKS. The
+## acceptable Add still raises exactly one dialog; only the unanswerable one
+## skips it. And the refusal still NAMES the button, which is rdw::inert's
+## surviving obligation.
+b5_lists_reset
+b5_dlg {scope broad list annotation}
+set BT35_ATT [b5_raw_on]
+rw_ans ::rdw::set_list all
+rw_ans ::rdw::set_row 12
+set BT35_GOOD [b5_press add]
+set BT35_D1 $::b5_dlg_calls
+## ⚠ READ NOW, NOT IN THE `check` LIST.  The second half below calls
+## b5_lists_reset, and a `check` argument is evaluated after it -- so a store
+## leg written inline would report the RESET state and this row would assert
+## the opposite of what it says.
+set BT35_STO [b5_stored class b5cls annotation vgs]
+b5_lists_reset
+b5_dlg {scope broad list annotation}
+b5_raw_off
+rw_ans ::rdw::set_list all
+rw_ans ::rdw::set_row 12
+set BT35_BAD [b5_press add]
+set BT35_D2 $::b5_dlg_calls
+check {BT35 an Add that cannot be written raises NO scope dialog and still names the button, while an Add that can be written raises exactly one - the user is not charged a two-part modal question for an answer the window already has} \
+  [list [lindex $BT35_ATT 0] $BT35_D1 [b5_ok1 $BT35_GOOD vgs] \
+        $BT35_STO \
+        $BT35_D2 [b5_ok1 $BT35_BAD Add] [b5_ok1 $BT35_BAD vgs] \
+        [b5_owns class b5cls annotation]] \
+  [list 1 1 1 {vgs vgs 1} 0 1 1 0]
+
+# --- BT36  WHERE THE TRIPLE CAME FROM, SAID ONCE, ON THE MINT ARM ONLY -------
+## `rdw::_mint_note`, and the discipline `rdw::_drawn_note` and
+## `rdw::_sheet_note` already follow. A triple taken from a DECLARATION carries
+## the PDK's own label and kind and needs no clause - that is the ordinary case
+## and a sentence on every press is noise. A MINTED one carries the shape THIS
+## RUN published, which is the whole of what issue 1372 changed.
+## ⚠ AND IT IS ASKED BEFORE THE WRITE. `set_list` puts the minted triple into
+## the very list `effective` reads, so the same question asked one line after
+## the store call answers "declared" for every accepted Add and the clause
+## would be dead on every press - vacuous, and green.
+b5_lists_reset
+b5_dlg {scope broad list annotation}
+set BT36_ATT [b5_raw_on]
+set BT36_SUBJ [b5_subj_of M1]
+set BT36_MINT [lindex [rw_ans ::rdw::_edit add $BT36_SUBJ summary broad vgs] 1]
+b5_lists_reset
+rw_ans ::op_param_lists::set_list class b5cls summary {{gm gm 1}}
+set BT36_DECL [lindex [rw_ans ::rdw::_edit add $BT36_SUBJ summary broad ids] 1]
+b5_raw_off
+check {BT36 the success sentence says where the shape came from on a MINTED Add and says nothing extra on a declared one - one clause, the mint arm only, and it survives the write because it is asked before it} \
+  [list [lindex $BT36_ATT 0] \
+        [b5_ok1 $BT36_MINT {read from what this run published}] \
+        [b5_ok1 $BT36_MINT vgs] \
+        [b5_ok1 $BT36_DECL ids] \
+        [expr {[string first {read from what this run published} $BT36_DECL] < 0 ? 1 : 0}] \
+        [b5_stored class b5cls summary ids]] \
+  [list 1 1 1 1 1 {id ids 0}]
 
 # --- BT19  A LIVE CANVAS PICK MODE BLOCKS THE DIALOG -------------------------
 ## MEASURED while planning this item: `grab set .rdw.scope` really does take
@@ -3669,6 +3950,16 @@ set B5_STORE_OK 0
 ## PUBLISHED verbs of the store, minted for issues 1323 and 1325, and the row's
 ## point is unchanged: this file may name the store only through verbs the
 ## store publishes, and the `op_param_lists::_` term below still golds ZERO.
+##
+## ⚠ AND `class_label` (ISSUE 1373) IS ADMITTED BY PREFIX, NOT BY NAME. The
+## terms below are counted as SUBSTRINGS, so every `op_param_lists::class_label`
+## call is already matched by the `class` term and the two counts balance. That
+## is deliberate but it is also a trap for the next reader: a published verb
+## whose name is NOT a prefix-extension of one already listed must be ADDED
+## here, and adding `class_label` beside `class` would DOUBLE-COUNT and red this
+## row. It is still a real fence for it -- `op_param_lists::_` golds zero, so a
+## PRIVATE accessor would red -- and the display-name layer's own fences are
+## section CL.
 foreach v {effective set_list get_list owns apply write_conf conf_path said class seed governs reduce_why conf_tiers} {
   incr B5_STORE_OK [rw_count $B5_F "op_param_lists::$v"]
 }
@@ -5647,12 +5938,13 @@ check {CY4 STRUCTURAL the three predicates are actually consulted: select_all ta
 # ⚠ AND THE SENTENCE IS NOT OPTIONAL.  A pane that silently drops 82 of 88 rows
 # is DD-1's own failure shape one surface further out: the reader cannot tell a
 # narrowed block from a device that published six columns.  So a narrowed block
-# SAYS which list narrowed it, how many rows it withheld, how many of those did
-# not converge, and that key 3 has them.  The list name goes in the BLOCK
+# SAYS which list narrowed it, how many of the published columns it is showing,
+# how many of the withheld did not converge, and -- when it is showing none of
+# them -- that key 3 has them.  The list name goes in the BLOCK
 # rather than in window chrome because the block is what the user pastes into a
 # design review, and chrome does not travel with a paste (row NW10).
 #
-# ⚠ THE LABEL IS PAST TENSE ON PURPOSE.  "as it stood at this dump" is what
+# ⚠ THE LABEL IS PAST TENSE ON PURPOSE.  "at this dump" is what
 # makes issue 1300's option (c) objection LAPSE rather than merely change
 # cause: a standing block is a record, the store is live, and a Delete that
 # removes a row from the list does not re-render blocks already on screen
@@ -5697,8 +5989,13 @@ proc nw_ctx {lst {cls nwcls}} {
   if {$cls ne {}} { dict set c class $cls ; dict set c cellname {} }
   return $c
 }
-set NW_NARROW1 {Narrowed to the nwcls annotation list as it stood at this dump. 3 columns are not in that list and not shown; this run published 6 for this device. 1 of the withheld did not converge. Press 3 for everything this run published.}
-set NW_NARROW2 {Narrowed to the nwcls summary list as it stood at this dump. 5 columns are not in that list and not shown; this run published 6 for this device. 1 of the withheld did not converge. Press 3 for everything this run published.}
+## ⚠ ISSUE 1374 CUT THESE TO LABELS.  They were 190 characters each (226 with
+## the convergence clause) and wrapped to two display lines apiece; they are 95
+## and 94 now.  The counts changed sense with the words: the sentence counted
+## what was WITHHELD, the label counts what is SHOWN out of the total.  Rows
+## NW14..NW16 fence the shape, this pair fences the wording.
+set NW_NARROW1 {Narrowed to the nwcls annotation list at this dump: 3 of 6 columns. 1 withheld did not converge.}
+set NW_NARROW2 {Narrowed to the nwcls summary list at this dump: 1 of 6 columns. 1 withheld did not converge.}
 
 check {NW1 THE USER'S FIRST COMPLAINT, CLOSED: key 1 prints the class's ANNOTATION list and nothing else - three of the six columns this run published - IN THE LIST'S OWN ORDER rather than the raw file's, and the block says which list narrowed it, how many rows it withheld and that key 3 has them} \
   [rw_text $NW_ANS [nw_ctx annotation]] \
@@ -5729,17 +6026,23 @@ set NW_ALLIN [rw_ansd [dict create {@m.nw1} {{nid 1.11e-05} {ngm 0.001}}] {} {} 
 ## clause was built, so this golden carried the omission and made the suite
 ## defend it.  `$NW_ANS` holds one non-finite row and the sentence now says so;
 ## row NW12 is the fence that would have caught it.
-check {NW4 THE EMPTY LIST IS A SENTENCE, NOT A BLANK BLOCK, and the counts agree with themselves: one withheld column reads `1 column is`, three read `3 columns are`, a run every one of whose columns IS in the list says so instead of counting to zero, and the empty list still names its withheld non-convergence} \
+##
+## ⚠ AND ITS THIRD LEG CHANGED SHAPE, NOT ONLY WORDING (issue 1374).  The
+## `withheld == 0` ARM IS GONE: "2 of 2 columns" says what "Every column this
+## run published for this device is in that list" said, in a quarter of the
+## characters, out of the general arm.  One arm fewer is one place fewer for
+## the arm-specific omission the paragraph above is about.
+check {NW4 THE EMPTY LIST IS A SENTENCE, NOT A BLANK BLOCK, and the counts agree with themselves: a total of one column reads `1 column` and a total of two reads `2 columns`, a run every one of whose columns IS in the list counts them rather than needing an arm of its own, and the empty list still names its withheld non-convergence and still points at key 3} \
   [list [rw_text $NW_ANS   [nw_ctx annotation nwzcls]] \
         [rw_text $NW_ONE   [nw_ctx annotation]] \
         [rw_text $NW_ALLIN [nw_ctx annotation]]] \
   [list [rw_lines {NW1:/} {@m.nw1} $RW_INC \
-           {The nwzcls annotation list was empty at this dump, so nothing this run published for this device is shown. 1 of the withheld did not converge. Press 3 for everything this run published.} {}] \
+           {Narrowed to the nwzcls annotation list at this dump: empty, 0 of 6 columns. 1 withheld did not converge. Press 3 for all 6.} {}] \
         [rw_lines {NW1:/} {@m.nw1} $RW_INC \
-           {Narrowed to the nwcls annotation list as it stood at this dump. 1 column is not in that list and not shown; this run published 2 for this device. Press 3 for everything this run published.} \
+           {Narrowed to the nwcls annotation list at this dump: 1 of 2 columns.} \
            {    nid : 11.1u} {}] \
         [rw_lines {NW1:/} {@m.nw1} $RW_INC \
-           {Narrowed to the nwcls annotation list as it stood at this dump. Every column this run published for this device is in that list.} \
+           {Narrowed to the nwcls annotation list at this dump: 2 of 2 columns.} \
            {    nid : 11.1u} {    ngm : 1m} {}]]
 
 check {NW5 A CALLER THAT CANNOT NAME A LIST NARROWS NOTHING - a ctx with no `list` key, and one whose device has no class, both render the un-narrowed block byte for byte, so the twenty hand-built contexts in this file and every future caller of the door keep today's answer instead of silently losing rows} \
@@ -5751,11 +6054,11 @@ check {NW5 A CALLER THAT CANNOT NAME A LIST NARROWS NOTHING - a ctx with no `lis
 
 check {NW6 THE THREE BUCKETS NARROW TOGETHER AND THE WITHHELD NON-CONVERGENCE IS SAID OUT LOUD: a `nonfinite` row no list declares is withheld like any other but is COUNTED in a clause of its own, so the one fact issue 1272 says a designer most wants to be told is stated rather than dropped; and the absent footnote follows the NARROWED absent bucket, so a block with no blank in it no longer explains what a blank means} \
   [list [rw_has [rw_text $NW_ANS [nw_ctx annotation]] {(did not converge)}] \
-        [rw_has [rw_text $NW_ANS [nw_ctx annotation]] {1 of the withheld did not converge.}] \
+        [rw_has [rw_text $NW_ANS [nw_ctx annotation]] {1 withheld did not converge.}] \
         [rw_has [rw_text $NW_ANS [nw_ctx annotation]] $RW_ABSN] \
         [rw_has [rw_text $NW_ANS [nw_ctx all]] {(did not converge)}] \
         [rw_has [rw_text $NW_ANS [nw_ctx all]] $RW_ABSN] \
-        [rw_has [rw_text $NW_ANS [nw_ctx all]] {of the withheld did not converge}]] \
+        [rw_has [rw_text $NW_ANS [nw_ctx all]] {did not converge.}]] \
   {0 1 0 1 1 0}
 
 check {NW7 STRUCTURAL ONE DEFINITION OF THE NARROWING: format_answer asks rdw::_narrow_spec, which asks the item R2 reader rdw::_list_params, which asks ::op_param_lists::effective and nothing else - and neither the spec nor the renderer names op_annot::descriptor or reads a `params` key, which is the second definition issue 1300 refused option (a) over} \
@@ -5856,13 +6159,14 @@ check {NW10 THE LIST NAME TRAVELS WITH THE PASTE: the narrowing sentence is a li
 ##         `rdw::_narrow_line` the CLASS.  MEASURED by two adversaries on the
 ##         user's own M18 after the shipped Delete -> "this device flavor only"
 ##         gesture: the pane showed the flavor entry's five rows under
-##         "Narrowed to the mos annotation list", while `effective mos
+##         "Narrowed to the mos annotation list ...", while `effective mos
 ##         annotation` held six.  The name came from one entry and the count
 ##         from the other.  AND THE WHOLE FLAVOR PATH WAS FENCED BY NOTHING:
 ##         passing `{}` for the cell left window, keys and store all green.
 ##   NW12  THE EMPTY-LIST ARM DROPPED THE NON-CONVERGENCE CLAUSE.
 ##         `rdw::_narrow_line` returned from its `$norder == 0` branch before
-##         `$wnf` was read, so the one case in which EVERY row is withheld was
+##         `$wnf` was read (issue 1374 removed the return, not the clause), so
+##         the one case in which EVERY row is withheld was
 ##         the one case that never said a withheld row failed to converge --
 ##         contradicting the decision recorded beside it, which row NW6 asserts
 ##         from the other side.  NW4's own empty-list golden spelled the
@@ -5875,7 +6179,8 @@ check {NW10 THE LIST NAME TRAVELS WITH THE PASTE: the narrowing sentence is a li
 ##         columns of which ONE is missing -- one line under the DD-1 line that
 ##         uses "columns" in the correct per-vector sense.  The remedy is the
 ##         count, not the word: distinct columns is what both sentences then
-##         mean.
+##         mean.  (Issue 1374 re-worded the sentence to "1 of 2 columns"; the
+##         number is the same number and this row still fences it.)
 
 ## THE NOTE ITSELF, not the whole block, so a row whose subject is the SENTENCE
 ## reds on the sentence rather than on a layout change three lines away.
@@ -5885,8 +6190,11 @@ proc nw_note {ans ctx} {
   foreach e $b {
     if {[lindex $e 0] ne {note}} { continue }
     set t [lindex $e 1]
+    ## ISSUE 1374: BOTH ARMS NOW OPEN "Narrowed to the", so the second pattern
+    ## this dispatcher carried ("The <list> was empty at this dump ...") has no
+    ## sentence left to match.  One pattern is the whole of it, and that is the
+    ## point of the arm collapse rather than an accident of it.
     if {[string match {Narrowed to*} $t]} { return $t }
-    if {[string match {The *was empty at this dump*} $t]} { return $t }
   }
   return NO-NOTE
 }
@@ -5915,10 +6223,10 @@ check {NW11 THE CAPTION NAMES THE ENTRY THAT REALLY NARROWED THE BLOCK: a device
         [rw_has [nw_note $NW_ANS $NW11_FL] {the nwfcls annotation list}] \
         [rw_ans ::op_param_lists::governs nwfcls annotation nwf.sym] \
         [rw_ans ::op_param_lists::governs nwfcls annotation other.sym]] \
-  [list {Narrowed to the annotation list for cells matching nwf.sym of class nwfcls as it stood at this dump. 5 columns are not in that list and not shown; this run published 6 for this device. 1 of the withheld did not converge. Press 3 for everything this run published.} \
-        {Narrowed to the nwfcls annotation list as it stood at this dump. 4 columns are not in that list and not shown; this run published 6 for this device. 1 of the withheld did not converge. Press 3 for everything this run published.} \
+  [list {Narrowed to the annotation list for cells matching nwf.sym of class nwfcls at this dump: 1 of 6 columns. 1 withheld did not converge.} \
+        {Narrowed to the nwfcls annotation list at this dump: 2 of 6 columns. 1 withheld did not converge.} \
         [rw_lines {NW1:/} {@m.nw1} $RW_INC \
-           {Narrowed to the annotation list for cells matching nwf.sym of class nwfcls as it stood at this dump. 5 columns are not in that list and not shown; this run published 6 for this device. 1 of the withheld did not converge. Press 3 for everything this run published.} \
+           {Narrowed to the annotation list for cells matching nwf.sym of class nwfcls at this dump: 1 of 6 columns. 1 withheld did not converge.} \
            {    nvth : 0.75} {}] \
         0 {flavor {nwfcls nwf.sym}} {class nwfcls}]
 
@@ -5930,9 +6238,9 @@ check {NW12 THE EMPTY LIST STILL SAYS A WITHHELD ROW DID NOT CONVERGE, which is 
         [nw_note $NW12_TWO [nw_ctx annotation nwzcls]] \
         [nw_note $NW12_FIN [nw_ctx annotation nwzcls]] \
         [rw_has [rw_text $NW12_TWO [nw_ctx annotation nwzcls]] {(did not converge)}]] \
-  [list {The nwzcls annotation list was empty at this dump, so nothing this run published for this device is shown. 1 of the withheld did not converge. Press 3 for everything this run published.} \
-        {The nwzcls annotation list was empty at this dump, so nothing this run published for this device is shown. 2 of the withheld did not converge. Press 3 for everything this run published.} \
-        {The nwzcls annotation list was empty at this dump, so nothing this run published for this device is shown. Press 3 for everything this run published.} \
+  [list {Narrowed to the nwzcls annotation list at this dump: empty, 0 of 6 columns. 1 withheld did not converge. Press 3 for all 6.} \
+        {Narrowed to the nwzcls annotation list at this dump: empty, 0 of 3 columns. 2 withheld did not converge. Press 3 for all 3.} \
+        {Narrowed to the nwzcls annotation list at this dump: empty, 0 of 2 columns. Press 3 for all 2.} \
         0]
 
 ## RULING D-3's OWN FIXTURE, row F7's five primitives from one XR1, re-used so
@@ -5949,13 +6257,133 @@ check {NW13 THE SENTENCE COUNTS DISTINCT COLUMNS, NOT ROWS ACROSS PRIMITIVES: ru
   [list [nw_note $F7_ANS [nw13_ctx]] \
         [rw_text $F7_ANS [nw13_ctx]] \
         [rw_count [rw_text $F7_ANS [nw13_ctx]] {c : }]] \
-  [list {Narrowed to the nwmcls annotation list as it stood at this dump. 1 column is not in that list and not shown; this run published 2 for this device. Press 3 for everything this run published.} \
+  [list {Narrowed to the nwmcls annotation list at this dump: 1 of 2 columns.} \
         [rw_lines {XR1:/} {@r.xr1} $RW_INC \
-           {Narrowed to the nwmcls annotation list as it stood at this dump. 1 column is not in that list and not shown; this run published 2 for this device. Press 3 for everything this run published.} \
+           {Narrowed to the nwmcls annotation list at this dump: 1 of 2 columns.} \
            {  @r.xr1.x0.rend1} {    i : 1u} \
            {  @r.xr1.x0.rend2} {    i : 2u} \
            {  @b.xr1.x0.brbody} {    i : 4u} {}] \
         0]
+
+## ---------------------------------------------------------------------------
+## NW14..NW16 — ISSUE 1374: THE PREAMBLE IS A LABEL, AND THE ONE FACT THAT
+## SURVIVED THE CUT.
+## ---------------------------------------------------------------------------
+## THE USER'S RULING, VERBATIM, on the two sentences this window printed above
+## every device: "This is too verbose!  Just say 'annotated list' or 'summary
+## list'".  MEASURED in the real pane at the shipped default geometry before
+## the cut: 311 characters over 2 logical lines that wrapped to FOUR display
+## lines, sitting above SIX rows of data, re-emitted per device.  After it: 123
+## characters over 2 logical lines and TWO display lines.
+##
+## ⚠ THESE THREE ROWS FENCE THE RULING, NOT THE WORDING.  NW1, NW4, NW11, NW12
+## and NW13 already gold every sentence byte for byte and they red on a
+## re-worded label.  What they do NOT catch is the sentence GROWING BACK: every
+## clause struck out here was defensible when it was written, each of the four
+## ⚠ blocks around `rdw::_narrow_line` argues for one of them, and the next
+## reader with a good reason will append a thirteenth word to a line that is
+## already at the pane's width.  NW14 is the cap, in characters, against the
+## pane's own requested `-width`.
+##
+## ⚠ AND NW15 IS THE OTHER HALF OF THE RULING: what did NOT get cut.  Ruling
+## DD-1 and issue 1272 both say a withheld column that DID NOT CONVERGE is the
+## one fact a designer most wants told, and it was kept against a general
+## instruction to be brief -- on the measurement that the user's own M18 has
+## `wnf == 0`, so deleting the clause would have shortened THEIR screen by zero
+## characters while losing the fact everywhere else.  A row that only asserted
+## brevity would grade the deletion of that clause a PASS.
+##
+## ⚠ THE CAP IS ASSERTED WITH A FIXED 19-CHARACTER NAME, deliberately not with
+## the flavor fixture: `rdw::_narrowed_list`'s flavor arm embeds a user-typed
+## GLOB of unbounded length ("annotation list for cells matching
+## sky130_fd_pr/nfet_01v8_lvt of class MOS" is 121 characters and cannot be
+## capped by anybody).  19 is the width of the real `MOS annotation list` the
+## user reads.  The two shapes that carry BOTH the convergence clause and the
+## key-3 pointer are over the cap by design -- four facts, no rows on screen,
+## and the rarest block this window draws -- and NW16 golds them instead.
+set NW14_NAME {MOS annotation list}
+## ⚠ COUPLED TO `rdw::_pane_chars`'s OWN `set W 96`, WHICH IS THE PANE'S
+## REQUESTED -width (src/rdw.tcl).  The constant is asserted to still be there
+## rather than merely copied, so moving the pane's width reds this row instead
+## of leaving a cap that fences nothing.
+set NW14_W 96
+proc nw14 {total withheld wnf norder} {
+  return [rw_ans ::rdw::_narrow_line $::NW14_NAME $total $withheld $wnf $norder]
+}
+proc nw14_fits {total withheld wnf norder} {
+  set t [nw14 $total $withheld $wnf $norder]
+  if {[rw_bad $t]} { return $t }
+  return [expr {[string length $t] <= $::NW14_W ? 1 : 0}]
+}
+## Every shape this builder can produce, concatenated, so a struck-out phrase
+## is asserted GONE from all of them rather than from the one a row happened to
+## drive.
+set NW14_ALL {}
+foreach _sh {{88 82 0 6} {88 82 1 6} {6 0 0 3} {1 0 0 1} {88 88 0 6}
+             {88 88 1 6} {88 88 0 0} {88 88 1 0}} {
+  append NW14_ALL [nw14 {*}$_sh] "\n"
+}
+## The note lines of a real block, which is what the user actually reads: the
+## DD-1 line and the narrowing label, and nothing else on the user's own shape.
+proc nw_notes {ans ctx} {
+  set b [rw_block $ans $ctx]
+  if {[rw_bad $b]} { return $b }
+  set out {}
+  foreach e $b { if {[lindex $e 0] eq {note}} { lappend out [lindex $e 1] } }
+  return $out
+}
+proc nw_maxlen {lst} {
+  set m 0
+  foreach e $lst { if {[string length $e] > $m} { set m [string length $e] } }
+  return $m
+}
+
+check {NW14 THE PREAMBLE IS A LABEL AND STAYS ONE: every shape of the narrowing line with a fixed 19-character list name fits the pane's own requested width, the DD-1 line fits it too, the two of them together are the WHOLE preamble on the user's own shape, and not one shape still carries `as it stood`, `Not a complete list`, `not in that list`, `this run published N for this device` or `Press 3 for everything` - so a clause appended back reds here rather than re-wrapping in silence} \
+  [list [nw14 88 82 0 6] \
+        [nw14_fits 88 82 0 6] [nw14_fits 88 82 1 6] [nw14_fits 6 0 0 3] \
+        [nw14_fits 1 0 0 1] [nw14_fits 88 88 0 6] [nw14_fits 88 88 0 0] \
+        [expr {[string length $RW_INC] <= $NW14_W ? 1 : 0}] \
+        [rw_count $NW14_ALL {as it stood}] \
+        [rw_count $NW14_ALL {not in that list}] \
+        [rw_count $NW14_ALL {this run published}] \
+        [rw_count $NW14_ALL {Press 3 for everything}] \
+        [rw_count $NW14_ALL {Not a complete list}] \
+        [llength [nw_notes $NW_ANS [nw_ctx annotation]]] \
+        [expr {[nw_maxlen [nw_notes $NW_ANS [nw_ctx annotation]]] <= $NW14_W ? 1 : 0}] \
+        [rw_has [rw_body ::rdw::_pane_chars] {set W 96}]] \
+  [list {Narrowed to the MOS annotation list at this dump: 6 of 88 columns.} \
+        1 1 1 1 1 1 1 0 0 0 0 0 2 1 1]
+
+check {NW15 THE ONE CLAUSE THAT SURVIVED THE CUT: a withheld column that did not converge is still counted out loud - in the arm that shows rows AND in the arm that shows none - it still scales with the count, it is still SILENT when every withheld column converged so it stays an answer rather than noise, and it is still built in ONE place before the branch so no arm can omit it} \
+  [list [rw_has [nw14 88 82 0 6] {converge}] \
+        [rw_has [nw14 88 82 1 6] {. 1 withheld did not converge.}] \
+        [rw_has [nw14 88 82 2 6] {. 2 withheld did not converge.}] \
+        [rw_has [nw14 88 88 1 0] {. 1 withheld did not converge.}] \
+        [rw_has [nw14 88 88 2 0] {. 2 withheld did not converge.}] \
+        [rw_has [nw14 88 88 0 0] {converge}] \
+        [rw_has [nw14 88 82 1 6] {of the withheld}] \
+        [rw_count [rw_body ::rdw::_narrow_line] {did not converge}]] \
+  [list 0 1 1 1 1 0 0 1]
+
+## A class whose annotation list declares a column THIS RUN DID NOT PUBLISH:
+## a non-empty list that keeps nothing, which is the second way a block ends up
+## with no rows on it and the one the empty-list arm never covered.
+rw_ans ::op_param_lists::set_list class nwxcls annotation {{qqq qqq 0}}
+check {NW16 THE KEY-3 POINTER IS ONE RULE - IT APPEARS EXACTLY WHEN NOTHING IS ON SCREEN: a block that has rows does not carry it (the counts already say rows were withheld, and the chrome names the keys), a block narrowed to nothing carries it whether the LIST was empty or the list simply declares columns this run never published, and those two are still told apart because only the first says `empty` - one diagnosis is fixed in the settings file and the other is not} \
+  [list [rw_has [nw14 88 82 0 6] {Press 3}] \
+        [rw_has [nw14 6 0 0 3] {Press 3}] \
+        [nw14 88 88 0 6] \
+        [nw14 88 88 0 0] \
+        [rw_has [nw14 88 88 0 6] {empty}] \
+        [nw_note $NW_ONE [nw_ctx annotation nwxcls]] \
+        [rw_text $NW_ONE [nw_ctx annotation nwxcls]]] \
+  [list 0 0 \
+        {Narrowed to the MOS annotation list at this dump: 0 of 88 columns. Press 3 for all 88.} \
+        {Narrowed to the MOS annotation list at this dump: empty, 0 of 88 columns. Press 3 for all 88.} \
+        0 \
+        {Narrowed to the nwxcls annotation list at this dump: 0 of 2 columns. Press 3 for all 2.} \
+        [rw_lines {NW1:/} {@m.nw1} $RW_INC \
+           {Narrowed to the nwxcls annotation list at this dump: 0 of 2 columns. Press 3 for all 2.} {}]]
 
 
 # ============================================================================
@@ -5980,7 +6408,7 @@ check {NW13 THE SENTENCE COUNTS DISTINCT COLUMNS, NOT ROWS ACROSS PRIMITIVES: ru
 #
 # ⚠ THE BLOCK ALREADY NAMES A LIST AND THIS IS NOT A SECOND ANNOUNCEMENT.
 # Issue 1353's narrowing sentence (`rdw::_narrow_line`, row NW10) is PAST
-# TENSE and is about THE BLOCK -- "as it stood at this dump" -- because a block
+# TENSE and is about THE BLOCK -- "at this dump" -- because a block
 # is a RECORD that travels with the paste.  The chrome is PRESENT TENSE and is
 # about THE BUTTONS: it names the identity `::rdw::listkind` holds now, which
 # is what Up, Down, Delete and Add will act on WHATEVER dump the user happens
@@ -7042,6 +7470,838 @@ if {$live_tk} {
   catch {update idletasks}
 }
 
+# ============================================================================
+# SECTION FZ — THE TEXT SIZE CONTROL (issue 1368)
+# ============================================================================
+# THE USER'S OWN WORDS: "add a button to allow user to manipulate font size in
+# RDW.  it can be the 'aa' button you see in e-readers - 2nd a bigger.  Key
+# part, as soon as user hovers over it, tooltip should be displayed : click to
+# increase font one unit.  Ctrl+click to decrease font one unit".
+#
+# FOUR ROWS RUN ON BOTH ARMS (FZ1..FZ4) and are what the floor counts: the
+# band, the admission test, the arithmetic door and the order-independence, all
+# of them pure model.  They HAVE to be the counted half — `--nogui` has no
+# `font` command AT ALL (measured: `invalid command name "font"` aborts the
+# script at line 1), so every row that asks a real font is display-gated.
+#
+# SEVEN ROWS ARE `live_tk`-GATED (FZ5..FZ11) and are deliberately NOT counted:
+# the private fonts, the two fonts moving together, the two real click arms,
+# the tooltip's binding, the toplevel's geometry across a walk to the ceiling
+# and back, the close-and-reopen, and the rendered tip staying on the screen.
+# The floor is the arm that runs FEWEST rows.
+#
+# ⚠ FZ5 IS THE ONLY THING IN THE TREE WATCHING EIGHT OTHER WINDOWS' FONTS.
+# MEASURED on this binary: a bare `text` widget's DEFAULT -font IS TkFixedFont,
+# so `font configure TkFixedFont -size N` — the obvious one-liner, which looks
+# perfect in the RDW — also resizes the attribute editor (xschem.tcl:10674 and
+# :10839), the symbol-property editor (:11692), the text-input dialog (:13190),
+# editpaths (:9454), the graph dialog (:6365), the notify popup (ciw.tcl:155)
+# and the calculator buffer (calculator.tcl:1503).  Nothing on screen says so.
+#
+# ⚠ AND FZ6 EXISTS BECAUSE THE HEADER TAG IS INVISIBLE IN A SMALL TEST.  The
+# `hdr` tag used to be `font actual TkFixedFont` + bold, which is a font
+# DESCRIPTION and not a NAME.  MEASURED after a size change: pane linespace 27,
+# `hdr` tag still 17.  A row that only reads `.rdw.p.t cget -font` passes while
+# every block header in the window stays small, so FZ6 asserts BOTH.
+#
+# ⚠ NO PIXEL CONSTANT APPEARS IN THIS SECTION.  Every number below is either a
+# character count the code itself computes or a tolerance expressed in the
+# SHARED font's own metrics — issue 1362's rule (rdw.tcl:1816-1824), and it is
+# not decoration here: all of this item's measurements were taken on Xvfb :99
+# with DejaVu Sans Mono, and the user's own display is a different X server
+# (the Windows one over TCP) which may substitute another family.
+
+## The section owns the model and puts it back — every row below writes
+## ::rdw_font_size, and rows FZ3 and FZ7 write the status line too.
+set FZ_SAVE [expr {[info exists ::rdw_font_size] ? $::rdw_font_size : {NOVAR}}]
+set FZ_MSG0 $::rdw::statusmsg
+set FZ_TIP {click to increase font one unit. Ctrl+click to decrease font one unit}
+
+## ---------------------------------------------------------------------------
+## FZ1 — THE BAND, ONCE.
+set FZ1_L [rw_ans ::rdw::font_limits]
+set FZ1_OK 0
+if {![rw_bad $FZ1_L] && [llength $FZ1_L] == 2} {
+  lassign $FZ1_L _lo _hi
+  set FZ1_OK [expr {[string is integer -strict $_lo] && [string is integer -strict $_hi]
+                    && $_lo > 0 && $_lo < $_hi ? 1 : 0}]
+}
+check {FZ1 THE BAND IS A NAMED ACCESSOR AND ITS THREE CONSUMERS ASK IT: rdw::font_limits answers one ordered pair of positive integers, and _accept_size, _base_size and font_step each reach it by name rather than spelling a bound of their own - so overruling the band, which is the user's to do, costs one line and one golden} \
+  [list $FZ1_L $FZ1_OK \
+        [rw_count [rw_body ::rdw::_accept_size] {rdw::font_limits}] \
+        [rw_count [rw_body ::rdw::_base_size]   {rdw::font_limits}] \
+        [rw_count [rw_body ::rdw::font_step]    {rdw::font_limits}]] \
+  [list {6 32} 1 1 1 1]
+
+## ---------------------------------------------------------------------------
+## FZ2 — THE ADMISSION TEST REFUSES, IT DOES NOT CLAMP.
+## Silently "fixing" an out-of-band value hides which size the caller actually
+## asked for — `ciw_set_font_size`'s own recorded reason (ciw.tcl:406) — and a
+## clamp would also make 0 REACHABLE, which is the trap in the next paragraph.
+##
+## ⚠ 0 IS A LIVE FONT SIZE, NOT A NEUTRAL ONE.  MEASURED: `font configure
+## -size 0` resolves to 12 here and raises nothing.  It is safe as the "not
+## chosen yet" sentinel in ::rdw_font_size ONLY because this proc can never
+## answer it.
+set FZ2 {}
+foreach _v {5 6 7 31 32 33 0 -1 abc {} 10.5 1e1} {
+  lappend FZ2 [rw_ans ::rdw::_accept_size $_v]
+}
+check {FZ2 _accept_size REFUSES RATHER THAN CLAMPS, at both edges of the band and on every shape that is not an integer: 6 and 32 come back as themselves, 5 and 33 come back EMPTY rather than pulled to the nearest bound, and 0 - a LIVE font size meaning `system default`, measured at 12 here - is unreachable, which is what makes it safe as the not-chosen-yet sentinel} \
+  $FZ2 \
+  [list {} 6 7 31 32 {} {} {} {} {} {} {}]
+
+## ---------------------------------------------------------------------------
+## FZ3 — THE ONE ARITHMETIC DOOR.
+## ⚠ IT READS THE MODEL, NEVER `font actual <f> -size`.  MEASURED: a font
+## spelled `-size -14` (PIXELS) answers `font actual ... -size` = 10 (POINTS),
+## so an implementation that increments what it reads back turns a user's pixel
+## spelling into points and moves the size by an unrelated amount on the first
+## click.
+##
+## ⚠ AND IT SAYS NOTHING ON THE ACCEPTED PATH.  The pane visibly changing IS
+## the confirmation; a status write per click would evict the button column's
+## real verdicts.  At the two limits it MUST speak — a visible, enabled control
+## that does nothing and says nothing is indistinguishable from a broken one.
+rw_ans ::rdw::set_font_size 6
+rw_ans ::rdw::status {FZ-SENTINEL}
+set FZ3_LO   [rw_ans ::rdw::font_step -1]
+set FZ3_LOM  $::rdw::statusmsg
+set FZ3_LOS  [rw_ans ::rdw::font_size]
+rw_ans ::rdw::set_font_size 32
+rw_ans ::rdw::status {FZ-SENTINEL}
+set FZ3_HI   [rw_ans ::rdw::font_step 1]
+set FZ3_HIM  $::rdw::statusmsg
+set FZ3_HIS  [rw_ans ::rdw::font_size]
+rw_ans ::rdw::set_font_size 12
+rw_ans ::rdw::status {FZ-SENTINEL}
+set FZ3_UP   [rw_ans ::rdw::font_step 1]
+set FZ3_UPS  [rw_ans ::rdw::font_size]
+set FZ3_DN   [rw_ans ::rdw::font_step -1]
+set FZ3_DNS  [rw_ans ::rdw::font_size]
+set FZ3_QUIET $::rdw::statusmsg
+set FZ3_BAD  [list [rw_ans ::rdw::font_step 0] [rw_ans ::rdw::font_step 2] \
+                   [rw_ans ::rdw::font_step -2] [rw_ans ::rdw::font_step up]]
+check {FZ3 font_step WALKS THE MODEL AND REFUSES AT BOTH ENDS IN WORDS THAT NAME THE LIMIT: a step down at the floor and a step up at the ceiling both answer 0, leave the size exactly where it was and write ONE status line naming the bound - while an accepted step answers 1, moves the model by exactly one unit and writes NOTHING, because the pane changing is the confirmation and a line per click would evict the button column's verdicts} \
+  [list $FZ3_LO $FZ3_LOM $FZ3_LOS $FZ3_HI $FZ3_HIM $FZ3_HIS \
+        $FZ3_UP $FZ3_UPS $FZ3_DN $FZ3_DNS $FZ3_QUIET $FZ3_BAD] \
+  [list 0 {Text size: already the smallest (6).} 6 \
+        0 {Text size: already the largest (32).} 32 \
+        1 13 1 12 {FZ-SENTINEL} {0 0 0 0}]
+
+## ---------------------------------------------------------------------------
+## FZ4 — ORDER-INDEPENDENCE, THE no-Tk PATH, AND THE TWO STRUCTURAL FENCES.
+## The window is CLOSED here (section KB shut it), which is the point: an rc may
+## call rdw::set_font_size before the window has ever been built, exactly as it
+## may call ciw_set_font_size, so the setter records the model and _apply_font
+## is a no-op rather than a raise.
+set FZ4_SET  [rw_ans ::rdw::set_font_size 14]
+set FZ4_VAR  [expr {[info exists ::rdw_font_size] ? $::rdw_font_size : {NOVAR}}]
+set FZ4_EFF  [rw_ans ::rdw::font_size]
+set FZ4_REF  [list [rw_ans ::rdw::set_font_size 99] [rw_ans ::rdw::set_font_size abc] \
+                   [rw_ans ::rdw::set_font_size {}]]
+set FZ4_KEPT [rw_ans ::rdw::font_size]
+set FZ4_NOOP [rw_ans ::rdw::_apply_font]
+## With NO choice recorded the private font is a byte-for-byte copy of the
+## shared one, so the pane's character shape is the 96x26 the window shipped
+## with — on BOTH arms, and with no pixel constant anywhere.
+set ::rdw_font_size 0
+set FZ4_CH   [rw_ans ::rdw::_pane_chars]
+## THE SHARED FONT IS NEVER CONFIGURED.  `font configure TkFixedFont` with no
+## options is a READ (rdw::_font derives the private font from it); this needle
+## catches only a WRITE.
+set FZ4_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
+check {FZ4 THE SETTER IS ORDER-INDEPENDENT, RAISES NOTHING WITH NO WINDOW, AND THE SHARED FONT IS NEVER WRITTEN: set_font_size records the model with the window closed and refuses out-of-band and non-integer sizes without moving it, _apply_font answers 0 instead of raising, an unchosen size leaves the pane at the 96x26 the window shipped with, and rdw.tcl sets an option on TkFixedFont NOWHERE - which is the whole difference between a window-local control and a global one, since every bare text widget in the tree defaults to that font} \
+  [list $FZ4_SET $FZ4_VAR $FZ4_EFF $FZ4_REF $FZ4_KEPT $FZ4_NOOP $FZ4_CH \
+        [expr {$FZ4_F eq {NOFILE} ? {NOFILE} : [rw_count $FZ4_F {font configure TkFixedFont -}]}] \
+        [rw_count $FZ4_F {::balloon}] \
+        [rw_count $FZ4_F {proc rdw::balloon}] \
+        [rw_count $FZ4_F {proc rdw::tooltip}] \
+        [expr {[llength [info commands ::balloon]] ? 1 : 0}]] \
+  [list 1 14 14 {0 0 0} 14 0 {96 26} 0 1 0 0 1]
+
+## ---------------------------------------------------------------------------
+## FZ12 — THE CONTROL THE USER NAMED, AND WHERE IT IS NOT.
+## The user asked for "the 'aa' button you see in e-readers - 2nd a bigger",
+## which is the one part of this item they specified BY NAME.  Nothing asserted
+## it: an adversary re-labelled it `Zz` and both arms stayed green.
+##
+## ⚠ AND IT MUST STAY OUT OF `rdw::_buttons`.  That table feeds
+## rdw::button_state, rdw::_active_buttons and rdw::_active_phrase, so an entry
+## there would put the font control into the chrome sentence "only Up, Down,
+## Delete, Add and Save do anything" — a list-action claim about a control that
+## is not a list action and is never greyed.
+##
+## ⚠ AND THE Ctrl ARM MUST NAME `rdw::_focus_click`.  Its `break` stops the
+## `.rdw` bindtag as well as the `Button` class one, so the toplevel's own
+## <ButtonPress> disarm (issue 1369) never runs on that gesture unless this
+## script calls it.  Row FZ14 measures the consequence; this leg is what a
+## reader sees.
+set FZ12_B  [rw_ans ::rdw::_buttons]
+## The three real list identities, out of `rdw::_digit_map` and not spelt here.
+set FZ12_PH {}
+foreach {_d _k} [rw_ans ::rdw::_digit_map] {
+  if {$_k eq {refresh}} continue
+  lappend FZ12_PH [rw_ans ::rdw::_active_phrase $_k]
+}
+set FZ12_BLD [rw_body ::rdw::build]
+set FZ12_AA 0 ; set FZ12_SAID 0
+foreach _p $FZ12_PH {
+  if {[rw_bad $_p] || $_p eq {}} continue
+  incr FZ12_SAID
+  if {[rw_has $_p {aA}]} { set FZ12_AA 1 }
+}
+check {FZ12 THE BUTTON CARRIES THE LABEL THE USER ASKED FOR, SITS AT THE FOOT OF THE BUTTON COLUMN, AND IS NOT A LIST ACTION: `rdw::build` creates exactly one `.rdw.b.fontsize` with `-text {aA}` and packs it `-side bottom`, its Control arm names `rdw::_focus_click` because its own `break` stops the toplevel bindtag that would otherwise have run it, and `fontsize` appears NOWHERE in rdw::_buttons - so it is never greyed, never refuses on a list identity and never enters the chrome sentence that says which buttons act on this list} \
+  [list [rw_count $FZ12_B {fontsize}] \
+        $FZ12_AA $FZ12_SAID \
+        [rw_count $FZ12_BLD {.rdw.b.fontsize}] \
+        [rw_count $FZ12_BLD {-text {aA}}] \
+        [rw_count $FZ12_BLD {pack .rdw.b.fontsize -side bottom}] \
+        [rw_count $FZ12_BLD {<Control-Button-1>}] \
+        [rw_count $FZ12_BLD {{rdw::_focus_click %W ; rdw::font_step -1 ; break}}] \
+        [rw_count $FZ12_BLD {rdw::_focus_click}] \
+        [rw_count $FZ12_BLD {rdw::font_step -1}] \
+        [rw_count $FZ12_BLD {rdw::font_step 1}]] \
+  [list 0 0 3 4 1 1 1 1 2 1 1]
+
+## ---------------------------------------------------------------------------
+## FZ13 — THE THREE ACCESSORS BEHIND THE UNCHOSEN SIZE, AND THE no-Tk PATH.
+## `rdw::_shared_size` (the shared font's own size, RAW), `rdw::_base_size`
+## (the same thing pulled into the band) and `rdw::_ref_font` (the metric the
+## pane's character shape is scaled against) are the whole of the "the user has
+## not chosen" policy, and `--nogui` has no `font` command AT ALL — so all
+## three have to ANSWER rather than raise on the arm that cannot ask a font.
+##
+## ⚠ AND THE BAND IS REACHED BY NAME FROM EACH OF THEM.  An adversary replaced
+## `_base_size`'s probe with a bare `set n 10` — dropping the shared font
+## entirely, on a door this item advertises as honoured — and both arms stayed
+## green.  These structural legs red that on the arm that has no font command
+## at all; row FZ15 reds it behaviourally on the arm that does.
+set FZ13_SH  [rw_ans ::rdw::_shared_size]
+set FZ13_BS  [rw_ans ::rdw::_base_size]
+set FZ13_RF  [rw_ans ::rdw::_ref_font]
+lassign [rw_ans ::rdw::font_limits] _fzlo _fzhi
+set FZ13_IN  [expr {[string is integer -strict $FZ13_BS]
+                    && $FZ13_BS >= $_fzlo && $FZ13_BS <= $_fzhi ? 1 : 0}]
+check {FZ13 THE UNCHOSEN SIZE IS ONE POLICY IN THREE NAMED ACCESSORS, AND NONE OF THEM RAISES WITHOUT A FONT COMMAND: _shared_size answers the shared font raw or the empty string, _base_size pulls that into the band and is the ONLY consumer of it, _ref_font answers a font description and reaches the band through _base_size rather than spelling a bound - so the same rule is stated once and read twice, and `--nogui`, which has no `font` command at all, gets an answer from every one of them instead of a Tcl_AppInit abort} \
+  [list [rw_bad $FZ13_SH] [rw_bad $FZ13_BS] [rw_bad $FZ13_RF] $FZ13_IN \
+        [rw_count [rw_body ::rdw::_base_size] {rdw::_shared_size}] \
+        [rw_count [rw_body ::rdw::_ref_font]  {rdw::_shared_size}] \
+        [rw_count [rw_body ::rdw::_ref_font]  {rdw::_base_size}] \
+        [rw_count [rw_body ::rdw::_font]      {rdw::_base_size}] \
+        [rw_count [rw_body ::rdw::_pane_chars] {rdw::_ref_font}] \
+        [rw_count [rw_body ::rdw::_pane_chars] {TkFixedFont}] \
+        [rw_count [rw_body ::rdw::_shared_size] {rdw::font_limits}]] \
+  [list 0 0 0 1 1 1 1 1 1 0 0]
+
+## ---------------------------------------------------------------------------
+## THE LIVE HALF.  Six rows, none of them counted by the floor.
+if {$live_tk} {
+  rw_ans ::rdw::set_font_size 10
+  rw_ans ::rdw::open
+  rw_w update idletasks
+  rw_w update
+
+  ## FZ5 — THE PRIVATE FONTS.  The row that reds the one-liner.
+  set FZ5_TK0  [rw_w font actual TkFixedFont]
+  set FZ5_PF   [rw_w .rdw.p.t cget -font]
+  set FZ5_HF   [rw_w .rdw.p.t tag cget hdr -font]
+  rw_ans ::rdw::font_step 1
+  rw_w update idletasks
+  set FZ5_TK1  [rw_w font actual TkFixedFont]
+  set FZ5_NAMES [list [expr {[lsearch -exact [rw_w font names] $FZ5_PF] >= 0 ? 1 : 0}] \
+                      [expr {[lsearch -exact [rw_w font names] $FZ5_HF] >= 0 ? 1 : 0}]]
+  check {FZ5 THE PANE AND THE HEADER TAG OWN TWO PRIVATE NAMED FONTS AND THE SHARED ONE NEVER MOVES: neither is TkFixedFont, both are real entries in `font names`, they are not the same font as each other, and a real step leaves `font actual TkFixedFont` byte-identical - which is the only thing standing between this control and a global font control that silently resizes the attribute editor, the symbol-property editor, the text-input dialog, editpaths, the graph dialog, the notify popup and the calculator buffer} \
+    [list [expr {$FZ5_PF eq {TkFixedFont} ? 1 : 0}] \
+          [expr {$FZ5_HF eq {TkFixedFont} ? 1 : 0}] \
+          [expr {$FZ5_PF eq $FZ5_HF ? 1 : 0}] \
+          $FZ5_NAMES \
+          [expr {$FZ5_TK0 eq $FZ5_TK1 ? 1 : 0}] \
+          [expr {[rw_bad $FZ5_TK0] ? 1 : 0}]] \
+    [list 0 0 0 {1 1} 1 0]
+
+  ## FZ6 — BOTH FONTS MOVE TOGETHER, ASSERTED ON METRICS AND NOT ON PIXELS.
+  ## The `hdr` tag's -font must be a NAME (one word).  A `font actual` snapshot
+  ## is a twelve-element DESCRIPTION and follows nothing — measured, pane
+  ## linespace 27 against a frozen 17.
+  rw_ans ::rdw::set_font_size 10
+  rw_w update idletasks
+  set FZ6_PL0 [rw_w font metrics [rw_w .rdw.p.t cget -font] -linespace]
+  set FZ6_HL0 [rw_w font metrics [rw_w .rdw.p.t tag cget hdr -font] -linespace]
+  rw_ans ::rdw::set_font_size 20
+  rw_w update idletasks
+  set FZ6_TAG [rw_w .rdw.p.t tag cget hdr -font]
+  set FZ6_PL1 [rw_w font metrics [rw_w .rdw.p.t cget -font] -linespace]
+  set FZ6_HL1 [rw_w font metrics $FZ6_TAG -linespace]
+  set FZ6_PS  [rw_w font actual [rw_w .rdw.p.t cget -font] -size]
+  set FZ6_HS  [rw_w font actual $FZ6_TAG -size]
+  check {FZ6 THE BLOCK HEADERS FOLLOW THE BODY: the hdr tag carries a font NAME and not a `font actual` SNAPSHOT - one word, not a twelve-element description - so a size change moves the tag's linespace as well as the pane's, both land on the same point size, and the header stays BOLD while the body stays regular} \
+    [list [llength $FZ6_TAG] \
+          [expr {$FZ6_PL1 > $FZ6_PL0 ? 1 : 0}] \
+          [expr {$FZ6_HL1 > $FZ6_HL0 ? 1 : 0}] \
+          $FZ6_PS $FZ6_HS \
+          [rw_w font actual [rw_w .rdw.p.t cget -font] -weight] \
+          [rw_w font actual $FZ6_TAG -weight]] \
+    [list 1 1 1 20 20 normal bold]
+
+  ## FZ7 — THE TWO REAL CLICK ARMS.
+  ## ⚠ THE <Enter> IS LOAD-BEARING AND IS NOT DECORATION.  MEASURED: a
+  ## <Button-1>/<ButtonRelease-1> pair with no preceding <Enter> fires NOTHING,
+  ## because tk::ButtonUp checks Priv(window), which tk::ButtonEnter sets.  A
+  ## row written without it passes on a broken plain-click arm and on a working
+  ## one alike.
+  ## ⚠ AND THE <Leave> IS LOAD-BEARING TOO: it is what cancels the balloon's
+  ## `after`, so this row leaves no tooltip toplevel behind for row S2.
+  ## ⚠ EVERY LEG BELOW MUST BE ABLE TO FIRE IN THE RED STATE.  A raise at
+  ## global level under --pipe stops Tcl_AppInit DEAD -- the file dies mid-run
+  ## with `ok` lines and NO verdict (item A2's lesson 6, and the whole reason
+  ## rw_ans/rw_w exist).  MEASURED while writing this section: an unguarded
+  ## `expr {[rw_ans ::rdw::font_size] - $b}` killed the suite at row FZ7 on the
+  ## unmodified source with `can't use non-numeric string as operand of "-"`,
+  ## so FZ7..FZ11 reported nothing at all.  Hence `fz_int`, and hence every
+  ## proc below refusing a widget that is not there rather than asking Tk about
+  ## it -- `winfo exists` is the one winfo call that never raises.
+  proc fz_int {v} {
+    if {[string is integer -strict $v]} { return $v }
+    return {}
+  }
+  proc fz_click {st} {
+    if {![winfo exists .rdw.b.fontsize]} { return NO-WIDGET }
+    rw_w event generate .rdw.b.fontsize <Enter>
+    rw_w event generate .rdw.b.fontsize <Button-1> -state $st
+    rw_w event generate .rdw.b.fontsize <ButtonRelease-1> -state $st
+    rw_w event generate .rdw.b.fontsize <Leave>
+    rw_w update
+    return {}
+  }
+  ## ⚠ AND THE LABEL IS ASSERTED HERE, ON THE LIVE WIDGET.  It is the one part
+  ## of this item the user specified BY NAME - "the 'aa' button you see in
+  ## e-readers - 2nd a bigger" - and an adversary re-labelled it `Zz` with both
+  ## arms staying green.  Row FZ12 asserts the source; this asserts the window.
+  set FZ7_W [list [rw_w .rdw.b.fontsize cget -text] \
+                  [rw_w winfo parent .rdw.b.fontsize] \
+                  [rw_w .rdw.b.fontsize cget -state] \
+                  [rw_w winfo ismapped .rdw.b.fontsize] \
+                  [rw_w dict get [rw_w pack info .rdw.b.fontsize] -side]]
+  set FZ7 {}
+  foreach {_lbl _st} {plain 0 ctrl 4 ctrl-num 20 ctrl-lock 6 shift 1 alt 8 lock 2} {
+    rw_ans ::rdw::set_font_size 16
+    set _b [fz_int [rw_ans ::rdw::font_size]]
+    fz_click $_st
+    set _a [fz_int [rw_ans ::rdw::font_size]]
+    if {$_b eq {} || $_a eq {}} { lappend FZ7 NOSIZE } \
+    else { lappend FZ7 [expr {$_a - $_b}] }
+  }
+  check {FZ7 A REAL CLICK STEPS EXACTLY ONE UNIT AND EXACTLY ONE ARM FIRES: a plain press-and-release on the aA button raises the size by one, the same gesture with Control lowers it by one - with NumLock or CapsLock also down as well - and neither arm fires twice, which is what the `break` on the Control binding buys: without it tk::ButtonUp still invokes -command and a Ctrl+click steps down and straight back up.  Shift and Alt read as plain clicks, which is Tk's own modifier matching and not this window's 0x4c canvas mask} \
+    [list $FZ7 $FZ7_W] \
+    [list {1 -1 -1 -1 1 1 1} {aA .rdw.b normal 1 bottom}]
+
+  ## FZ8 — THE TOOLTIP, THROUGH THE TREE'S ONE MECHANISM.
+  ## ⚠ AND THE DELAY IS ASSERTED, BECAUSE IT IS THE ONE NUMBER IN THIS ITEM THE
+  ## USER HAS NOT RULED ON.  `balloon`'s default is 1000 ms and every other call
+  ## site in the tree takes it; this one asks for 300 on the user's own words
+  ## "as soon as user hovers over it".  Unratified means WATCHED, not
+  ## unasserted: a silent revert to 1000 - or a drop to 0 - would otherwise be
+  ## invisible to this suite.  Rule debt 1368.
+  set FZ8_E [rw_w bind .rdw.b.fontsize <Enter>]
+  set FZ8_L [rw_w bind .rdw.b.fontsize <Leave>]
+  set FZ8_D {}
+  if {![rw_bad $FZ8_E]} { regexp {^\s*after\s+(\d+)\s} $FZ8_E -> FZ8_D }
+  check {FZ8 THE HOVER CARRIES THE USER'S OWN SENTENCE, VERBATIM, THROUGH THE TREE'S ONE TOOLTIP MECHANISM: the aA button's <Enter> schedules balloon_show with exactly `click to increase font one unit. Ctrl+click to decrease font one unit`, the string has ONE definition in the source, <Leave> takes it down again, and no second tooltip machinery was written} \
+    [list [rw_has $FZ8_E $FZ_TIP] \
+          [rw_has $FZ8_E {balloon_show}] \
+          [expr {$FZ8_L ne {} && ![rw_bad $FZ8_L] ? 1 : 0}] \
+          [rw_has $FZ8_L {balloon}] \
+          [rw_ans ::rdw::_font_tip] \
+          $FZ8_D] \
+    [list 1 1 1 1 $FZ_TIP 300]
+
+  ## FZ9 — THE GEOMETRY FENCE, AND IT IS THE MOST FRAGILE ROW IN THE SET.
+  ## MEASURED unmitigated: one step to size 20 took the window from
+  ## 893x498+1025+557 to 1757x914+161+141 — nearly the whole 1920x1080 screen,
+  ## re-placed by the window manager.  With the character recompute the whole
+  ## band 6..32 measured 881..895 x 480..506 against a stock 893x498, returning
+  ## to EXACTLY 893x498 at the base size.
+  ##
+  ## ⚠ THE TOLERANCE IS IN THE SHARED FONT'S OWN METRICS, NOT IN PIXELS.  Two
+  ## character cells wide and two line heights tall is the rounding error the
+  ## recompute can leave (measured worst case 12 px wide / 18 px tall against a
+  ## base cell of 8x17); the failure it is fencing is 864 px wide and 416 tall,
+  ## so the row is nowhere near the edge.  The POSITION gets a deliberately
+  ## looser fence — a real window manager re-places by a few pixels over sixty
+  ## clicks (measured 10 px x, 20 px y) and that is not a defect; a window that
+  ## JUMPS across the desktop is, and that one measured 864 px.
+  rw_ans ::rdw::set_font_size 10
+  rw_w update idletasks ; rw_w update
+  set FZ9_BW [rw_w font measure TkFixedFont 0]
+  set FZ9_BH [rw_w font metrics TkFixedFont -linespace]
+  set FZ9_G0 [rw_w winfo geometry .rdw]
+  for {set _i 0} {$_i < 30} {incr _i} { fz_click 0 }
+  rw_w update idletasks
+  set FZ9_TOP [rw_ans ::rdw::font_size]
+  set FZ9_GT  [rw_w winfo geometry .rdw]
+  for {set _i 0} {$_i < 30} {incr _i} { fz_click 4 }
+  rw_w update idletasks
+  set FZ9_BOT [rw_ans ::rdw::font_size]
+  set FZ9_GB  [rw_w winfo geometry .rdw]
+  for {set _i 0} {$_i < 4} {incr _i} { fz_click 0 }
+  rw_w update idletasks
+  set FZ9_G1 [rw_w winfo geometry .rdw]
+  proc fz_geom {g} {
+    if {![regexp {^([0-9]+)x([0-9]+)\+(-?[0-9]+)\+(-?[0-9]+)$} $g -> w h x y]} { return {} }
+    return [list $w $h $x $y]
+  }
+  proc fz_near {a b bw bh} {
+    if {[fz_int $bw] eq {} || [fz_int $bh] eq {}} { return BADMETRIC }
+    set A [fz_geom $a] ; set B [fz_geom $b]
+    if {[llength $A] != 4 || [llength $B] != 4} { return BADGEOM }
+    lassign $A aw ah ax ay ; lassign $B bwd bhd bx by
+    if {abs($aw - $bwd) > 2 * $bw} { return WIDE }
+    if {abs($ah - $bhd) > 2 * $bh} { return TALL }
+    if {abs($ax - $bx) > 8 * $bw}  { return MOVEDX }
+    if {abs($ay - $by) > 8 * $bh}  { return MOVEDY }
+    return near
+  }
+  check {FZ9 THE WINDOW DOES NOT JUMP: thirty clicks to the ceiling, thirty back to the floor and four to the base leave the toplevel within two character cells and two line heights of where it started, and within a handful of cells of the same screen position - because the pane is sized in CHARACTER units and the setter recomputes them from the new metrics.  Without that recompute one click to size 20 measured 893x498+1025+557 -> 1757x914+161+141, which is the failure a user reports as `the button broke my window`} \
+    [list $FZ9_TOP $FZ9_BOT \
+          [fz_near $FZ9_GT $FZ9_G0 $FZ9_BW $FZ9_BH] \
+          [fz_near $FZ9_GB $FZ9_G0 $FZ9_BW $FZ9_BH] \
+          [fz_near $FZ9_G1 $FZ9_G0 $FZ9_BW $FZ9_BH]] \
+    [list 32 6 near near near]
+
+  ## FZ10 — THE SIZE SURVIVES A CLOSE AND A REOPEN.
+  ## MEASURED with a build that did not apply the fonts: the model still held
+  ## the chosen size and the reopened pane came back on TkFixedFont at 10, with
+  ## the `hdr` tag carrying no font at all.  ⚠ THE `-width` LEG IS THE ONE THAT
+  ## NOTICES: the fonts survive `destroy` on their own (a named font outlives
+  ## the widget that used it), so a rebuild that forgets `rdw::_apply_font`
+  ## still LOOKS right and opens at the wrong pixel size.
+  rw_ans ::rdw::set_font_size 18
+  rw_w update idletasks
+  rw_ans ::rdw::close
+  rw_w update idletasks
+  rw_ans ::rdw::open
+  rw_w update idletasks ; rw_w update
+  set FZ10_PF [rw_w .rdw.p.t cget -font]
+  set FZ10_HF [rw_w .rdw.p.t tag cget hdr -font]
+  set FZ10_WH [list [rw_w .rdw.p.t cget -width] [rw_w .rdw.p.t cget -height]]
+  check {FZ10 A CLOSE AND A REOPEN COME BACK AT THE CHOSEN SIZE, PANE AND HEADERS AND CHARACTER SHAPE ALIKE: the model is namespace-free global state and the named fonts outlive the widget, but the REBUILD has to apply both - and the pane's character width and height have to be recomputed with them, or a window built at a size the user chose in an earlier open opens nearly full-screen} \
+    [list [rw_w font actual $FZ10_PF -size] \
+          [rw_w font actual $FZ10_HF -size] \
+          [expr {$FZ10_PF eq {TkFixedFont} ? 1 : 0}] \
+          [rw_ans ::rdw::font_size] \
+          [expr {$FZ10_WH eq [rw_ans ::rdw::_pane_chars] ? 1 : 0}] \
+          [expr {$FZ10_WH eq {96 26} ? 1 : 0}]] \
+    [list 18 18 0 18 1 0]
+
+  ## FZ11 — THE TIP IS ON THE SCREEN.
+  ## MEASURED before the clamp landed, on this 1920x1080 display: the aA button
+  ## sits at the foot of a button column on the RIGHT edge of its window, and
+  ## `balloon`'s pos 1 anchors the tip at the widget's LEFT edge -- button
+  ## rootx 1815, tip 564x24, wanted right edge 2379.  More than half of the
+  ## user's own sentence was off the screen, on the one part of this item they
+  ## called "the key part".  `pos 0` is no answer: the pointer is in the same
+  ## place.
+  ##
+  ## ⚠ DRIVEN THROUGH THE REAL PROC, NOT A COPY.  `balloon_show`'s first line
+  ## refuses unless the pointer is really over the widget, so the row WARPS the
+  ## pointer on to the button first -- the same technique that measured the
+  ## defect.  A row that stubbed that guard out would be fencing its own stub.
+  ##
+  ## ⚠ AND THE SECOND HALF IS THE ONE THAT PROTECTS THE OTHER 43 CALL SITES: a
+  ## tip that already fits must not be moved AT ALL, so its x is the widget's
+  ## own rootx, exactly as it was before the clamp existed.
+  proc fz_tip_geom {} {
+    set w .rdw.b.fontsize
+    if {![winfo exists $w]} { return NO-WIDGET }
+    catch {destroy $w.balloon}
+    rw_w event generate $w <Motion> -warp 1 \
+      -x [expr {[winfo width $w] / 2}] -y [expr {[winfo height $w] / 2}]
+    rw_w update
+    rw_w balloon_show $w [rw_ans ::rdw::_font_tip] 1
+    rw_w update
+    if {![winfo exists $w.balloon]} { return NO-BALLOON }
+    set g [rw_w winfo geometry $w.balloon]
+    if {![regexp {^([0-9]+)x([0-9]+)\+(-?[0-9]+)\+(-?[0-9]+)$} $g -> bw bh bx by]} {
+      return [list BADGEOM $g]
+    }
+    set fits [expr {$bx >= 0 && $by >= 0
+                    && $bx + $bw <= [winfo screenwidth .]
+                    && $by + $bh <= [winfo screenheight .] ? 1 : 0}]
+    set moved [expr {$bx == [winfo rootx $w] ? 0 : 1}]
+    catch {destroy $w.balloon}
+    return [list $fits $moved]
+  }
+  ## Far right: the tip cannot fit at the widget's own x and must slide left.
+  rw_w wm geometry .rdw +1000+500
+  rw_w update idletasks ; rw_w update
+  set FZ11_R [fz_tip_geom]
+  ## Top left: it fits where it always did, so nothing may move.
+  rw_w wm geometry .rdw +0+0
+  rw_w update idletasks ; rw_w update
+  set FZ11_L [fz_tip_geom]
+  check {FZ11 THE TOOLTIP IS ON THE SCREEN WHEREVER THE WINDOW IS: the aA button sits at the right-hand edge of its window and the user's sentence is 564 px wide, so anchored at the widget's left edge it ran off a 1920 px display - measured, wanting to end at 2379.  balloon_show now pulls a tip that would not fit back on to the screen, and leaves a tip that already fits exactly where it was, which is what keeps the tree's other 43 call sites unmoved} \
+    [list $FZ11_R $FZ11_L] \
+    [list {1 1} {1 0}]
+
+  ## -------------------------------------------------------------------------
+  ## FZ14 — BOTH ARMS OF THE BUTTON LEAVE THE ONE-SHOT SPENT (issue 1369's).
+  ## MEASURED before the repair, on :99, through real gestures: after a plain
+  ## click on `aA` `rdw::focus_pending` was 0, after a press on the button
+  ## frame 0, after a click in the pane 0 — and after a real Ctrl+click on `aA`
+  ## it was 1.  The `break` this item's Ctrl arm needs (row FZ7) stops the
+  ## `.rdw` bindtag as well as the `Button` class one, so the toplevel's
+  ## <ButtonPress> disarm never ran on that one gesture: the next focus grant
+  ## then handed the keyboard to the CANVAS, where the plain arm of the SAME
+  ## button leaves it in this window.  Two arms of one button, two different
+  ## windows holding the keyboard.
+  proc fz_pend {} {
+    if {![info exists ::rdw::focus_pending]} { return NOVAR }
+    return $::rdw::focus_pending
+  }
+  proc fz_arm {} {
+    rw_ans ::rdw::_arm_focus_handback 1
+    return [fz_pend]
+  }
+  set FZ14 {}
+  foreach {_lbl _st} {plain 0 ctrl 4 ctrl-num 20 ctrl-lock 6} {
+    rw_ans ::rdw::set_font_size 16
+    set _armed [fz_arm]
+    set _b [fz_int [rw_ans ::rdw::font_size]]
+    fz_click $_st
+    set _a [fz_int [rw_ans ::rdw::font_size]]
+    if {$_b eq {} || $_a eq {}} { lappend FZ14 [list $_armed [fz_pend] NOSIZE] } \
+    else { lappend FZ14 [list $_armed [fz_pend] [expr {$_a - $_b}]] }
+  }
+  ## The control: a bare press on the button column's FRAME, which has no class
+  ## binding of its own, so only the toplevel tag can spend the one-shot.
+  set FZ14_ARM [fz_arm]
+  rw_w event generate .rdw.b <ButtonPress-1>
+  rw_w update
+  set FZ14_FR [list $FZ14_ARM [fz_pend]]
+  check {FZ14 THE Ctrl ARM SPENDS THE FOCUS HAND-BACK EXACTLY AS THE PLAIN ARM DOES: issue 1369 disarms the one-shot from a <ButtonPress> on the TOPLEVEL bindtag, and this button's Control script ends in `break`, which stops that tag as well as the Button class one - so the script calls rdw::_focus_click itself.  Without it a real Ctrl+click was the ONE gesture in this window that left the flag armed, and the keyboard ended on the schematic canvas where the plain click leaves it here} \
+    [list $FZ14 $FZ14_FR] \
+    [list {{1 0 1} {1 0 -1} {1 0 -1} {1 0 -1}} {1 0}]
+
+  ## -------------------------------------------------------------------------
+  ## FZ15 — THE UNCHOSEN PATH: THE MODEL, THE PANE AND THE GEOMETRY AGREE.
+  ## `rdw::_font` used to impose a size only WHILE a choice stood, so it could
+  ## never put one back.  MEASURED with that build: `set_font_size 20` then
+  ## withdrawing the choice left the model answering 10 while the pane still
+  ## rendered 20, and the next PLAIN click - the `+` arm - shrank the text from
+  ## 20 to 11.  The same hole ran the other way through the band's clamp: with
+  ## `font configure TkFixedFont -size 40` the model answered 32 while the pane
+  ## rendered 40, so the refusal said "already the largest (32)" over text at
+  ## 40 and the Ctrl arm stepped 40 -> 31 in one click.
+  ##
+  ## ⚠ THE SIZES BELOW ARE DERIVED FROM `rdw::font_limits`, NEVER SPELT.  Two
+  ## of them are IN band and neither is 10, which is what reds a `_base_size`
+  ## that has stopped reading the shared font at all and answers a constant.
+  ## ⚠ AND THE SHARED FONT IS PUT BACK, BY THE SPELLING IT WAS FOUND IN.
+  proc fz_psize {} {
+    if {![winfo exists .rdw.p.t]} { return NO-WIDGET }
+    set f [rw_w .rdw.p.t cget -font]
+    if {[rw_bad $f]} { return $f }
+    return [rw_w font actual $f -size]
+  }
+  set FZ15_TK0 [rw_w font configure TkFixedFont -size]
+  rw_ans ::rdw::set_font_size 20 ; rw_w update idletasks
+  set FZ15_A [list [rw_ans ::rdw::font_size] [fz_psize]]
+  set ::rdw_font_size 0
+  rw_ans ::rdw::_apply_font ; rw_w update idletasks
+  set FZ15_B [list [expr {[rw_ans ::rdw::font_size] eq [fz_psize] ? 1 : 0}] \
+                   [rw_ans ::rdw::_pane_chars]]
+  lassign [rw_ans ::rdw::font_limits] _fzlo _fzhi
+  set FZ15_HI {} ; set FZ15_LO {} ; set FZ15_M1 {} ; set FZ15_M2 {}
+  if {[string is integer -strict $_fzlo] && [string is integer -strict $_fzhi]} {
+    foreach {_var _n} [list FZ15_HI [expr {$_fzhi + 8}] FZ15_LO [expr {$_fzlo - 3}] \
+                            FZ15_M1 [expr {$_fzhi - 5}] FZ15_M2 [expr {$_fzlo + 2}]] {
+      rw_w font configure TkFixedFont -size $_n
+      rw_ans ::rdw::_apply_font ; rw_w update idletasks
+      set $_var [list [rw_ans ::rdw::_shared_size] [rw_ans ::rdw::font_size] \
+                      [fz_psize] [rw_ans ::rdw::_pane_chars]]
+    }
+  }
+  rw_w font configure TkFixedFont -size $FZ15_TK0
+  rw_ans ::rdw::_apply_font ; rw_w update idletasks
+  set FZ15_Z [list [rw_w font configure TkFixedFont -size] \
+                   [expr {[rw_ans ::rdw::font_size] eq [fz_psize] ? 1 : 0}] \
+                   [rw_ans ::rdw::_pane_chars]]
+  check {FZ15 WITH NO CHOICE THE PANE RENDERS THE NUMBER THE MODEL REPORTS, AT BOTH ENDS OF THE BAND AND AFTER A WITHDRAWAL: a chosen size that is taken away really goes away, a shared font driven ABOVE the ceiling or BELOW the floor is rendered at the bound the model names rather than at its own size, the two IN-band sizes are followed exactly - so _base_size is really reading the shared font and not answering a constant - and the pane's character shape stays the shape the window shipped with throughout, because the metric reference obeys the same clamp} \
+    [list $FZ15_A $FZ15_B $FZ15_HI $FZ15_LO $FZ15_M1 $FZ15_M2 $FZ15_Z] \
+    [list [list 20 20] [list 1 {96 26}] \
+          [list [expr {$_fzhi + 8}] $_fzhi $_fzhi {96 26}] \
+          [list [expr {$_fzlo - 3}] $_fzlo $_fzlo {96 26}] \
+          [list [expr {$_fzhi - 5}] [expr {$_fzhi - 5}] [expr {$_fzhi - 5}] {96 26}] \
+          [list [expr {$_fzlo + 2}] [expr {$_fzlo + 2}] [expr {$_fzlo + 2}] {96 26}] \
+          [list $FZ15_TK0 1 {96 26}]]
+
+  ## -------------------------------------------------------------------------
+  ## FZ16 — THE PANE FONT IS MONOSPACE, AND IT IS TkFixedFont'S FAMILY.
+  ## The dumps are column-aligned with SPACES (`    %-*s : %s`), so a
+  ## proportional family destroys every block in the pane.  An adversary
+  ## created the private font as `-family Helvetica -size 10` instead of a copy
+  ## of the shared one and was caught only INCIDENTALLY, by FZ4's character
+  ## count: a proportional family whose `0` advance happened to match would
+  ## have sailed through while every dump misaligned.
+  set FZ16_PF [rw_w .rdw.p.t cget -font]
+  set FZ16_HF [rw_w .rdw.p.t tag cget hdr -font]
+  proc fz_mono {f} {
+    if {[rw_bad $f]} { return $f }
+    set adv {}
+    foreach _c {0 W i M} {
+      set m [rw_w font measure $f $_c]
+      if {[rw_bad $m]} { return $m }
+      lappend adv $m
+    }
+    if {[llength [lsort -unique $adv]] != 1} { return VARIABLE }
+    return [rw_w font metrics $f -fixed]
+  }
+  set FZ16_M0 [fz_mono $FZ16_PF]
+  rw_ans ::rdw::font_step 1 ; rw_w update idletasks
+  set FZ16_M1 [fz_mono [rw_w .rdw.p.t cget -font]]
+  check {FZ16 THE PANE KEEPS THE SHARED FONT'S MONOSPACE FAMILY, WHICH IS WHAT HOLDS EVERY DUMP IN COLUMNS: the private fonts are copies of TkFixedFont and not new families, `0` `W` `i` and `M` all advance the same width in the pane font and in the header tag's, Tk agrees they are fixed-pitch, and a real step does not change that - the blocks are laid out with SPACES, so a proportional substitution would misalign every one of them while every other row in this section stayed green} \
+    [list $FZ16_M0 $FZ16_M1 \
+          [fz_mono $FZ16_HF] \
+          [expr {[rw_w font actual $FZ16_PF -family] eq [rw_w font actual TkFixedFont -family] ? 1 : 0}] \
+          [expr {[rw_w font actual $FZ16_HF -family] eq [rw_w font actual TkFixedFont -family] ? 1 : 0}]] \
+    [list 1 1 1 1 1]
+
+  ## -------------------------------------------------------------------------
+  ## FZ17 / FZ18 — THE REST OF THE SHARED `balloon_show` CHANGE.
+  ## FZ11 drives the horizontal slide and the no-op case.  It does NOT reach
+  ## the vertical flip or either zero clamp: an adversary deleted all three and
+  ## the whole suite stayed green on both arms.  `balloon_show` has 44 call
+  ## sites across six files, so an unfenced third of it is not a small hole.
+  ##
+  ## ⚠ NO PIXEL CONSTANT HERE EITHER.  The oversized tips are sized in
+  ## CHARACTERS of the balloon label's own `fixed` font against the real
+  ## screen, and every verdict is a comparison between two measured rectangles.
+  proc fz_tip {tip pos} {
+    set w .rdw.b.fontsize
+    if {![winfo exists $w]} { return NO-WIDGET }
+    catch {destroy $w.balloon}
+    rw_w update
+    rw_w event generate $w <Motion> -warp 1 \
+      -x [expr {[winfo width $w] / 2}] -y [expr {[winfo height $w] / 2}]
+    rw_w update
+    rw_w balloon_show $w $tip $pos
+    rw_w update
+    if {![winfo exists $w.balloon]} { return NO-BALLOON }
+    set g [rw_w winfo geometry $w.balloon]
+    if {![regexp {^([0-9]+)x([0-9]+)\+(-?[0-9]+)\+(-?[0-9]+)$} $g -> bw bh bx by]} {
+      return [list BADGEOM $g]
+    }
+    set r [list $bw $bh $bx $by [winfo pointerx $w] [winfo pointery $w] \
+                [winfo rootx $w] [winfo rooty $w]]
+    catch {destroy $w.balloon}
+    rw_w update
+    return $r
+  }
+  ## {on-screen  pointer-outside} for one measurement.
+  proc fz_tipv {r} {
+    if {[llength $r] != 8} { return $r }
+    lassign $r bw bh bx by px py rx ry
+    return [list [expr {$bx >= 0 && $by >= 0
+                        && $bx + $bw <= [winfo screenwidth .]
+                        && $by + $bh <= [winfo screenheight .] ? 1 : 0}] \
+                 [expr {($px < $bx || $px >= $bx + $bw
+                         || $py < $by || $py >= $by + $bh) ? 1 : 0}]]
+  }
+  proc fz_above {r} {
+    if {[llength $r] != 8} { return $r }
+    lassign $r bw bh bx by px py rx ry
+    return [expr {$by + $bh <= $ry ? 1 : 0}]
+  }
+  set FZ_CW [rw_w font measure fixed W]
+  set FZ_LH [rw_w font metrics fixed -linespace]
+  if {![string is integer -strict $FZ_CW] || $FZ_CW < 1} { set FZ_CW 1 }
+  if {![string is integer -strict $FZ_LH] || $FZ_LH < 1} { set FZ_LH 1 }
+  set FZ_WIDE [string repeat W [expr {[winfo screenwidth .] / $FZ_CW + 20}]]
+  set FZ_TALL [join [lrepeat [expr {[winfo screenheight .] / $FZ_LH + 20}] X] "\n"]
+  ## The window at the foot of the screen: a tip hung BELOW the button would
+  ## run off the bottom, so it flips above it.
+  rw_w wm geometry .rdw +600+[expr {[winfo screenheight .] - [rw_w winfo height .rdw]}]
+  rw_w update idletasks ; rw_w update
+  set FZ17_FLIP [fz_tip $FZ_TIP 1]
+  set FZ17_WIDE [fz_tip $FZ_WIDE 1]
+  set FZ17_TALL [fz_tip $FZ_TALL 1]
+  check {FZ17 THE OTHER THREE LINES OF THE SHARED CLAMP: a tip that would hang off the BOTTOM of the screen flips ABOVE its widget instead of sliding up into the pointer, a tip WIDER than the whole display is pinned at x 0 and a tip TALLER than it at y 0 - never at a NEGATIVE offset, which in a Tk geometry string means `from the far edge` and would put the tooltip on the wrong side of the screen rather than merely off it.  FZ11 fences the horizontal slide and the no-op; without this row two thirds of a proc with 44 call sites across six files had no witness at all} \
+    [list [fz_tipv $FZ17_FLIP] [fz_above $FZ17_FLIP] \
+          [lindex $FZ17_WIDE 2] [lindex $FZ17_TALL 3]] \
+    [list {1 1} 1 0 0]
+
+  ## -------------------------------------------------------------------------
+  ## FZ18 — A POINTER-ANCHORED TIP IS NEVER LEFT UNDER THE POINTER.
+  ## MEASURED with the first spelling of the clamp, which slid EVERY tip left:
+  ## a `pos 0` tip at the right-hand edge of the screen landed under the
+  ## pointer, `balloon`'s own <Leave> destroyed it in the instant it mapped and
+  ## the <Enter> that followed re-armed it — 25 shows in 1.5 s, visible in 2
+  ## samples out of 60.  The tree has two `pos 0` call sites (the file
+  ## browser's two directory lists, xschem.tcl:9659 and :9674) and both carry
+  ## wide multi-line tips, so this is not hypothetical.
+  ##
+  ## ⚠ NO-BALLOON IS THE DEFECT'S OWN SIGNATURE, not a broken row: a tip that
+  ## maps under the pointer is gone by the next `update`.
+  rw_w wm geometry .rdw +1000+500
+  rw_w update idletasks ; rw_w update
+  set FZ18_R0 [fz_tip $FZ_TIP 0]
+  set FZ18_R1 [fz_tip $FZ_TIP 1]
+  rw_w wm geometry .rdw +0+0
+  rw_w update idletasks ; rw_w update
+  set FZ18_L0 [fz_tip $FZ_TIP 0]
+  rw_w wm geometry .rdw +600+[expr {[winfo screenheight .] - [rw_w winfo height .rdw]}]
+  rw_w update idletasks ; rw_w update
+  set FZ18_B0 [fz_tip $FZ_TIP 0]
+  ## A tip that fits is anchored 20 px right of the pointer exactly as it
+  ## always was — asserted against the MEASURED pointer, not against a number.
+  set FZ18_KEPT [expr {[llength $FZ18_L0] == 8
+                       && [lindex $FZ18_L0 2] == [lindex $FZ18_L0 4] + 20 ? 1 : 0}]
+  check {FZ18 A POINTER-ANCHORED TIP IS PULLED BACK ON TO THE SCREEN WITHOUT LANDING ON THE POINTER: at the right-hand edge, at the foot of the screen and where it already fits, a `pos 0` tip is on the display and the pointer is OUTSIDE it - so balloon's own <Leave> cannot fire, which is what stopped the file browser's two directory tooltips from ever appearing when the pointer sat in the rightmost 564 px.  A tip that fits is still anchored 20 px right of the pointer, unmoved} \
+    [list [fz_tipv $FZ18_R0] [fz_tipv $FZ18_R1] [fz_tipv $FZ18_L0] [fz_tipv $FZ18_B0] $FZ18_KEPT] \
+    [list {1 1} {1 1} {1 1} {1 1} 1]
+
+  rw_ans ::rdw::close
+  catch {update idletasks}
+}
+
+## THE SECTION LEAVES THE MODEL AS IT FOUND IT.  Row S2 runs after this one and
+## the file's own clean-up runs after that, so a section that opens `.rdw` shuts
+## it itself.
+##
+## ⚠ AND THE FONTS COME BACK THROUGH `rdw::_font`, NOT BY HAND.  An earlier
+## revision of this clean-up configured RdwPaneFont and RdwHdrFont back to
+## `rdw::_base_size` itself, because `rdw::_font` imposed a size only while one
+## was CHOSEN and so could never put one back.  That work-around belonged in the
+## code, not in the test: the same hole shrank the pane from 20 to 11 on a `+`
+## click for any user who withdrew the choice.  Row FZ15 is the fence, and this
+## restore now walks the same door the window does.
+if {$FZ_SAVE eq {NOVAR}} { catch {unset ::rdw_font_size} } \
+else { set ::rdw_font_size $FZ_SAVE }
+if {$live_tk} { foreach _f {pane hdr} { rw_ans ::rdw::_font $_f } }
+rw_ans ::rdw::status $FZ_MSG0
+
+
+# ============================================================================
+# SECTION CL — ISSUE 1373: `mos` IS A KEY, `MOS` IS WHAT A PERSON READS
+# ============================================================================
+# The user, on their own M18: "said add to all mos (why is that not uppercase?
+# MOS is an acronym!)".  This window had no display-name layer for a device
+# class at all: FIFTEEN interpolation sites in four procs -- `_narrowed_list`,
+# `_shadow_why`, `_edit` and `scope_dialog_build` -- printed `$cls`, the
+# STORE'S PRIMARY KEY, straight into prose.  So the radiobutton read `every
+# device of class mos` and the verdict read `gm is already in the mos
+# annotation list`, which are the user's own two sentences and the same missing
+# layer twice.  All fifteen now go through the one accessor,
+# `::op_param_lists::class_label`, which lives in the store because the store
+# has sentences of its own and this file may not be called from there.
+#
+# ⚠ THESE ROWS ARE THE ONLY FENCE THE CHANGE HAS, AND THAT IS NOT A FIGURE OF
+# SPEECH.  EVERY sentence golden already in this file uses a SYNTHETIC class --
+# `nwcls`, `nwfcls`, `nwmcls`, `b5cls`, `bs_pdev`, `bs_ndev` -- which an
+# identity-fallback accessor prints UNCHANGED.  Measured: the whole change
+# passes the other 177 checks while doing nothing at all.  A row here has to
+# name a REAL class, and `mos` is the only real key whose display differs from
+# it.
+#
+# ⚠ AND THE KEY MUST NOT MOVE.  Row CL7 asks the store for `class mos` AFTER
+# the sentence has said MOS.  `MOS` has no space, so unlike a two-word gloss it
+# LOOKS like a key -- and a user who reads "the MOS annotation list" and writes
+# `list class MOS annotation` into their settings file gets a silently dead
+# entry, because keys are compared with `eq`.  The store half of that fence is
+# row CL3 of test_op_param_store_1245.tcl.
+#
+# ⚠ CL8 IS THE ANTI-DRIFT FENCE AND IT IS THE REASON THE ACCESSOR IS ONE DOOR.
+# Two of `_edit`'s refusals POINT AT A BUTTON -- "Choose every device of class
+# MOS instead" -- and that button is `scope_dialog_build`'s `.sc.broad`.  Two
+# literals would drift the moment one of them was reworded, and the refusal
+# would then name a radiobutton that does not exist by that name.  CL8 golds
+# the phrase once and asserts both refusals carry it byte-for-byte; CL10 reads
+# it off the REAL widget on the Tk arm.
+set CL_SUBJ  [dict create instname M18 class mos cellname sky130_fd_pr__nfet_01v8.sym type nmos]
+set CL_NOCEL [dict create instname M18 class mos cellname {} type nmos]
+set CL_GLOB  [dict create instname M18 class mos cellname {a[bc].sym} type nmos]
+
+rw_ans ::op_param_lists::reset
+rw_ans ::op_param_lists::set_list class mos annotation {{gm gm 1} {gds gds 1}}
+
+check {CL6 THE NARROWED-DUMP NAME CARRIES THE DISPLAY NAME ON BOTH ARMS: the class arm reads MOS and the flavor arm - which is rdw::_edit's own wording, not a second one - reads "of class MOS", while a class key the identity fallthrough minted from a PDK type token and a class that is already its own human spelling both come back UNTOUCHED} \
+  [list [rw_ans ::rdw::_narrowed_list mos annotation {}] \
+        [rw_ans ::rdw::_narrowed_list mos annotation [list flavor [list mos {sky130_fd_pr__nfet_01v8*}]]] \
+        [rw_ans ::rdw::_narrowed_list pwell_resistor annotation {}] \
+        [rw_ans ::rdw::_narrowed_list resistor summary {}]] \
+  [list {MOS annotation list} \
+        {annotation list for cells matching sky130_fd_pr__nfet_01v8* of class MOS} \
+        {pwell_resistor annotation list} \
+        {resistor summary list}]
+
+## THE USER'S OWN SENTENCE, GOLDED VERBATIM, plus the four other verdicts of
+## `rdw::_edit` that name a class -- and the store read that proves the key did
+## not move under them.
+set CL7_ADD  [rw_ans ::rdw::_edit add   $CL_SUBJ annotation broad gm]
+set CL7_UP   [rw_ans ::rdw::_edit up    $CL_SUBJ annotation broad gm]
+set CL7_DN   [rw_ans ::rdw::_edit down  $CL_SUBJ annotation broad gds]
+set CL7_NOT  [rw_ans ::rdw::_edit up    $CL_SUBJ annotation broad id]
+set CL7_OK   [rw_ans ::rdw::_edit delete $CL_SUBJ annotation broad gm]
+check {CL7 THE USER'S OWN VERDICT, WORD FOR WORD: "gm is already in the MOS annotation list." - and the first-row, last-row and not-in refusals and the success clause with it - while the STORE still answers that list under the KEY `mos` and answers nothing at all under `MOS`, so the sentence was renamed and the primary key was not} \
+  [list $CL7_ADD $CL7_UP $CL7_DN $CL7_NOT $CL7_OK \
+        [rw_ans ::op_param_lists::get_list class mos annotation] \
+        [rw_ans ::op_param_lists::owns class mos annotation] \
+        [rw_ans ::op_param_lists::get_list class MOS annotation] \
+        [rw_ans ::op_param_lists::owns class MOS annotation]] \
+  [list {refused {gm is already in the MOS annotation list.}} \
+        {refused {gm is already the first row of the MOS annotation list.}} \
+        {refused {gds is already the last row of the MOS annotation list.}} \
+        {refused {id is not in the MOS annotation list. The pane also shows rows this run published that no list declares, and only the list's own rows can be edited here.}} \
+        {ok {removed gm from the annotation list for class MOS.}} \
+        {{gds gds 1}} 1 {} 0]
+
+## THE TWO REFUSALS THAT POINT AT A BUTTON, AND THE PHRASE THEY MUST SHARE.
+rw_ans ::op_param_lists::reset
+rw_ans ::op_param_lists::set_list class mos annotation {{gm gm 1} {gds gds 1}}
+set CL8_PHRASE {every device of class MOS}
+set CL8_NOCEL [rw_ans ::rdw::_edit delete $CL_NOCEL annotation narrow gm]
+set CL8_GLOB  [rw_ans ::rdw::_edit delete $CL_GLOB  annotation narrow gm]
+check {CL8 THE ANTI-DRIFT FENCE: both refusals that send the user to the broad radiobutton spell the class exactly as that radiobutton does - one shared phrase, "every device of class MOS", carried byte-for-byte - so a reworded button cannot leave a refusal naming a control that does not exist by that name, and neither refusal reaches the store} \
+  [list [rw_has $CL8_NOCEL $CL8_PHRASE] [rw_has $CL8_GLOB $CL8_PHRASE] \
+        [lindex $CL8_NOCEL 0] [lindex $CL8_GLOB 0] \
+        [rw_has $CL8_NOCEL {no cell name}] [rw_has $CL8_GLOB {glob characters}] \
+        [rw_ans ::op_param_lists::get_list class mos annotation]] \
+  [list 1 1 refused refused 1 1 {{gm gm 1} {gds gds 1}}]
+
+## THE SHADOW CLAUSE, which is the one sentence in this feature that names the
+## class WITHOUT naming a list, so it is not covered by any row above.
+rw_ans ::op_param_lists::reset
+rw_ans ::op_param_lists::set_list class mos annotation {{gm gm 1}}
+rw_ans ::op_param_lists::set_list flavor {mos foo*} annotation {{id id 0}}
+check {CL9 THE SHADOW CLAUSE READS MOS TOO: the sentence that tells the user their class-wide edit landed but was outranked for this cell names the class in the display spelling, while the flavor entry beside it in the same sentence is still the settings-file GLOB the user typed} \
+  [list [rw_ans ::rdw::_shadow_why broad mos annotation foo.sym class mos] \
+        [rw_ans ::rdw::_shadow_why broad mos annotation {} class mos]] \
+  [list {The MOS class list moved, but the device-flavor entry foo* in the settings file also matches this cell and wins for it, so this device's own rows did not change - precedence is file order.} \
+        {}]
+
+## THE REAL WIDGET, ON THE ARM THAT HAS ONE.  `live_tk`-gated and deliberately
+## NOT counted in the floor, which is the arm that runs fewest rows.  This is
+## the ONE Tk `-text` in the whole feature that carries a class (measured: the
+## title, the chrome and the status line carry none), so it is the one pixel
+## the user's complaint was actually about.
+if {$live_tk} {
+  rw_ans ::rdw::open
+  catch {update idletasks}
+  catch {destroy .rdw.scope}
+  set CL10_R [rw_ans ::rdw::scope_dialog_build delete $CL_SUBJ annotation]
+  set CL10_T [expr {[winfo exists .rdw.scope.sc.broad] ?
+                    [rw_w .rdw.scope.sc.broad cget -text] : {ABSENT}}]
+  catch {destroy .rdw.scope}
+  check {CL10 THE ONE Tk -text IN THIS FEATURE THAT CARRIES A CLASS says what the user asked it to say - "every device of class MOS" - and it is the SAME string CL8's two refusals point at, read off the live widget rather than off the source} \
+    [list $CL10_T [expr {$CL10_T eq "every device of class [rw_ans ::op_param_lists::class_label mos]" ? 1 : 0}] \
+          [expr {$CL10_T eq $CL8_PHRASE ? 1 : 0}]] \
+    [list $CL8_PHRASE 1 1]
+  catch {rw_ans ::rdw::close}
+  catch {update idletasks}
+}
+rw_ans ::op_param_lists::reset
+
 set S1_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
 check {S1 STRUCTURAL the forbidden doors: rdw.tcl reaches the seam ONLY through ase::backend_hook, never by the backend proc's name, and names none of `xschem raw value` / ase::sim_capabilities / blanket_op_save / ase::theme (op_param_lists:: moved to row BT22 when item B5 wired the store)} \
   [list [expr {$S1_F eq {NOFILE} ? {NOFILE} : [rw_has $S1_F {ase::backend_hook}]}] \
@@ -7210,7 +8470,113 @@ else { set ::ev_precision $RW_EVP_SAVE }
 ## arm (they are pure-text and structural), so neither is behind a display
 ## guard.  A floor is raised when rows are added and NEVER lowered to make a
 ## run pass.
-set RW_FLOOR 168
+## ⚠ AND RAISED 168 -> 172 BY ISSUE 1368's `aA` TEXT-SIZE CONTROL, IN THE SAME
+## COMMIT AS THE FOUR ROWS OF SECTION FZ THAT RUN ON BOTH ARMS: FZ1 (the band
+## is a named accessor and its three consumers ask it), FZ2 (the admission test
+## REFUSES rather than clamps, at both edges and on every non-integer, so the
+## live `-size 0` can never be reached), FZ3 (the one arithmetic door walks the
+## MODEL, refuses at both ends in words that name the limit and says nothing on
+## the accepted path) and FZ4 (order-independence with the window closed, plus
+## the two structural fences -- an option is never set on TkFixedFont, and the
+## tree's ONE tooltip mechanism is reused rather than reinvented).
+## The section's other SEVEN rows -- FZ5 (two private named fonts and a shared
+## font that never moves), FZ6 (the header tag is a NAME and follows the body),
+## FZ7 (a real <Enter>+<Button-1>+<ButtonRelease-1>+<Leave>, plain and with
+## Control), FZ8 (the hover's real binding), FZ9 (the toplevel's geometry across
+## sixty real clicks), FZ10 (a real close and reopen) and FZ11 (the rendered tip
+## pulled back on to the screen, which is a fix to the tree's shared
+## `balloon_show` and the only fence over it) -- need a display and a
+## real `font` command, which `--nogui` does not have AT ALL (measured:
+## `invalid command name "font"` aborts the script at line 1).  They are
+## `live_tk`-gated and deliberately NOT counted here: the floor is the arm that
+## runs FEWEST rows.  Issue 1368 adds no row to test_rdw_keys_1245.tcl and its
+## `KX_FLOOR` is unchanged at 88.  A floor is raised when rows are added and
+## NEVER lowered to make a run pass.
+## ⚠ AND RAISED 172 -> 173 BY THE REPAIR OF ISSUE 1369, IN THE SAME COMMIT
+## AS ROW K18 - the hand-back's landing test asking which TOPLEVEL the keyboard
+## landed in rather than comparing it against one widget path, and the named
+## <ButtonPress> disarm that tells the user's own click from the window
+## manager's grant now that the landing cannot.  K18 is structural and runs on
+## BOTH arms; the keys suite self-SKIPS under --nogui, so on the headless arm
+## it is the only fence this issue has.  Issue 1369's behavioural rows are F5
+## and F6 of test_rdw_keys_1245.tcl, whose `KX_FLOOR` moves 88 -> 90 in the
+## same commit.  Row K16 is RE-SPELLED rather than added - its legs did not
+## move - so it does not change the count.  A floor is raised when rows are
+## added and NEVER lowered to make a run pass.
+## ⚠ AND RAISED 173 -> 177 BY ISSUE 1372, IN THE SAME COMMIT AS THE FOUR NEW
+## ROWS OF SECTION BT: BT33 (a column no list, no declaration and no column of
+## this run names is still refused, and the mint answers nothing), BT34 (the
+## sheet stamp gates the MEASUREMENT, on issue 1322's own axis, with the same
+## parameter accepted on a live-stamped block so the guard is on the stamp),
+## BT35 (an Add that cannot be written raises NO scope dialog while one that
+## can raises exactly one) and BT36 (the mint clause, said once, on the mint
+## arm only, asked BEFORE the write that would make it answer "declared").
+## Row BT18 is REWRITTEN and its verdict REVERSED - the old row asserted that
+## Add refuses a run-published column and gave a reason
+## (`op_annot::_cards_for` reads the kind) that measurement refutes - so it
+## does not change the count.  All five run on BOTH arms.  A floor is raised
+## when rows are added and NEVER lowered to make a run pass.
+## ⚠ AND RAISED 177 -> 181 BY ISSUE 1373, IN THE SAME COMMIT AS SECTION CL's
+## FOUR BOTH-ARM ROWS: CL6 (the narrowed-dump name, class arm and flavor arm,
+## with an unmapped key beside them to prove the fallback is identity), CL7
+## (the user's own verdict "gm is already in the MOS annotation list." word for
+## word, the three other class-naming refusals, the success clause, and the
+## store read that proves the KEY did not move under any of them), CL8 (the two
+## refusals that point at the broad radiobutton carry that button's phrase
+## byte-for-byte) and CL9 (the shadow clause, the one sentence that names a
+## class without naming a list).  CL10 -- the phrase read off the live
+## `.rdw.scope.sc.broad` widget, which is the ONE Tk -text in this feature that
+## carries a class -- is `live_tk`-gated and deliberately NOT counted, because
+## the floor is the arm that runs FEWEST rows.  Every sentence golden already in
+## this file uses a SYNTHETIC class, so without these rows the whole change
+## passes 177 checks while doing nothing.  A floor is raised when rows are added
+## and NEVER lowered to make a run pass.
+## ⚠ AND RAISED 181 -> 184 BY ISSUE 1374, IN THE SAME COMMIT AS THE THREE ROWS
+## THAT FENCE THE USER'S "This is too verbose!" RULING: NW14 (the label's CAP,
+## in characters, against the pane's own requested `-width`, plus the five
+## struck-out phrases asserted gone from EVERY shape the builder can produce
+## and the whole preamble asserted at two note lines), NW15 (the one clause
+## that survived the cut -- a withheld column that did not converge is still
+## counted, in BOTH arms, still scaling, still silent at zero -- so a row set
+## that only measured brevity cannot grade its deletion a pass) and NW16 (the
+## key-3 pointer's one rule: it appears exactly when the block has no rows, and
+## the two ways a block ends up with none are still told apart).  All three run
+## on BOTH arms: the wording is a pure function of five integers and a name.
+## The rest of this issue's work is RE-SPELLING -- `RW_INC` (consumed by 39
+## rows), `NW_NARROW1`, `NW_NARROW2`, NW4's three legs, NW6's two probes,
+## `nw_note`'s dispatcher, NW11, NW12, NW13 and the keys suite's KN1 and KN2 --
+## and re-spelling moves no count.  Issue 1374 adds no row to
+## test_rdw_keys_1245.tcl and its `KX_FLOOR` is unchanged at 90.  A floor is
+## raised when rows are added and NEVER lowered to make a run pass.
+## ⚠ AND RAISED 184 -> 186 BY THE REPAIR OF ISSUE 1368, IN THE SAME COMMIT AS
+## THE TWO NEW BOTH-ARM ROWS OF SECTION FZ: FZ12 (the `aA` label the user
+## specified by name, the button's place at the foot of the column, its absence
+## from `rdw::_buttons` -- so it never enters the chrome sentence that says
+## which buttons act on this list -- and the Control arm naming
+## `rdw::_focus_click`, which its own `break` would otherwise have cut out of
+## the toplevel bindtag) and FZ13 (the three named accessors behind the
+## unchosen size -- `_shared_size`, `_base_size`, `_ref_font` -- each answering
+## rather than raising on the arm that has no `font` command at all, and the
+## band reached by name from every one of them, which is what reds a
+## `_base_size` that has stopped reading the shared font and answers a
+## constant).  The repair's other FIVE rows -- FZ14 (a real Ctrl+click spends
+## issue 1369's focus one-shot exactly as the plain click does; before it, that
+## was the ONE gesture in the window that did not, and the keyboard ended on the
+## canvas where the plain arm leaves it here), FZ15 (with no choice recorded the
+## pane RENDERS the number the model REPORTS, after a withdrawal and at both
+## ends of the band), FZ16 (the private fonts are monospace and are
+## TkFixedFont's family, which is what holds every dump in columns), FZ17 (the
+## vertical flip and the two zero clamps of the shared `balloon_show` -- an
+## adversary deleted all three and the whole suite stayed green) and FZ18 (a
+## `pos 0` tip is pulled back on to the screen without landing UNDER the
+## pointer, which is what stopped the file browser's two directory tooltips
+## from ever appearing) -- need a display and a real `font` command and are
+## `live_tk`-gated, deliberately uncounted.  Rows FZ7 and FZ8 are RE-SPELLED
+## (FZ7 gains the live label, parent and pack side; FZ8 gains the 300 ms delay,
+## the one number in this item the user has not ruled on) and re-spelling moves
+## no count.  A floor is raised when rows are added and NEVER lowered to make a
+## run pass.
+set RW_FLOOR 186
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\

@@ -230,7 +230,16 @@ proc t_tier {caps {dir {}}} {
   ase::sim_register optier $STUB
   ase::sim_select optier
   set r [dict get [ase::sim_status ngspice] resolved]
-  set ::ase::sim_caps [dict create $r [list stamp [ase::cap_stamp $r] caps $caps]]
+  ## ⚠ THE KEY IS ASKED FOR, NEVER SPELLED (issue 1371, and see that file's
+  ## tail). The capability store was re-keyed from the resolved PATH to
+  ## `ase::cap_key {resolved eargs}`; a hand-spelled key here writes at an
+  ## address the reader has left, every primed answer goes invisible, and the
+  ## tier falls through to a LIVE probe of whatever ngspice the bench can
+  ## resolve. Measured cost when that happened: nine rows of this file
+  ## (T1..T5, X5, X6, N1, N3) reporting that binary's `{c nocap}` instead of
+  ## the fixture's answer.
+  set ::ase::sim_caps [dict create [ase::cap_key $r {}] \
+                        [list stamp [ase::cap_stamp $r] caps $caps]]
   set st [ase::state_default]
   dict set st design [dict create lib zzlib cell zzcell view schematic]
   dict set st rundir $dir
@@ -696,7 +705,16 @@ proc n_prime {caps} {
   ase::sim_register optier $STUB
   ase::sim_select optier
   set r [dict get [ase::sim_status ngspice] resolved]
-  set ::ase::sim_caps [dict create $r [list stamp [ase::cap_stamp $r] caps $caps]]
+  ## ⚠ THE KEY IS ASKED FOR, NEVER SPELLED (issue 1371, and see that file's
+  ## tail). The capability store was re-keyed from the resolved PATH to
+  ## `ase::cap_key {resolved eargs}`; a hand-spelled key here writes at an
+  ## address the reader has left, every primed answer goes invisible, and the
+  ## tier falls through to a LIVE probe of whatever ngspice the bench can
+  ## resolve. Measured cost when that happened: nine rows of this file
+  ## (T1..T5, X5, X6, N1, N3) reporting that binary's `{c nocap}` instead of
+  ## the fixture's answer.
+  set ::ase::sim_caps [dict create [ase::cap_key $r {}] \
+                        [list stamp [ase::cap_stamp $r] caps $caps]]
   return $r
 }
 proc n_state {} {
