@@ -1807,8 +1807,29 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   `:4562`) reading the captured block, while the SHAPE is chosen separately by
   `ase::op_save_tier` (`:4792`, `:8050`); under tier `d` both sentences describe
   a deck that was not rendered. Measured in the user's own log and deck. It is
-  what sent the RDW list batch's brief at the wrong hypothesis. **FILED, NOT
-  FIXED.**
+  what sent the RDW list batch's brief at the wrong hypothesis. **FIXED**
+  (2026-09-05), both halves, and they failed differently. THE SENTENCE:
+  `ase::op_tier_report` already asked `ase::op_save_tier`, got `d`, and threw
+  the answer away — its `switch` had arms for `a` and `b` only, so `d` fell
+  through to `op_tier_perdevice` and then past all five of that sentence's
+  reason tails onto the catch-all, telling the user their simulator *cannot* do
+  a shorter way about the build given the shortest one **because it can**. A
+  fifth kind `op_tier_dump` is minted in `ase::sim_why` (ruling D5-4) and
+  selected by a new `d` arm. THE COUNT: `op_cards_capture` runs at NETLIST time
+  and **must not** learn the shape — `ase::op_save_tier` goes through
+  `ase::sim_capabilities`, which on a cache MISS starts the user's simulator,
+  and `Simulation > Netlist > Recreate` is a netlist gesture with no run behind
+  it — so the line stops claiming the deck and reports what the walk built,
+  cards **and devices**, because on shape `d` a card count is a category error
+  and the device count is the number that survives. Fenced by **N1..N6** of
+  `tests/headless/test_op_dump_altshow.tcl` (new section N; N2 the declared
+  control) and by adding `op_tier_dump` to `TIERKINDS` in
+  `test_ase_optier_0963.tcl`, which puts it under **S2** and **S4**; five
+  sabotages, each red on exactly its own rows. `F19k`/`F19l` of
+  `test_ase_final.tcl` re-spelled in the same commit. **Neither suite carries a
+  FLOOR constant**, so no floor was raised — `KX_FLOOR`/`RW_FLOOR` belong to the
+  RDW suites and no RDW row changed. Carries **one decision left to the user**:
+  what the netlist line should count — rule debt **1354**.
 
 - **1355** — the Results window never says which list is in force, and the scope
   dialog names no list on lists 1 and 2. The user's SECOND complaint. MEASURED
@@ -1956,4 +1977,18 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   debt `rdw_1362_status_wrap` and rule debt **1362** (the cap, and letting the
   window's height follow the verdict).
 
-**The next free number is 1363.**
+- **1363** — shape `d` went live and left **two ASE suites standing red**, and
+  nobody filed it. Measured at HEAD `fa0eb0b0`: `test_ase_core` 10 FAILED (172),
+  `test_ase_final` 6 FAILED (74). Attributed rather than guessed — a wrapper
+  pinning `ase::op_tier_force_set c` and sourcing the suite gives 4 FAILED (178)
+  and **ALL PASS (80)** respectively, so all six of `test_ase_final`'s reds and
+  six of `test_ase_core`'s ten are the deck-shape change. Most are shape-`c`
+  expectations (`C5b`, `C6`×3, `C8`, `F12`, `F14`×2, `F21`) that assert
+  per-device `.save` cards in a deck row `D1` of `test_op_dump_altshow`
+  deliberately asserts has none. **`F16`/`F17` are not**: five of six annotation
+  rows come back BLANK on a real run in that suite, which is issue 0617's own
+  failure mode and needs measuring before it is dismissed as a stale
+  expectation. Neither suite is in `tests/run_regression.tcl`, so **T1 stays at
+  zero while both are red**; both are in `full_audit.sh`. **FILED, NOT FIXED.**
+
+**The next free number is 1364.**

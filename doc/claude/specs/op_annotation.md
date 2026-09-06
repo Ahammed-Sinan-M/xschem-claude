@@ -1666,7 +1666,8 @@ at all).
 #### What the user is told
 
 One sentence per run, minted in `ase::sim_why` (ruling D5-4) as one of
-`op_tier_blanket` / `op_tier_perdevice` / `op_tier_writeline`, said through
+`op_tier_blanket` / `op_tier_perdevice` / `op_tier_writeline` / `op_tier_dump`,
+said through
 `ase::sim_say` from `ase::run_deck` — never from `run_cmd`, whose echoes are
 pinned byte for byte by `test_ase_simreg_0931` row D4. When the override chose
 the form, `op_tier_forced` is said as well, so the user is never left wondering
@@ -1686,6 +1687,31 @@ five tails are five *different* sentences sharing one opening, so a deleted tail
 cannot fall through to the catch-all and tell the user their simulator "cannot do
 either of the shorter ways" about a simulator that can do one and was refused it
 on purpose.
+
+⚠ **AND THE SAME CATCH-ALL FIRED FOR REAL, THROUGH A MISSING SWITCH ARM RATHER
+THAN A DELETED TAIL — ISSUE 1354.** `ase::op_tier_report`'s `switch` mapped
+tiers `a` and `b` and let everything else fall to `op_tier_perdevice`, so shape
+`d` — added later — got the per-device kind, then fell past all five reason
+tails (its token is `dump`) onto exactly that catch-all. The user's own
+`/tmp/Xschem.log.5` therefore says *"Your simulator cannot do either of the
+shorter ways"* about the build that was given the **shortest** one because it
+can, one line under *"468 device OP save card(s) added to the deck"* for a
+rendered deck holding zero `@` characters. **Shape `d` now has its own kind**,
+`op_tier_dump`, with no reason tails: only `dump` (measured) and `forced` reach
+it, and the forced case already gets `op_tier_forced` said after it. Section N
+of `tests/headless/test_op_dump_altshow.tcl` holds the behavioural half —
+`test_ase_optier_0963` has no shape-`d` capability fixture and stays ALL PASS
+with the `d` arm removed, which is why the rows live there.
+
+⚠ **THE NETLIST-TIME COUNT IS A DIFFERENT SURFACE AND MAY NOT SPEAK FOR THE
+DECK.** `ase::op_cards_capture` prints its line at netlist time, before any deck
+is rendered, and it **must not** ask `ase::op_save_tier`: that goes through
+`ase::sim_capabilities`, which on a cache MISS starts the user's simulator, and
+`Simulation > Netlist > Recreate` reaches this code with no run behind it. So
+the line reports what the *walk* built — cards **and** the devices they cover —
+and says the run will report how the deck asked. The device count is there
+because on shape `d` a card count is not a smaller number, it is a category
+error: that deck carries none.
 
 #### The acceptance, and why it had to be respecified
 

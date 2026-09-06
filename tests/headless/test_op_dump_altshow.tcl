@@ -416,6 +416,172 @@ file mtime $YDUMP [expr {[file mtime $YRAW] + 1}]
 check_true {Y5 a sidecar that does not cover the block's devices is reported, not accepted because SOME file was there} \
   [expr {[ase::op_report_missing $YST $YMETA_D 0] ne {}}]
 
+# ============================================================================
+# N — WHAT THE RUN SAYS IT DID, AND WHAT THE NETLIST SAYS IT BUILT (issue 1354)
+# ============================================================================
+# ⚠ THE USER'S OWN LOG CARRIED BOTH HALVES OF THIS WRONG, AND ONE OF THEM SENT
+# AN ENTIRE CREW AT THE WRONG HYPOTHESIS. /tmp/Xschem.log.5 says
+#
+#     ASE: 468 device OP save card(s) added to the deck.
+#
+# for a rendered deck (~/.xschem/simulations/tb_bandgap_ase.spice) that carries
+# ZERO `@` characters -- shape d, no per-device card anywhere in it. And the
+# line printed under it was the shape-c nudge, "Your simulator cannot do either
+# of the shorter ways, so this is the only one available", about the very build
+# that was GIVEN shape d because it can. The crew brief for the RDW list batch
+# reasoned from the 468 and concluded the raw should hold six parameters; it
+# held 7825.
+#
+# TWO DECISIONS IN TWO PLACES AND NEITHER CONSULTED THE OTHER:
+#
+#   * ase::op_cards_capture runs at NETLIST time and counts the block it just
+#     built. IT CANNOT KNOW THE SHAPE AND MUST NOT FIND OUT: ase::op_save_tier
+#     goes through ase::sim_capabilities, which on a cache MISS makes a scratch
+#     folder and STARTS THE USER'S SIMULATOR -- and `Simulation > Netlist >
+#     Recreate` (ase::ui::do_netlist_recreate -> ase::netlist ->
+#     op_cards_capture, src/ase_window.tcl:6477) is a netlist gesture with no
+#     run behind it. So the line stops CLAIMING the deck instead of learning the
+#     shape, and the shape is reported by the one surface that already knows it.
+#   * ase::op_tier_report DOES know the shape, and its switch had arms for a
+#     and b only, so shape d fell through to the per-device kind and got the
+#     per-device sentence -- catch-all tail and all.
+#
+# ⚠ AND FOR SHAPE D A COUNT OF CARDS IS NOT A SMALLER NUMBER, IT IS A CATEGORY
+# ERROR (row D1: the deck carries none). The number that still means something
+# is how many DEVICES the sheet asks about, so the netlist line carries both and
+# row N6 is what stops one of them being dropped again.
+
+set N_NL "** sch_path: /zz.sch\n**.subckt zzcell\nV1 a 0 1\n**.ends\n.end\n"
+## three cards over TWO devices, deliberately different numbers: a line that
+## printed one count twice would pass a row that only looked for "a number".
+set N_BLK ".save all\n.save @m.xz1.mzmod\[id\]\n.save @m.xz1.mzmod\[gm\]\n.save @m.xz2.mzmod\[id\]\n"
+
+proc n_prime {caps} {
+  global STUB
+  catch {ase::sim_caps_clear} ; catch {ase::sim_clear}
+  ase::sim_register optier $STUB
+  ase::sim_select optier
+  set r [dict get [ase::sim_status ngspice] resolved]
+  set ::ase::sim_caps [dict create $r [list stamp [ase::cap_stamp $r] caps $caps]]
+  return $r
+}
+proc n_state {} {
+  global scratch
+  set st [ase::state_default]
+  dict set st design [dict create lib zzlib cell zzcell view schematic]
+  dict set st rundir [file join $scratch orun]
+  dict set st analyses {{type op enabled 1}}
+  dict set st save_op_params 1
+  dict set st simulator ngspice
+  return $st
+}
+## WHICH sentence a script said, by kind, and the sentences themselves. The
+## recorder is intercepted rather than the CIW so a row can name the kind and
+## not merely observe that words appeared (test_ase_optier_0963's o_saykinds,
+## the same construct, because ruling D5-4 makes the kind the testable fact).
+proc n_say {script} {
+  set ::n_kinds {}
+  set ::n_sent {}
+  rename ::ase::sim_say ::n_saved_say
+  proc ::ase::sim_say {kind name path {extra {}} {tag error}} {
+    lappend ::n_kinds $kind
+    set m [::n_saved_say $kind $name $path $extra $tag]
+    lappend ::n_sent $m
+    return $m
+  }
+  catch {uplevel 1 $script}
+  rename ::ase::sim_say {}
+  rename ::n_saved_say ::ase::sim_say
+  return $::n_kinds
+}
+
+ase::op_cards_clear
+ase::op_cards_put $N_NL $N_BLK
+ase::op_tier_force_set {}
+
+n_prime [dict merge $C_BASE {altshow_op_dump 1}]
+set N_TIER_D [t_tier [dict merge $C_BASE {altshow_op_dump 1}]]
+n_prime [dict merge $C_BASE {altshow_op_dump 1}]
+set N1 [n_say {ase::op_tier_report ngspice [n_state] $N_NL}]
+set N1SENT [lindex $::n_sent 0]
+check {N1 a run that took shape d says SHAPE D -- the deck it just rendered\
+ names no device anywhere, so the sentence about asking one device at a time is\
+ a report of a path this run did not take} \
+  [list $N_TIER_D $N1] {{d dump} op_tier_dump}
+
+n_prime [dict merge $C_BASE {altshow_op_dump 0}]
+check {N2 CONTROL the per-device shape still says the per-device sentence, so a\
+ fix cannot pass this section by renaming every kind} \
+  [n_say {ase::op_tier_report ngspice [n_state] $N_NL}] {op_tier_perdevice}
+
+## The two clauses the user actually read, quoted from their own log. Neither
+## may appear over a deck that carries no per-device card.
+check {N3 and the shape-d sentence says neither of the two things the user's log\
+ said: not "one request at a time", and not that their simulator cannot do a\
+ shorter way -- it was given this shape BECAUSE it can} \
+  [list [expr {[string first {one request at a time} $N1SENT] >= 0}] \
+        [expr {[string first {cannot do either of the shorter ways} $N1SENT] >= 0}] \
+        [expr {$N1SENT eq "Something is wrong with the simulator named ngspice." ? 1 : 0}] \
+        [expr {[string length $N1SENT] > 80}]] \
+  {0 0 0 1}
+
+## The override reaches tier d too (ase::op_tier_force_set accepts a b c d), and
+## it must land on the same arm: a hand-chosen shape may not smuggle the
+## per-device sentence back in over a dump deck.
+n_prime [dict merge $C_BASE {altshow_op_dump 0}]
+ase::op_tier_force_set d
+set N4 [n_say {ase::op_tier_report ngspice [n_state] $N_NL}]
+ase::op_tier_force_set {}
+check {N4 a shape chosen by hand takes the same arm -- the override says WHICH\
+ shape, never which sentence} \
+  [lsort $N4] {op_tier_dump op_tier_forced}
+
+# --- the netlist line, which cannot know the shape and must stop pretending ---
+proc n_capture {caps} {
+  global N_NL N_BLK scratch
+  n_prime $caps
+  set nlf [file join $scratch ncap.spice]
+  set fh [open $nlf w]; puts -nonewline $fh $N_NL; close $fh
+  set ::n_echo {}
+  rename ::ase::echo ::n_saved_echo
+  proc ::ase::echo {msg {tag {}}} { lappend ::n_echo $msg ; return }
+  rename ::op_annot::save_cards ::n_saved_cards
+  proc ::op_annot::save_cards {args} { return $::N_BLK }
+  rename ::op_annot::last_warnings ::n_saved_warn
+  proc ::op_annot::last_warnings {args} { return {} }
+  rename ::ase::design_is_dirty ::n_saved_dirty
+  proc ::ase::design_is_dirty {args} { return 0 }
+  catch {ase::op_cards_clear}
+  catch {ase::op_cards_capture [n_state] $nlf} err
+  rename ::ase::design_is_dirty {} ; rename ::n_saved_dirty ::ase::design_is_dirty
+  rename ::op_annot::last_warnings {} ; rename ::n_saved_warn ::op_annot::last_warnings
+  rename ::op_annot::save_cards {} ; rename ::n_saved_cards ::op_annot::save_cards
+  rename ::ase::echo {} ; rename ::n_saved_echo ::ase::echo
+  return [join $::n_echo " "]
+}
+set N_CAP_D [n_capture [dict merge $C_BASE {altshow_op_dump 1}]]
+set N_CAP_C [n_capture [dict merge $C_BASE {altshow_op_dump 0}]]
+ase::op_cards_clear
+ase::op_cards_put $N_NL $N_BLK
+
+check {N5 the netlist-time line does not tell the user what the deck carries. It\
+ is printed before any deck exists, it is the SAME line whichever shape the run\
+ later takes, and finding the shape out there would start their simulator on a\
+ plain Netlist gesture} \
+  [list [expr {$N_CAP_D eq $N_CAP_C}] \
+        [expr {[string match {*added to the deck*} $N_CAP_D] ? 1 : 0}] \
+        [expr {[string length $N_CAP_D] > 0}]] \
+  {1 0 1}
+
+check {N6 and it carries BOTH numbers -- the cards it built and the devices they\
+ cover -- because on shape d the card count is a category error and the device\
+ count is the one that still means something} \
+  [list [regexp {(^|[^0-9])3([^0-9]|$)} $N_CAP_D] \
+        [regexp {(^|[^0-9])2([^0-9]|$)} $N_CAP_D]] \
+  {1 1}
+
+catch {ase::sim_caps_clear} ; catch {ase::sim_clear}
+
 cd $T_OLDPWD
 check_true {H1 HYGIENE the suite left the cwd where it found it and made no untitled* in the repo root} \
   [expr {[pwd] eq $T_OLDPWD &&

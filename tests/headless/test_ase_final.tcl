@@ -673,16 +673,24 @@ ase::session_close $f19g_key
 # `grep -rn "card(s) added" tests/` returned nothing. These two rows are that
 # coverage. They are GREEN BEFORE THE CHANGE; SAB-F (op_cards_count returns 0)
 # is what they exist to catch.
+#
+# ⚠ THE WORD IS `prepared`, NOT `added`, SINCE ISSUE 1354, AND THE CHANGE IS NOT
+# COSMETIC. This line is printed at NETLIST time, before any deck exists; on
+# shape d the deck it used to promise carries no `.save @dev[param]` card at
+# all, and the user's own log said "468 device OP save card(s) added to the
+# deck" over a rendered deck with zero `@` characters in it. Both rows below
+# match the new word, so F19l stays the non-vacuity control it was written to
+# be rather than passing because the string it looks for no longer exists.
 cx {ase::op_cards_nudge_reset}
 set f19k_dir [file normalize [file join $scratch runon_k]]
 set st19k [ase::state_load $statefile]
 dict set st19k rundir $f19k_dir
 dict set st19k save_op_params 1
 set f19k_msgs  [f_echo_run $st19k]
-set f19k_hits  [f_matches $f19k_msgs {*device OP save card(s) added*}]
+set f19k_hits  [f_matches $f19k_msgs {*device OP save card(s) prepared*}]
 set f19k_n {}
 if {[llength $f19k_hits] == 1} {
-  regexp {(\d+) device OP save card\(s\) added} [lindex $f19k_hits 0] -> f19k_n
+  regexp {(\d+) device OP save card\(s\) prepared} [lindex $f19k_hits 0] -> f19k_n
 }
 set f19k_text {}
 catch {
@@ -690,7 +698,7 @@ catch {
   set f19k_text [read $fh]; close $fh
 }
 set f19k_cards [llength [f_cards [cx {ase::op_cards_for $f19k_text}]]]
-check "F19k 0648 a gate-ON netlist SAYS how many device OP save cards it added,\
+check "F19k 0648 a gate-ON netlist SAYS how many device OP save cards it built,\
  exactly once, with the TRUE count" \
   [list [llength $f19k_hits] $f19k_n [expr {$f19k_cards > 0}]] \
   [list 1 $f19k_cards 1]
@@ -702,8 +710,8 @@ dict set st19l rundir $f19l_dir
 dict set st19l save_op_params 0  ;# 0927: the gate defaults ON now -- OFF must be spelled out
 set f19l_msgs [f_echo_run $st19l]
 check "F19l 0648 NON-VACUITY CONTROL: a gate-OFF netlist says nothing about\
- cards added" \
-  [llength [f_matches $f19l_msgs {*card(s) added*}]] 0
+ cards prepared" \
+  [llength [f_matches $f19l_msgs {*card(s) prepared*}]] 0
 cx {ase::op_cards_nudge_reset}
 
 # ============================================================================

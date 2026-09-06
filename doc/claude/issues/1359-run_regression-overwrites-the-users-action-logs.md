@@ -89,3 +89,40 @@ md5. The content lost was already test output from an earlier run the same
 afternoon, so nothing of the user's died a second time -- but a rule in capitals
 plus a mitigation in a file nobody has read yet is not a defence. Its own final
 T1 used `TMPDIR` and every slot came back byte-identical.
+
+## SECOND MEASURED INSTANCE, 2026-09-05 18:17-18:18 (issue 1354's pass)
+
+It happened again, to a pass whose own brief carried *"⚠ NEVER WRITE INTO
+`/tmp/Xschem.log.N`"* as a hard rule and which passed `--logdir` on every single
+direct `xschem` invocation it made. **`tests/run_regression.tcl` is the only
+door left, it has no `--logdir` knob, and the same brief required T1 be run
+solo** — so the rule and the requirement contradict each other until this is
+fixed. `XSCHEM_AL_LOGDIR` is no escape hatch: `grep -rn XSCHEM_AL_LOGDIR src/`
+returns nothing, it is a convention `test_action_log_libmgr.tcl` reads and the
+binary honours `--logdir` alone.
+
+md5 of every `/tmp/Xschem.log.*` before any work and after one solo
+`tclsh run_regression.tcl`:
+
+| file | before | after | verdict |
+|---|---|---|---|
+| `.1` | `c29d72e1…` | unchanged | survived |
+| `.2` | `eb98cb09…` | `1062f10c…` 3053 B | **OVERWRITTEN** |
+| `.3` | `ddef12c9…` | unchanged | survived |
+| `.4` | `f77c25ce…` | same bytes, mtime 18:17:38 | rewritten, content identical |
+| `.5` | `17e437dd…` 3182 B | **unchanged** | survived — *the log this whole RDW batch was diagnosed from* |
+| `.6` | `f77c25ce…` | `c29d72e1…` 213 B | **OVERWRITTEN** |
+| `.7` | `eac6509c…` | unchanged | survived |
+| `.8` | `fae052a2…` | `d2e782e7…` 33010 B | **OVERWRITTEN** |
+| `.9` | `c29d72e1…` | `eac6509c…` 170 B | **OVERWRITTEN** |
+
+**No user content was lost this time, and that is luck rather than design.**
+Every before-value that was overwritten was itself a test-run log from an
+earlier session — `.6`'s `f77c25ce` was a duplicate of `.4`'s, `.9`'s
+`c29d72e1` a duplicate of `.1`'s 213-byte stub, and `.8`'s `fae052a2` is the
+value this issue's own first table records as *already* destroyed by the run
+that filed it. The one file with real user history in it, `.5`, survived both
+runs for the same accidental reason: it is 3182 bytes and the slot-picker got
+to it after the cases ran out.
+
+Still **FILED, NOT FIXED**. Every T1 run keeps rolling the same dice.

@@ -835,7 +835,18 @@ check {P4 issue 1243 a transient-only run is UNCHANGED -- with no operating\
 # callers. The plain-English ruling: 9th grade, say what happened AND what the
 # user can do, no internal vocabulary and no name out of the code.
 
-set TIERKINDS {op_tier_blanket op_tier_perdevice op_tier_writeline op_tier_forced}
+## ⚠ FIVE, NOT FOUR, SINCE ISSUE 1354. Shape d had no kind of its own, so
+## ase::op_tier_report's switch fell through to op_tier_perdevice and a deck
+## carrying NO per-device card at all was reported with the per-device sentence
+## -- catch-all tail included, telling the user their simulator "cannot do
+## either of the shorter ways" about the build that was given shape d BECAUSE
+## it can. That is the line in their own /tmp/Xschem.log.5 and it is what sent
+## the RDW list batch's brief at the wrong hypothesis. Adding the kind here is
+## what puts it under S2's no-code-vocabulary rule and S4's minted-once rule;
+## the behavioural half is section N of tests/headless/test_op_dump_altshow.tcl,
+## which is where a real shape-d capability answer lives.
+set TIERKINDS {op_tier_blanket op_tier_perdevice op_tier_writeline op_tier_forced\
+               op_tier_dump}
 
 ## Every kind of sentence a run said, in order, filtered to the tier ones. The
 ## recorder is intercepted rather than the CIW, so a row can tell WHICH
@@ -1006,11 +1017,11 @@ foreach k $TIERKINDS {
   if {$WHYB eq {NOPROC} || [string match RAISED:* $WHYB]} { lappend S4MINT $WHYB ; continue }
   lappend S4MINT [o_count $WHYB $k]
 }
-check {S4 STRUCTURAL, ruling D5-4: each of the four sentences exists exactly\
+check {S4 STRUCTURAL, ruling D5-4: each of the five sentences exists exactly\
  once, in the one place sentences are minted, and no say-site renders words of\
  its own into the CIW} \
   [list [o_count $S4SRC {ase::echo [ase::sim_why}] $S4MINT] \
-  [list 0 {1 1 1 1}]
+  [list 0 {1 1 1 1 1}]
 
 set RDB [o_body ase::run_deck]
 set RCB [o_body ::ase::backend::ngspice::run_cmd]

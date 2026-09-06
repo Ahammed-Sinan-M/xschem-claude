@@ -767,6 +767,30 @@ proc ase::sim_why {kind name path {extra {}}} {
     op_tier_blanket {
       return "Your simulator can hand back all of one device's operating-point numbers in a single request, so this run asked once per device instead of once per number. The requests are made just before the operating point and nowhere else, so nothing is recorded at every step of a transient that happens to be in the same run."
     }
+    op_tier_dump {
+      ## ISSUE 1354 -- THE SHAPE THAT HAD NO SENTENCE. Shape d fell through
+      ## ase::op_tier_report's switch to op_tier_perdevice, so the run that
+      ## asked in the SHORTEST way told the user it had asked in the longest
+      ## one, and the catch-all tail added "Your simulator cannot do either of
+      ## the shorter ways" about the very build that was given this shape
+      ## BECAUSE it can. That is verbatim what the user's own /tmp/Xschem.log.5
+      ## carries, printed beside "468 device OP save card(s) added to the deck"
+      ## over a rendered deck holding not one `@` character.
+      ##
+      ## THE THIRD CLAUSE IS MEASURED, NOT REASSURANCE: render_deck's own shape-d
+      ## arm records 468 of 468 pairs recovered on the user's tb_bandgap, worst
+      ## relative error 4.70e-06, and 212 devices dumped against the 78 the
+      ## per-device cards named -- the extra ones include the two PNPs that ARE
+      ## the bandgap reference and that no `.save @q` card in that deck asked
+      ## for. So "more, not fewer" is a count taken on their own bench.
+      ##
+      ## ONE SENTENCE, NO REASON TAILS, DELIBERATELY. Only two reasons reach
+      ## this shape -- `dump` (measured) and `forced` (chosen by hand) -- and
+      ## the forced case already gets op_tier_forced said after it by
+      ## op_tier_report's own second say. A tail would be a second spelling of
+      ## a fact that already has one.
+      return "Your simulator can print out every device's operating-point numbers in one go, so this run asked for the whole set at once instead of making a separate request for each number. That is the shortest way there is: the deck names no device at all, and the numbers come back in a small file of their own beside the results. It covers more of your devices than asking one at a time does, not fewer. If that file does not appear, this run will tell you so."
+    }
     op_numbers_missing {
       set n [lindex $extra 0]
       set back [lindex $extra 1]
@@ -4167,10 +4191,18 @@ proc ase::op_tier_report {sim state netlist_text} {
   set d [ase::op_save_tier $state]
   set path {}
   catch {set path [dict get [ase::sim_status $sim] resolved]}
+  ## ⚠ EVERY SHAPE NEEDS AN ARM, AND THE DEFAULT IS NOT A SPARE ONE (issue
+  ## 1354). `d` had none, so it took the per-device kind by falling through --
+  ## and the per-device sentence is a claim about a deck with a `.save` card
+  ## per device per parameter in it, which shape d's deck (row D1 of
+  ## tests/headless/test_op_dump_altshow.tcl) does not have a single one of.
+  ## Reason `forced` reaches `d` too, through ase::op_tier_force_set, so this
+  ## switch is on the TIER and never on the reason.
   set kind op_tier_perdevice
   switch -- [dict get $d tier] {
     a { set kind op_tier_blanket }
     b { set kind op_tier_writeline }
+    d { set kind op_tier_dump }
   }
   ase::sim_say $kind $sim $path [dict get $d reason] note
   if {[dict get $d reason] eq {forced}} {
@@ -4503,8 +4535,33 @@ proc ase::op_cards_capture {state netlistpath} {
  annotatable. The deck asks for no device parameters." error
     return {}
   }
-  ase::echo "ASE: [ase::op_cards_count $block] device OP save card(s) added to\
- the deck."
+  ## ⚠ THIS LINE MAY NOT SAY WHAT THE DECK CARRIES, AND IT USED TO (issue 1354).
+  ## It is printed at NETLIST time, before any deck exists, and which shape the
+  ## deck will ask in is ase::op_save_tier's answer at RUN time. On shape d it
+  ## is never true at all: that deck carries no `.save @dev[param]` card
+  ## anywhere, and the user's own log said "468 device OP save card(s) added to
+  ## the deck" over a rendered deck with zero `@` characters in it. One wrong
+  ## sentence in a log sent an entire crew at the wrong hypothesis about why
+  ## their results window went wide.
+  ##
+  ## ⚠ AND IT MUST NOT LEARN THE SHAPE HERE. ase::op_save_tier goes through
+  ## ase::sim_capabilities, which on a cache MISS makes a scratch folder and
+  ## STARTS THE USER'S SIMULATOR -- see its own header. `Simulation > Netlist >
+  ## Recreate` (ase::ui::do_netlist_recreate -> ase::netlist -> here) is a
+  ## netlist gesture with no run behind it, and a plain Netlist must not launch
+  ## a simulator to word a sentence. So this line reports what the WALK built,
+  ## the run reports what the DECK did with it (ase::op_tier_report), and the
+  ## two never guess at each other's half.
+  ##
+  ## ⚠ TWO NUMBERS, BECAUSE ON SHAPE D THE FIRST ONE IS A CATEGORY ERROR. A
+  ## count of cards a deck does not carry is not a smaller number; the count
+  ## that still means something there is how many DEVICES the sheet asks about,
+  ## which is what the dump has to cover. Rows N5 and N6 of
+  ## tests/headless/test_op_dump_altshow.tcl hold both halves.
+  ase::echo "ASE: [ase::op_cards_count $block] device OP save card(s) prepared\
+ from this schematic, covering [llength [ase::op_cards_devices $block]]\
+ device(s). How the deck asks for them is decided at Run, and the run says\
+ which way it used."
   return $block
 }
 
