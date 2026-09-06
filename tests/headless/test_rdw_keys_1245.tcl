@@ -4302,25 +4302,44 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
   ## test_rdw_window_1245.tcl's LX14: that one drives the pure text builder at
   ## both values, this one takes the value off the REAL binds of the REAL
   ## canvas and puts the binds back.
+  ## ⚠ AND IT TAKES BOTH KEYBOARDS, NOT ONE (issue 1367).  This row used to
+  ## strip the CANVAS's three binds and require the answer to fall to 0.  That
+  ## was right until issue 1358 bound the same digits on `.rdw` itself so the
+  ## window could hear its own refresh keys: after that, stripping the canvas
+  ## leaves the keys genuinely WORKING with the keyboard inside the window, and
+  ## a row demanding 0 there was demanding the sentence lie in the other
+  ## direction.  So the middle arm now strips the canvas ALONE and requires the
+  ## answer to STAY 1 -- the honest reading -- and a third arm strips both and
+  ## requires 0.  The two binds are spelled differently (`rdw::key` on the
+  ## canvas, `rdw::_digit` on the window) and `rdw::_digit`'s only act is to
+  ## call `rdw::key`, so the name test has to know both spellings.
   set LK3_B {}
   foreach _k {1 2 3} { lappend LK3_B [bind .drw <Key-$_k>] }
+  set LK3_W {}
+  foreach _k {1 2 3} { lappend LK3_W [bind .rdw <Key-$_k>] }
   set LK3_ON [list [kx_ans ::rdw::_keys_bound] \
                    [string match {Keys 1/2/3:*} [lk_hdr]]]
   foreach _k {1 2 3} { bind .drw <Key-$_k> {} }
+  kx_ans ::rdw::apply_list_state ; update idletasks
+  set LK3_CANVASGONE [list [kx_ans ::rdw::_keys_bound] \
+                           [string match {Keys 1/2/3:*} [lk_hdr]]]
+  foreach _k {1 2 3} { bind .rdw <Key-$_k> {} }
   kx_ans ::rdw::apply_list_state ; update idletasks
   set LK3_OFF [list [kx_ans ::rdw::_keys_bound] \
                     [string match {Keys 1/2/3:*} [lk_hdr]] \
                     [string match {Showing *} [lk_hdr]]]
   foreach _k {1 2 3} { bind .drw <Key-$_k> [lindex $LK3_B [expr {$_k - 1}]] }
+  foreach _k {1 2 3} { bind .rdw <Key-$_k> [lindex $LK3_W [expr {$_k - 1}]] }
   kx_ans ::rdw::apply_list_state ; update idletasks
   set LK3_BACK [list [kx_ans ::rdw::_keys_bound] \
                      [expr {[bind .drw <Key-1>] eq [lindex $LK3_B 0] ? 1 : 0}] \
+                     [expr {[bind .rdw <Key-1>] eq [lindex $LK3_W 0] ? 1 : 0}] \
                      [expr {[bind .drw <Key-3>] eq [lindex $LK3_B 2] ? 1 : 0}] \
                      [lk_hdr]]
-  check {LK3 THE CHROME NAMES THE 1/2/3 KEYS ONLY WHEN THE 1/2/3 KEYS ARE REALLY BOUND, taken off the real canvas rather than assumed: under the cadence profile the prefix is there, with the three binds removed the same label drops the prefix and says `Showing` instead, and putting the binds back puts the prefix back - so the one sentence in this window that promises the user a keyboard cannot outlive the keyboard} \
-    [list $LK3_ON $LK3_OFF $LK3_BACK] \
-    [list {1 1} {0 0 1} \
-          [list 1 1 1 [kx_ans ::rdw::_chrome_line [kx_listkind]]]]
+  check {LK3 THE CHROME NAMES THE 1/2/3 KEYS ONLY WHEN THE 1/2/3 KEYS ARE REALLY BOUND, taken off the real widgets rather than assumed: the prefix is there under the cadence profile, it SURVIVES the canvas binds being stripped because issue 1358 put the same digits on the window itself and they still work there, it goes only when BOTH keyboards are gone, and putting both back puts the prefix back - so the one sentence in this window that promises the user a keyboard cannot outlive the keyboard, and cannot deny one that is live either} \
+    [list $LK3_ON $LK3_CANVASGONE $LK3_OFF $LK3_BACK] \
+    [list {1 1} {1 1} {0 0 1} \
+          [list 1 1 1 1 [kx_ans ::rdw::_chrome_line [kx_listkind]]]]
 }
 
 

@@ -2106,4 +2106,15 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   `Z1..Z8`), and nine sabotages. Neither suite carries a check-count floor, so
   none was raised.
 
-**The next free number is 1367.**
+- **1367** — the Results window's chrome said `Showing <list>` over a pane
+  holding one character and zero blocks (measured in a stock profile through
+  the unconditional Tools entry), i.e. issue 1355 fixed a false statement about
+  the KEYS by minting one about the PANE; and `rdw::_keys_bound` still asked
+  the canvas alone after issue 1358 had bound the same digits on the window, so
+  a stock profile answered "no keys" while the keys worked. **FIXED**: the
+  chrome asks whether the pane is filled and says what is true of each of the
+  four states, naming the digit out of `rdw::_digit_map`; `_keys_bound` asks
+  both widgets and knows both spellings of the one door. Rows LX17, LX18, LK3
+  rewritten, LX7/LX12/LX13 re-pointed, RW_FLOOR 166 -> 168.
+
+**The next free number is 1368.**

@@ -6147,11 +6147,11 @@ check {LX12 THE LIST-3 SENTENCE NAMES EXACTLY THE BUTTONS THAT DO SOMETHING THER
         [rw_ans ::rdw::button_state save all] \
         [expr {[llength [info commands ::rdw::_do_save]] ? 1 : 0}] \
         [rw_has [rw_body ::rdw::button] {rdw::_do_save}] \
-        [rw_has [rw_ans ::rdw::_chrome_line all] {Add}] \
-        [rw_has [rw_ans ::rdw::_chrome_line all] {Save}] \
-        [rw_has [rw_ans ::rdw::_chrome_line all] {Up}] \
-        [rw_has [rw_ans ::rdw::_chrome_line all] {Down}] \
-        [rw_has [rw_ans ::rdw::_chrome_line all] {Delete}] \
+        [rw_has [rw_ans ::rdw::_chrome_text all 1 1] {Add}] \
+        [rw_has [rw_ans ::rdw::_chrome_text all 1 1] {Save}] \
+        [rw_has [rw_ans ::rdw::_chrome_text all 1 1] {Up}] \
+        [rw_has [rw_ans ::rdw::_chrome_text all 1 1] {Down}] \
+        [rw_has [rw_ans ::rdw::_chrome_text all 1 1] {Delete}] \
         [rw_has [rw_body ::rdw::_chrome_text] {_active_phrase}] \
         [expr {$LX_F eq {NOFILE} ? {NOFILE} : [rw_count $LX_F {only Add works here}]}]] \
   [list {add save} {up down delete save} {up down delete add save} normal 1 1 \
@@ -6163,7 +6163,7 @@ check {LX12 THE LIST-3 SENTENCE NAMES EXACTLY THE BUTTONS THAT DO SOMETHING THER
 ## writes the summary list; on that day the right half moves and this row makes
 ## the sentence move with it.
 proc lx13 {kind} {
-  return [list [rw_has [rw_ans ::rdw::_chrome_line $kind] {Add writes the annotation list}] \
+  return [list [rw_has [rw_ans ::rdw::_chrome_text $kind 1 1] {Add writes the annotation list}] \
                [expr {$kind ne {all}
                       && [rw_ans ::rdw::_edit_list add $kind] ne $kind
                       && [rw_ans ::rdw::button_state add $kind] eq {normal} ? 1 : 0}]]
@@ -6186,6 +6186,48 @@ check {LX14 THE KEYS ARE NAMED ONLY WHERE THEY EXIST: the bare 1/2/3 digits are 
         {Keys 1/2/3: everything this run published (live from the simulator) - press 1 or 2 to edit a list; only Add and Save do anything here.} \
         {Showing everything this run published (live from the simulator) - only Add and Save do anything here.} \
         0 0 1 0]
+
+## LX17/LX18 — ISSUE 1367: THE CHROME SAID `Showing` OVER AN EMPTY PANE, AND
+## `_keys_bound` ASKED THE WRONG WIDGET.
+##
+## Both faces come from one commit pair. Issue 1355 replaced the `Keys 1/2/3:`
+## head -- false in a profile with no such binds -- with `Showing`, which is a
+## claim about the PANE.  MEASURED in a stock profile, through the Tools entry
+## src/xschem.tcl:17638 adds unconditionally: the window opens, `.rdw.p.t`
+## holds ONE character (the Tk text widget's mandatory trailing newline) and
+## `::rdw::blocks` is empty, while the line read `Showing the annotation list
+## (drawn on the sheet) - the buttons edit this list, not the block you are
+## reading.`  Two false statements in one sentence, and the second wording was
+## minted to fix the first.
+##
+## And `_keys_bound` asked `.drw` ALONE, which was right only until issue 1358
+## bound the same digits on `.rdw` so the window could hear its own refresh
+## keys.  After that a stock profile answered 0 while the digits really worked
+## with the keyboard inside the window -- and the two binds are spelled
+## differently (`rdw::key` on the canvas, `rdw::_digit` on the window), so the
+## name match has to know both.
+check {LX17 THE CHROME DOES NOT CLAIM TO BE SHOWING AN EMPTY PANE: `Showing` is a statement about the pane, so with no dump sent it says so instead - and when the digits are live it names the one that would fill it, taken from rdw::_digit_map rather than from a second literal} \
+  [list [rw_ans ::rdw::_chrome_text annotation 1 0] \
+        [rw_ans ::rdw::_chrome_text annotation 0 0] \
+        [rw_ans ::rdw::_chrome_text summary 1 0] \
+        [rw_ans ::rdw::_chrome_text all 1 0] \
+        [rw_count [rw_ans ::rdw::_chrome_text annotation 1 0] {Showing}] \
+        [rw_count [rw_ans ::rdw::_chrome_text annotation 0 0] {you are reading}] \
+        [rw_has [rw_body ::rdw::_chrome_line] {blocks}] \
+        [rw_has [rw_body ::rdw::_digit_for] {_digit_map}]] \
+  [list {No device has been sent here yet - the annotation list (drawn on the sheet). Select a device and press 1.} \
+        {No device has been sent here yet - the annotation list (drawn on the sheet).} \
+        {No device has been sent here yet - the summary list (computed, not drawn). Select a device and press 2.} \
+        {No device has been sent here yet - everything this run published (live from the simulator). Select a device and press 3.} \
+        0 0 1 1]
+
+check {LX18 THE KEYS ARE LOOKED FOR WHERE THEY ACTUALLY ARE: issue 1358 put the same four digits on the window itself, so a canvas-only test answered `no keys` in a stock profile while the keys worked - _keys_bound asks BOTH widgets and knows BOTH spellings of the one door, and rdw::_digit's only act is to call rdw::key so the two names name one thing} \
+  [list [rw_has [rw_body ::rdw::_keys_bound] {.rdw}] \
+        [rw_has [rw_body ::rdw::_keys_bound] {.drw}] \
+        [rw_has [rw_body ::rdw::_keys_bound] {rdw::_digit}] \
+        [rw_has [rw_body ::rdw::_keys_bound] {rdw::key}] \
+        [rw_has [rw_body ::rdw::_digit] {rdw::key}]] \
+  [list 1 1 1 1 1]
 
 check {LX15 THE SELECTION NOTE'S BOUNDARY IS AT EXACTLY ONE LINE, and it is driven at the boundary rather than around it: a one-line drag is the select-a-value-to-copy-it gesture this window exists for and it stays silent, two lines is the gesture the sentence answers and it fires - an off-by-one here passed both suites while lecturing every ordinary copy} \
   [list [rw_ans ::rdw::_selection_note_for 0] \
@@ -7162,7 +7204,13 @@ else { set ::ev_precision $RW_EVP_SAVE }
 ## - the elision they golded is gone - so neither moves the count.  Issue 1365
 ## adds no row to test_rdw_keys_1245.tcl and its `KX_FLOOR` is unchanged at 88.
 ## A floor is raised when rows are added and NEVER lowered to make a run pass.
-set RW_FLOOR 166
+## ⚠ AND RAISED 166 -> 168 BY ISSUE 1367's TWO ROWS, LX17 and LX18 -- the
+## chrome that claimed to be showing an empty pane, and the keys test that
+## asked the canvas after the keys had moved to the window.  Both run on every
+## arm (they are pure-text and structural), so neither is behind a display
+## guard.  A floor is raised when rows are added and NEVER lowered to make a
+## run pass.
+set RW_FLOOR 168
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\

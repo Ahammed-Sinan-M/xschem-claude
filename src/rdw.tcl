@@ -1255,28 +1255,73 @@ proc rdw::_chrome_add_note {kind} {
 
 # DO THE BARE 1/2/3 DIGITS THIS LINE NAMES ACTUALLY REACH THIS WINDOW?
 #
-# It asks the CANVAS's own bindings rather than a profile flag, because the
-# binds are what the user's fingers meet: an rc that rebinds them, a profile
-# that does not source cadence_style_rc, and a future menu route all give the
-# same honest answer.  `rdw::key` is the one thing those binds call and has no
+# It asks the LIVE BINDINGS rather than a profile flag, because the binds are
+# what the user's fingers meet: an rc that rebinds them, a profile that does
+# not source cadence_style_rc, and a future menu route all give the same
+# honest answer.  `rdw::key` is the one thing those binds call and has no
 # other caller, so its name in the script is the test.
+#
+# ⚠ AND IT ASKS BOTH WIDGETS, WHICH IT DID NOT (issue 1367).  It used to ask
+# the CANVAS alone, and that was right only until issue 1358 bound the same
+# four digits on `.rdw` itself so the window could hear its own refresh keys.
+# After that a stock profile answered 0 -- the canvas has no such binds -- and
+# the chrome fell to its unkeyed wording while the digits really did work,
+# with the keyboard inside the window.  The line was then false in the
+# direction that matters least (it under-promised), but the SAME zero drove
+# the "Showing" head, which over-promised: see below.  The keys reach this
+# window if EITHER widget carries them.
 proc rdw::_keys_bound {} {
     if {![rdw::have_tk]} { return 0 }
-    if {[catch {winfo exists .drw} ok] || !$ok} { return 0 }
-    foreach k {<Key-1> <Key-2> <Key-3>} {
-        set b {}
-        if {[catch {bind .drw $k} b]} { return 0 }
-        if {![string match {*rdw::key*} $b]} { return 0 }
+    foreach w {.drw .rdw} {
+        if {[catch {winfo exists $w} ok] || !$ok} { continue }
+        set all 1
+        foreach k {<Key-1> <Key-2> <Key-3>} {
+            set b {}
+            if {[catch {bind $w $k} b]} { set all 0 ; break }
+            ## Either spelling of the one door: the canvas binds call
+            ## `rdw::key` directly, the window's own binds (issue 1358) go
+            ## through `rdw::_digit`, and `rdw::_digit`'s only act is to call
+            ## `rdw::key`.  Both names, because matching one of them made a
+            ## stock profile answer 0 while the digits really worked.
+            if {![string match {*rdw::key*} $b] &&
+                ![string match {*rdw::_digit*} $b]} { set all 0 ; break }
+        }
+        if {$all} { return 1 }
     }
-    return 1
+    return 0
 }
 
-# THE TEXT, PURE, SO BOTH VALUES OF `keyed` ARE ASSERTED ON THE ARM WITH NO
-# DISPLAY AT ALL (row LX14).  `rdw::_chrome_line` is the one caller and is the
-# only thing here that touches the live keyboard.
-proc rdw::_chrome_text {kind keyed} {
+# THE TEXT, PURE, SO EVERY COMBINATION OF `keyed` AND `filled` IS ASSERTED ON
+# THE ARM WITH NO DISPLAY AT ALL (row LX14).  `rdw::_chrome_line` is the one
+# caller and is the only thing here that touches the live keyboard or the
+# store.
+#
+# ⚠ `Showing` IS A CLAIM ABOUT THE PANE, AND THE PANE CAN BE EMPTY (issue
+# 1367).  MEASURED in a stock profile, driven through the Tools menu entry
+# src/xschem.tcl:17638 adds unconditionally: the window opens, `.rdw.p.t` holds
+# ONE character -- the Tk text widget's mandatory trailing newline -- and
+# `::rdw::blocks` is empty, while this line read `Showing the annotation list
+# (drawn on the sheet) - the buttons edit this list, not the block you are
+# reading.`  Two false statements in one sentence: nothing was being shown, and
+# there was no block to be reading.  The previous wording, `Keys 1/2/3:`, was
+# false in a stock profile for its own reason and was replaced BY that
+# sentence; a third wording that is false in a fourth way is not progress, so
+# the emptiness is asked about rather than assumed.
+#
+# The three heads say only what is true of the state they are in:
+#   filled          -> `Showing <list>`, which is now a claim the pane backs;
+#   empty, keyed    -> nothing is here yet AND the way to put something here;
+#   empty, unkeyed  -> nothing is here yet, and no promise about a key.
+proc rdw::_chrome_text {kind keyed {filled 1}} {
     set p [rdw::_list_phrase $kind]
     if {$p eq {}} { return {} }
+    if {!$filled} {
+        set h "No device has been sent here yet - $p"
+        if {$keyed} {
+            return "$h. Select a device and press [rdw::_digit_for $kind]."
+        }
+        return "$h."
+    }
     set head [expr {$keyed ? "Keys 1/2/3: $p" : "Showing $p"}]
     if {$kind eq {all}} {
         set s "$head -"
@@ -1287,8 +1332,19 @@ proc rdw::_chrome_text {kind keyed} {
  reading.[rdw::_chrome_add_note $kind]"
 }
 
+# WHICH DIGIT SELECTS THIS LIST, out of `rdw::_digit_map` and never out of a
+# second literal -- the map is already the one answer issue 1358's row KB1
+# locks against src/cadence_style_rc, so a digit that changes meaning changes
+# here too.
+proc rdw::_digit_for {kind} {
+    foreach {d k} [rdw::_digit_map] { if {$k eq $kind} { return $d } }
+    return 1
+}
+
 proc rdw::_chrome_line {kind} {
-    return [rdw::_chrome_text $kind [rdw::_keys_bound]]
+    variable blocks
+    return [rdw::_chrome_text $kind [rdw::_keys_bound] \
+                [expr {[llength $blocks] > 0 ? 1 : 0}]]
 }
 
 # THE WINDOW TITLE.  The SECOND surface, not the first: a window manager may
