@@ -3266,6 +3266,24 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
     if {![info exists ::rdw::statusmsg]} { return NO-VAR }
     return $::rdw::statusmsg
   }
+  ## ⚠ THE STATUS SURFACE IS A `text` SINCE ISSUE 1362, so the three calls
+  ## below are the text spelling of what CP14 and CP16 used to say to an
+  ## `entry`.  Neither row's PROPERTY moved and neither row's expected values
+  ## moved; only the widget's own vocabulary did -- `selection present/range/
+  ## clear` for an entry is `tag ranges/add/remove sel` for a text.  The
+  ## difference that matters is underneath: an entry's selection was a pair of
+  ## INDICES that survived a rewrite (issue 1351's defect), while a `sel` tag
+  ## is a hold on the characters and dies with the repaint.  CP16's last leg is
+  ## therefore the leg that carries the row now: `rdw::status` repaints only
+  ## when the text really changed, so a line rewritten to what it already said
+  ## must still keep the user's selection.
+  proc cp_smsg_present {} {
+    set r [cp_w .rdw.s.msg tag ranges sel]
+    if {[string match {ERR:*} $r]} { return $r }
+    return [expr {[llength $r] >= 2 ? 1 : 0}]
+  }
+  proc cp_smsg_range {a b} { catch {.rdw.s.msg tag add sel 1.$a 1.$b} }
+  proc cp_smsg_clear {} { catch {.rdw.s.msg tag remove sel 1.0 end} }
   ## ⚠ EVENTS CARRY AN EXPLICIT, MONOTONIC TIME. Tk decides double-click from
   ## the event's own `time` field, so two presses generated back to back are a
   ## double only by accident of the clock - and `event generate` REFUSES a
@@ -3915,9 +3933,13 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
     [list 1 1 {} {SENTINEL-EMPTY-WINDOW} 0 1 1 1 {SENTINEL-BLANK-SPAN} 0]
 
   # --- CP14 THE SELECTION IN THIS WINDOW'S OWN STATUS LINE ------------------
-  ## ⚠ ISSUE 1344 DEFECTS b AND c. `.rdw.s.msg` is a readonly `entry` with
-  ## -exportselection 1 and a real drag selects in it - driven below with
-  ## ButtonPress / B1-Motion / ButtonRelease, not with `selection range` - and
+  ## ⚠ ISSUE 1344 DEFECTS b AND c. `.rdw.s.msg` is a disabled `text` with
+  ## -exportselection 1 and a real drag selects in it (issue 1362 changed the
+  ## class from a readonly `entry` so a long verdict could wrap instead of
+  ## being amputated; tk::TextButton1 declines the keyboard on a non-normal
+  ## state exactly as tk::EntryButton1 did, so issue 1308 is untouched) -
+  ## driven below with ButtonPress / B1-Motion / ButtonRelease, not with a
+  ## hand-added `sel` tag - and
   ## it is where item B5 writes the settings-file path, the single most
   ## copy-worthy string in the window. Ruling DD-5 gave this window a copy that
   ## works from anywhere in it; "anywhere in it" has to include that widget.
@@ -3961,7 +3983,7 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
     cp_ev .rdw.s.msg <ButtonRelease-1> -x [expr {$CP14_EW - 5}] -y $CP14_EY
   }
   catch {update}
-  set CP14_PRESENT [cp_w .rdw.s.msg selection present]
+  set CP14_PRESENT [cp_smsg_present]
   set CP14_PRIM NOPRIM
   catch {set CP14_PRIM [selection get -selection PRIMARY]}
   set CP14_MIRROR $::rdw::selspan
@@ -3971,8 +3993,8 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
   catch {update}
   set CP14_CLIP [cp_clip]
   set CP14_AFTER [cp_status]
-  set CP14_STILL [cp_w .rdw.s.msg selection present]
-  catch {.rdw.s.msg selection clear}
+  set CP14_STILL [cp_smsg_present]
+  cp_smsg_clear
   catch {update}
   cp_w .rdw.p.t tag add sel 2.0 {2.0 lineend}
   catch {update}
@@ -4035,10 +4057,17 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
   # --- CP16 A REWRITTEN STATUS LINE PUTS DOWN THE SELECTION IT INVALIDATES --
   ## ⚠ ISSUE 1351, found by issue 1344's own adversary, in TWO presses of the
   ## chord item R3 added. An entry's selection is a pair of INDICES, not a hold
-  ## on the characters. `rdw::status` replaces `::rdw::statusmsg`, the
-  ## -textvariable of `.rdw.s.msg`, and the range used to survive that rewrite
-  ## verbatim - so it came to cover a slice of the NEW sentence, text the user
-  ## had never selected.
+  ## on the characters. `rdw::status` replaces `::rdw::statusmsg`, which was
+  ## the -textvariable of `.rdw.s.msg`, and the range used to survive that
+  ## rewrite verbatim - so it came to cover a slice of the NEW sentence, text
+  ## the user had never selected.
+  ##
+  ## ⚠ AND THE ROW SURVIVES ISSUE 1362'S WIDGET SWAP ON PURPOSE. A `sel` tag
+  ## dies with the repaint, so the stale-range half is now structurally
+  ## impossible - but only because the repaint happens, and `rdw::status`
+  ## repaints only when the text really changed. The LAST leg is what holds
+  ## that: a line rewritten to the string it already held keeps the user's
+  ## selection. Delete the change guard and this row is the one that says so.
   ##
   ## MEASURED before the fix: the line reads `alpha    beta`; the user selects
   ## the four spaces (a double-click on the gap does exactly this); Ctrl-C is
@@ -4056,9 +4085,9 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
   kx_ans ::rdw::status {alpha    beta}
   catch {update}
   set CP16_LINE0 [cp_status]
-  catch {.rdw.s.msg selection range 5 9}
+  cp_smsg_range 5 9
   catch {update}
-  set CP16_PRESENT0 [cp_w .rdw.s.msg selection present]
+  set CP16_PRESENT0 [cp_smsg_present]
   set CP16_SEL0 NOSEL
   catch {set CP16_SEL0 [selection get -selection PRIMARY]}
   cp_setclip {SENTINEL-CP16}
@@ -4067,19 +4096,19 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
   catch {update}
   set CP16_CLIP1 [cp_clip]
   set CP16_LINE1 [cp_status]
-  set CP16_PRESENT1 [cp_w .rdw.s.msg selection present]
+  set CP16_PRESENT1 [cp_smsg_present]
   cp_ev $CP16_HERE <Control-Key-c>
   catch {update}
   set CP16_CLIP2 [cp_clip]
   ## AND THE FENCE: the same text again must NOT put a live selection down.
   kx_ans ::rdw::status {alpha    beta}
   catch {update}
-  catch {.rdw.s.msg selection range 0 5}
+  cp_smsg_range 0 5
   catch {update}
   kx_ans ::rdw::status {alpha    beta}
   catch {update}
-  set CP16_KEPT [cp_w .rdw.s.msg selection present]
-  catch {.rdw.s.msg selection clear}
+  set CP16_KEPT [cp_smsg_present]
+  cp_smsg_clear
   check {CP16 A REWRITTEN STATUS LINE MUST NOT LEAVE A SELECTION STANDING OVER TEXT THE USER NEVER CHOSE: a refused copy replaces that line, so the indices the user's selection was made of no longer mean what they meant - they must be put down, or the very next press of the same chord silently copies a slice of the refusal sentence. And a line rewritten to the string it already held has invalidated nothing, so a selection standing in it survives} \
     [list [expr {$CP16_LINE0 eq {alpha    beta} ? 1 : 0}] \
           $CP16_PRESENT0 \

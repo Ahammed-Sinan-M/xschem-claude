@@ -81,3 +81,11 @@ nine `/tmp/Xschem.log.*` byte-identical by md5 before and after, and
 This is a caller-side mitigation, not the fix -- it protects whoever remembers
 it, which is exactly the thing a `--logdir` argument in the harness would stop
 depending on.
+
+**AND THE NEXT PASS PROVED THAT SENTENCE, 2026-09-05 (issue 1362).** Its brief
+carried "NEVER WRITE INTO /tmp/Xschem.log.N" as a hard rule in capitals; it ran
+its BASELINE T1 before it had read this file, and six of the ten slots changed
+md5. The content lost was already test output from an earlier run the same
+afternoon, so nothing of the user's died a second time -- but a rule in capitals
+plus a mitigation in a file nobody has read yet is not a defence. Its own final
+T1 used `TMPDIR` and every slot came back byte-identical.

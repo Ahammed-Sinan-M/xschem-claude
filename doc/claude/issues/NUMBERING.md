@@ -1929,4 +1929,31 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   2 only, so it resizes as the identity changes — look debt
   `rdw_1361_chrome_width_measured`.
 
-**The next free number is 1362.**
+- **1362** — the RDW's status line silently amputated its own sentences, and
+  the half it took was the answer. `.rdw.s.msg` was a one-line `entry` 887 px
+  wide at the window's own default 893x498, `-xscrollcommand` empty and no
+  scrollbar; issue 1356's Delete verdict is 147 characters / 1045 px, so `xview`
+  parked at 0.0-0.85 and the reader got "... the buttons act on" with " the
+  shaded row alone." off the edge — the clause minted to answer the user's
+  confusion, cut exactly where it answers it. Measured independently by
+  adversaries B1 and B2 and by the completeness critic. **NOT ONE STRING**:
+  three more shipped sentences overflowed the same field (158, 128 and 191
+  characters) and three of `rdw::status`'s 34 call sites interpolate an
+  unbounded path. **FIXED** by changing the SURFACE, not the wording: a
+  wrapping read-only `text` that takes the lines its message needs, borrowed
+  from the pane and given back, with `rdw::status_max_lines` as the named cap
+  and `rdw::_status_cut_mark` marking any cut past it — `cadence::_annot_fit`'s
+  own decision (issue 0639) one surface over. `::rdw::statusmsg` still holds
+  every sentence whole. **No pixel constant anywhere**: `rdw::_status_show`
+  asks the live widget `count -displaylines`, so it is right on whatever font
+  the user's server resolves. `<Configure>` re-fits on resize and
+  `<<Selection>>` refuses the text widget's mandatory trailing newline (caught
+  by pre-existing row CP14). Fenced by **SL1..SL8** of
+  `test_rdw_window_1245.tcl` (`RW_FLOOR` 162 -> 165), all eight red on the
+  pre-fix source, each proved by a sabotage. Rows CP14/CP16 of
+  `test_rdw_keys_1245.tcl` re-spelled for the new class, names and expectations
+  unmoved, `KX_FLOOR` unchanged at 88. Carries **the pixel half unpaid**: look
+  debt `rdw_1362_status_wrap` and rule debt **1362** (the cap, and letting the
+  window's height follow the verdict).
+
+**The next free number is 1363.**

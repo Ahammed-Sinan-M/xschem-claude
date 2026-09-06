@@ -6290,6 +6290,359 @@ if {$live_tk} {
   catch {update idletasks}
 }
 
+# ============================================================================
+# SECTION SL — ISSUE 1362: A SENTENCE THE STATUS SURFACE CANNOT SHOW IS A
+# SENTENCE THE USER CANNOT READ
+# ============================================================================
+# THE USER'S CONFUSION, AND THE CLAUSE WRITTEN TO ANSWER IT: "I select a bunch
+# of lines ... and press Delete ... The delete did not have an effect."  Issue
+# 1356 answered that in the verdict itself -- "Selecting lines does not choose
+# them for editing - the buttons act on the shaded row alone."  Three
+# independent measurements (adversaries B1 and B2 and the completeness critic)
+# then agreed the answer never reached the screen.
+#
+# MEASURED at HEAD 2004f5e6 on :99, and re-measured by this pass at 773920f1:
+# `.rdw.s.msg` was a one-line `entry` 887 px wide at the window's own default
+# 893x498, with -xscrollcommand empty and no scrollbar; the post-drag verdict
+# is 147 characters and 1045 px of TkTextFont, so `xview` parked at 0.0-0.85
+# and the reader was left with
+#   "... - the buttons act on"
+# and no "the shaded row alone."  The half that answers the question is the
+# half that was gone, and a sentence that stops mid-clause reads as a second
+# bug rather than as an answer.
+#
+# ⚠ AND IT IS NOT ONE STRING.  Two more shipped sentences overflowed the same
+# entry (the `$notin` refusal at 1082 px and "no row is marked ..." at 893 px),
+# and `rdw::status` has 34 call sites, three of which paste an unbounded name
+# or filesystem path into the sentence.  A shorter clause would have moved the
+# cliff, not removed it: the next sentence anyone writes falls off it too.
+# So this section fences the SURFACE, not the sentence -- for ANY message, all
+# of it is displayed, and past the cap the cut is MARKED.
+#
+# ⚠ AND NOT ONE PIXEL CONSTANT ANYWHERE, WHICH IS THE POINT OF THE SHAPE.
+# 147 chars / 1045 px / 887 px are font metrics as Xvfb resolves TkTextFont.
+# The user's own server ($DISPLAY 172.20.160.1:0, vendor HC-Consult) may
+# substitute a different font, so a fix -- or a row -- carrying "1051 px" is
+# wrong on their machine by construction.  Every leg below asks the LIVE
+# WIDGET, in whatever font this server resolved, how many display lines the
+# sentence needs and whether its last character has a bbox.  The same code and
+# the same rows are therefore correct on any server; what the user still owes
+# is their eyes, not a number (look debt rdw_1362_status_wrap).
+#
+# RED BEFORE THE FIX: all seven.  SL1/SL3 answer NOPROC (`rdw::_status_height`,
+# `rdw::status_max_lines`, `rdw::_status_cut_mark` did not exist), SL2 counts
+# the `entry .rdw.s.msg` that did, and SL4/SL5/SL6/SL7 ask an `entry` for
+# `count -displaylines`, `yview` and `cget -height` and get an error.
+
+## THE ONE PREDICATE THE SECTION IS BUILT ON.  Four legs, none of them a
+## constant: the surface holds the WHOLE model (nothing was elided), it is
+## tall enough for every display line the model needs, the last character of
+## it really has a bounding box on screen, and nothing is scrolled out of
+## view.  A one-line entry fails all four; so would a wrapping surface that
+## capped its height and said nothing about it.
+proc sl_probe {} {
+  if {[rw_w winfo exists .rdw.s.msg] ne {1}} { return NOWIDGET }
+  set model [expr {[info exists ::rdw::statusmsg] ? $::rdw::statusmsg : {NOVAR}}]
+  set shown [rw_w .rdw.s.msg get 1.0 {end - 1c}]
+  set want  [rw_w .rdw.s.msg count -displaylines 1.0 end]
+  set h     [rw_w .rdw.s.msg cget -height]
+  set yv    [rw_w .rdw.s.msg yview]
+  set bb    [rw_w .rdw.s.msg bbox {end - 2c}]
+  return [list [expr {$shown eq $model && $model ne {} ? 1 : 0}] \
+               [expr {[string is integer -strict $want] \
+                      && [string is integer -strict $h] && $want <= $h ? 1 : 0}] \
+               [expr {[sl_len $bb] == 4 ? 1 : 0}] \
+               [expr {$yv eq {0.0 1.0} ? 1 : 0}]]
+}
+## ⚠ THE ANSWER DISCIPLINE, AND THIS SECTION PAID FOR IT.  `rw_w` hands back
+## `ERR:bad option "tag": must be bbox, cget, ...` when the surface is the
+## pre-fix `entry`, and `llength` on THAT string raises `list element in quotes
+## followed by ":"`.  MEASURED: it killed the whole file at row SL8 in the RED
+## state -- `ok` lines, seven FAILs and NO verdict -- which is item A2's lesson
+## 6 and the reason the header of this file says every call goes through a
+## wrapper.  A row that cannot fire in the red state proves nothing.
+proc sl_len {v} {
+  if {[catch {llength $v} n]} { return -1 }
+  return $n
+}
+proc sl_sel_present {} {
+  return [expr {[sl_len [rw_w .rdw.s.msg tag ranges sel]] >= 2 ? 1 : 0}]
+}
+proc sl_set {s} {
+  rw_ans ::rdw::status $s
+  catch {update idletasks}
+  catch {update}
+  return {}
+}
+## A message of an exact character length, in one line, with real word breaks
+## so the wrap has somewhere to happen.
+proc sl_msg {n} {
+  set s {}
+  while {[string length $s] < $n} { append s {the quick brown fox jumps over the lazy dog } }
+  set s [string range $s 0 [expr {$n - 1}]]
+  ## Exactly $n characters, and never ending in a space -- a trailing space is
+  ## invisible in the widget and would make the length legs argue about
+  ## something the reader cannot see.
+  if {[string index $s end] eq { }} { set s [string replace $s end end x] }
+  return $s
+}
+
+set SL_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
+
+# --- SL1  THE CAP IS A RULED NUMBER AND THE CLAMP IS PURE --------------------
+## The height the surface may take is the one decision in this fix that is not
+## a measurement, so it is a named proc with a number in it rather than a
+## literal inside the painter -- and the table below is the ruling.  Four lines
+## of the window's own width is roughly 500 characters of the default font,
+## against a longest shipped sentence of about 200; the cap exists for the
+## THREE sentences that paste an unbounded path, not for the authored ones.
+## Change the cap and this row goes red, which is correct: it is the user's
+## number (rule debt 1362), not the implementer's.
+set SL1_CAP [rw_ans ::rdw::status_max_lines]
+set SL1_H {}
+foreach _v [list 0 1 2 3 4 5 99 -3 {} x] { lappend SL1_H [rw_ans ::rdw::_status_height $_v] }
+check {SL1 THE STATUS SURFACE'S HEIGHT IS A CLAMPED, PURE FUNCTION WITH A NAMED CAP: nothing below one line, nothing above the cap, and a non-integer or negative want - which is what a widget that has never been mapped answers - lands on one line rather than raising inside a status write} \
+  [list $SL1_CAP $SL1_H] \
+  [list 4 {1 1 2 3 4 4 4 1 1 1}]
+
+# --- SL2  ONE SURFACE, ONE WRITER, AND IT WRAPS ------------------------------
+## STRUCTURAL, because the defect was the WIDGET CLASS and no behavioural row
+## can see a class.  The status surface must be a text widget that wraps (an
+## entry cannot wrap at all, which is the whole defect), it must no longer be
+## driven by a -textvariable -- two writers for one fact, and the second one
+## invisible from Tcl -- and the model must reach the screen through exactly
+## one painter, so a later call site cannot put a sentence on screen without
+## the fit.
+check {SL2 ONE WRAPPING SURFACE AND ONE WRITER FOR IT: the status line is no longer a one-line entry, it is a wrapping text widget, no -textvariable drives it behind the painter's back, and exactly one place in the file puts characters into it - a second writer is a sentence that reaches the screen without being fitted} \
+  [list [rw_count $SL_F {entry .rdw.s.msg}] \
+        [rw_count $SL_F {text .rdw.s.msg}] \
+        [rw_count $SL_F {-textvariable ::rdw::statusmsg}] \
+        [rw_count $SL_F {.rdw.s.msg insert}] \
+        [rw_count $SL_F {.rdw.s.msg delete}] \
+        [rw_has $SL_F {rdw::_status_show}]] \
+  {0 1 0 1 1 1}
+
+# --- SL3  THE MODEL IS THE RECORD, AND THE CUT IS MARKED IN ONE PLACE --------
+## `cadence::_annot_fit` (utils/annot_mode.tcl) took this decision for the C
+## status line and issue 0639 paid for it: the record keeps the sentence WHOLE
+## and the bar shows a MARKED elision, never an amputation.  This section
+## copies that split.  `::rdw::statusmsg` is the record here -- it is what the
+## --nogui arm asserts against, what rdw::copy hands over and what every other
+## row in this file reads -- so the painter may shorten what it DRAWS and may
+## never shorten what it HOLDS.
+sl_set [sl_msg 4000]
+set SL3_LEN [expr {[info exists ::rdw::statusmsg] ? [string length $::rdw::statusmsg] : -1}]
+sl_set "one\ntwo\tthree"
+set SL3_ONELINE [expr {[info exists ::rdw::statusmsg] ? $::rdw::statusmsg : {NOVAR}}]
+check {SL3 WHAT THE WINDOW SHOWS MAY BE SHORTER THAN WHAT IT HOLDS, NEVER THE OTHER WAY ROUND: the cut marker has exactly one definition, a four-thousand-character sentence leaves the model four thousand characters long, and the one-lining that makes a status line a status line is untouched} \
+  [list [rw_ans ::rdw::_status_cut_mark] \
+        [rw_count $SL_F {proc rdw::_status_cut_mark}] \
+        $SL3_LEN $SL3_ONELINE] \
+  [list {...} 1 4000 {one two three}]
+
+## ---------------------------------------------------------------------------
+## THE LIVE HALF.  Four rows, all of them asking the real widget on a real
+## window at the window's OWN DEFAULT SIZE -- no `wm geometry`, because "the
+## user has to widen it first" is the defect, not the fix.
+if {$live_tk} {
+  rw_ans ::rdw::open
+  ## ⚠ THE LIST IDENTITY IS PINNED FIRST, AND ISSUE 1361 IS WHY.  The chrome
+  ## sentence for list 2 is the longest of the three and grows the window
+  ## 893 -> 971 px on that identity alone, so a section that measured the
+  ## window's width before a later row changed the identity would blame the
+  ## status line for the chrome's own resize.
+  rw_ans ::rdw::set_list annotation
+  catch {update idletasks}
+  catch {update}
+  set SL_W0 [rw_w winfo width .rdw]
+  set SL_MAPPED [expr {[string is integer -strict [rw_w winfo width .rdw.s.msg]] \
+                       && [rw_w winfo width .rdw.s.msg] > 400 ? 1 : 0}]
+
+  # --- SL4  THE GENERAL PROPERTY, OVER A RANGE OF LENGTHS -------------------
+  ## ⚠ QUANTIFIED OVER LENGTH, WHICH IS WHY IT CATCHES THE NEXT SENTENCE.  A
+  ## row that golded the 147-character verdict would have gone green the moment
+  ## someone shortened that one string and stayed green for the next one.  The
+  ## table below spans a short verdict, the exact length the three adversaries
+  ## measured, the longest sentence this file actually ships (the pick-running
+  ## refusal, about 200 characters) and half again beyond it.  All four must
+  ## read in full at the default size.
+  set SL4 {}
+  foreach _n {20 147 200 260} {
+    sl_set [sl_msg $_n]
+    lappend SL4 [sl_probe]
+  }
+  check {SL4 EVERY STATUS SENTENCE READS IN FULL AT THE WINDOW'S OWN DEFAULT SIZE, WHATEVER ITS LENGTH AND WHATEVER FONT THIS SERVER RESOLVED: the surface holds the whole model, it is tall enough for every display line that model needs, the last character really has a bounding box, and nothing is scrolled out of sight - asked of the live widget at four lengths spanning the shortest verdict to half again beyond the longest sentence this file ships} \
+    [list $SL_MAPPED $SL4] \
+    [list 1 {{1 1 1 1} {1 1 1 1} {1 1 1 1} {1 1 1 1}}]
+
+  # --- SL5  THE USER'S OWN GESTURE, AND THE ANSWER REACHING THE SCREEN ------
+  ## BT31 proved the sentence is SAID.  This row is the other half and it is
+  ## the item: the sentence is also READ.  Same gesture, same fixture -- a
+  ## mouse selection over every parameter row of a block, one Delete -- and the
+  ## verdict is taken out of `::rdw::statusmsg` rather than typed here, so a
+  ## reworded clause is still measured at its real length.
+  proc ::rdw::scope_dialog {args} { return $::sl_dlg_answer }
+  set ::sl_dlg_answer {scope broad list annotation}
+  b5_lists_reset
+  ## ⚠ THE SECTION RE-REGISTERS THE FIXTURE'S DESCRIPTOR AGAINST WHATEVER
+  ## SYMBOL TYPE `M1` HAS BY NOW, AND IT IS NOT TIDINESS.  Section NW loads its
+  ## own `nw.sch` to drive the narrowing, so by the time this section runs
+  ## `op_annot::type M1` answers `nw_dev` rather than `b5ndev` and a Delete
+  ## refuses with "no operating-point descriptor in this design any more" --
+  ## which is a true sentence about the wrong thing and would have made this
+  ## row measure a refusal instead of the verdict it exists for.
+  set SL5_TY [rw_ans ::op_annot::type M1]
+  set SL5_DESC0 [rw_ans ::op_annot::descriptor $SL5_TY]
+  catch {op_annot::register $SL5_TY $::B5_DESC}
+  rw_ans ::op_param_lists::set_class $SL5_TY b5cls
+  b5_fixture_blocks
+  rw_ans ::rdw::set_list annotation
+  rw_ans ::rdw::render_pane
+  catch {update idletasks}
+  ## ⚠ THE ROWS ARE PICKED FROM A BLOCK WHOSE SUBJECT STILL RESOLVES, AND THAT
+  ## IS NOT FUSSINESS.  `rdw::push` puts the newest block FIRST, so pane line 4
+  ## belongs to M2 -- an instance section NW's own `nw.sch` does not have -- and
+  ## a Delete aimed there refuses with "no operating-point descriptor in this
+  ## design any more".  That is a true sentence about the wrong thing, and a
+  ## row that measured it would have been green about a refusal instead of the
+  ## verdict this section exists for.
+  set SL5_PR {} ; set SL5_N 0
+  foreach _e [b5_flat] {
+    incr SL5_N
+    if {[rw_ans ::rdw::_row_param $_e] eq {}} continue
+    set _loc [rw_ans ::rdw::_locate $SL5_N]
+    if {[sl_len $_loc] != 2} continue
+    if {[rw_ans ::rdw::_subject [lindex $_loc 0]] eq {}} continue
+    lappend SL5_PR $SL5_N
+  }
+  catch {.rdw.p.t tag remove sel 1.0 end}
+  catch {.rdw.p.t tag add sel [lindex $SL5_PR 0].0 [expr {[lindex $SL5_PR end] + 1}].0}
+  catch {update idletasks}
+  set SL5_SEL [rw_ans ::rdw::_selection_lines]
+  rw_ans ::rdw::set_row [lindex $SL5_PR 0]
+  set SL5_MSG [b5_press delete]
+  catch {update idletasks}
+  catch {update}
+  set SL5_PROBE [sl_probe]
+  catch {.rdw.p.t tag remove sel 1.0 end}
+  ## The descriptor this row borrowed goes back, so section KB and the hygiene
+  ## rows see the design section NW left behind and not the one this row made.
+  if {$SL5_DESC0 ne {} && ![string match {NOPROC*} $SL5_DESC0]} {
+    catch {op_annot::register $SL5_TY $SL5_DESC0}
+  }
+  check {SL5 ISSUE 1356'S CLAUSE ARRIVES WHERE THE USER CAN READ IT: the user's own gesture - a selection covering every parameter row, then one Delete - produces the verdict that carries the answer, that verdict is longer than one line of this window, and every character of it is on screen at the window's default size instead of the last clause being parked past the right-hand edge with no scrollbar and no marker} \
+    [list [expr {$SL5_SEL >= 2 ? 1 : 0}] \
+          [b5_ok1 $SL5_MSG {the buttons act on the shaded row alone}] \
+          [expr {[string length $SL5_MSG] > 120 ? 1 : 0}] \
+          $SL5_PROBE] \
+    [list 1 1 1 {1 1 1 1}]
+
+  # --- SL6  PAST THE CAP THE CUT IS MARKED, NEVER SILENT --------------------
+  ## The three sentences that paste a filesystem path can be arbitrarily long,
+  ## so a cap is unavoidable and the only question is what happens AT it.
+  ## Issue 0639's answer, one surface over: a marked elision, so the reader
+  ## knows a tail exists, and the whole sentence still in the record.  A silent
+  ## amputation is the defect this section exists about; a capped surface that
+  ## said nothing would be the same defect with a taller widget.
+  sl_set [sl_msg 4000]
+  set SL6_SHOWN [rw_w .rdw.s.msg get 1.0 {end - 1c}]
+  set SL6_MODEL [expr {[info exists ::rdw::statusmsg] ? $::rdw::statusmsg : {NOVAR}}]
+  set SL6_MARK  [rw_ans ::rdw::_status_cut_mark]
+  set SL6_HEAD  [string range $SL6_SHOWN 0 [expr {[string length $SL6_SHOWN] - [string length $SL6_MARK] - 1}]]
+  check {SL6 A SENTENCE TOO LONG FOR ANY WINDOW IS CUT WITH A MARK AND IS STILL HELD WHOLE: past the cap the surface uses exactly the capped number of lines, what it shows ends in the elision marker, what it shows without that marker is a genuine prefix of the sentence, the model still carries the sentence entire, and nothing is scrolled out of view - the reader is told there is more rather than handed a sentence that stops mid-word} \
+    [list [rw_w .rdw.s.msg cget -height] \
+          [rw_w .rdw.s.msg count -displaylines 1.0 end] \
+          [expr {[string length $SL6_SHOWN] < [string length $SL6_MODEL] ? 1 : 0}] \
+          [expr {[string match "*$SL6_MARK" $SL6_SHOWN] ? 1 : 0}] \
+          [expr {[string length $SL6_HEAD] > 0 && [string first $SL6_HEAD $SL6_MODEL] == 0 ? 1 : 0}] \
+          [string length $SL6_MODEL] \
+          [expr {[rw_w .rdw.s.msg yview] eq {0.0 1.0} ? 1 : 0}]] \
+    [list $SL1_CAP $SL1_CAP 1 1 1 4000 1]
+
+  # --- SL7  THE ROOM IS BORROWED FROM THE PANE AND GIVEN BACK ---------------
+  ## The three costed alternatives all spent something the user owns.
+  ## Widening the window's default is a per-sentence answer to a general
+  ## problem and a window manager may refuse it; a permanently taller status
+  ## bar spends 17 px of pane on every session for a sentence most verdicts
+  ## never need.  What this spends is a line of the PANE, and only while a long
+  ## verdict is standing.  The row fences both halves - it grows, and it gives
+  ## the line back - and fences the one thing that must never move, the
+  ## window's own width, because a status line that widens the window is the
+  ## option that was costed and rejected.
+  sl_set [sl_msg 20]
+  set SL7_H1 [rw_w .rdw.s.msg cget -height]
+  set SL7_S1 [rw_w winfo height .rdw.s]
+  set SL7_W1 [rw_w winfo width .rdw]
+  sl_set [sl_msg 260]
+  set SL7_H2 [rw_w .rdw.s.msg cget -height]
+  set SL7_S2 [rw_w winfo height .rdw.s]
+  set SL7_W2 [rw_w winfo width .rdw]
+  sl_set [sl_msg 20]
+  set SL7_H3 [rw_w .rdw.s.msg cget -height]
+  set SL7_S3 [rw_w winfo height .rdw.s]
+  set SL7_W3 [rw_w winfo width .rdw]
+  check {SL7 THE SURFACE BORROWS A LINE FROM THE PANE FOR A LONG VERDICT AND GIVES IT BACK: at rest it is one line and costs nothing, a verdict that needs more gets more and the frame really grows on screen, the very next short verdict returns it, and the window's own WIDTH never moves - widening the window was the costed alternative and it is the one a window manager is free to refuse} \
+    [list $SL7_H1 [expr {$SL7_H2 > $SL7_H1 ? 1 : 0}] $SL7_H3 \
+          [expr {$SL7_S2 > $SL7_S1 ? 1 : 0}] [expr {$SL7_S3 == $SL7_S1 ? 1 : 0}] \
+          [expr {$SL7_W1 eq $SL_W0 && $SL7_W2 eq $SL_W0 && $SL7_W3 eq $SL_W0 ? 1 : 0}]] \
+    [list 1 1 1 1 1 1]
+
+  # --- SL8  A NARROWER WINDOW RE-ASKS THE QUESTION --------------------------
+  ## ⚠ THE FIT IS NOT COMPUTED ONCE.  A sentence that fitted two lines at
+  ## 893 px needs three at 600, and a surface that measured itself only when
+  ## the MESSAGE changed would hide the tail of a sentence the user was already
+  ## reading the moment they dragged the window narrower - the same silent
+  ## amputation this section is about, reached by a gesture instead of by a
+  ## sentence.  `bind .rdw.s.msg <Configure> {rdw::_status_refit}` is the
+  ## answer and this row is its only fence.
+  ##
+  ## ⚠ AND IT IS ALSO THE PROOF THAT THE FIX DEGRADES CORRECTLY.  `wm geometry`
+  ## pins the toplevel, so from here on the window does NOT grow to make room -
+  ## which is exactly what a window manager that refuses the resize would do,
+  ## and what a user who sized the window themselves has done.  The extra line
+  ## then comes out of the PANE, and the sentence still reads in full.  If that
+  ## were not so, the whole fix would depend on a resize request being granted.
+  set SL8_G0 [rw_w wm geometry .rdw]
+  sl_set [sl_msg 260]
+  set SL8_H0 [rw_w .rdw.s.msg cget -height]
+  set SL8_P0 [rw_w winfo height .rdw.p.t]
+  catch {wm geometry .rdw 600x[winfo height .rdw]}
+  catch {update idletasks}
+  catch {update}
+  set SL8_W [rw_w winfo width .rdw]
+  set SL8_H1 [rw_w .rdw.s.msg cget -height]
+  set SL8_P1 [rw_w winfo height .rdw.p.t]
+  set SL8_PROBE [sl_probe]
+  ## ⚠ AND THE REFIT MAY NOT PUT DOWN A SELECTION IT DID NOT INVALIDATE.  A
+  ## repaint destroys the `sel` tag, and this refit runs on EVERY resize - so a
+  ## user dragging the window's edge while the settings-file path is selected
+  ## in the status line would lose it under their own hand, which is issue
+  ## 1344 defect c reached by a different gesture.
+  catch {.rdw.s.msg tag add sel 1.0 {1.0 + 5c}}
+  catch {update idletasks}
+  set SL8_SEL0 [sl_sel_present]
+  catch {wm geometry .rdw 640x[winfo height .rdw]}
+  catch {update idletasks}
+  catch {update}
+  set SL8_SEL1 [sl_sel_present]
+  catch {.rdw.s.msg tag remove sel 1.0 end}
+  catch {wm geometry .rdw $SL8_G0}
+  catch {update idletasks}
+  catch {update}
+  check {SL8 A WINDOW MADE NARROWER RE-ASKS HOW MANY LINES THE SENTENCE NEEDS, AND THE ROOM COMES OUT OF THE PANE: the same sentence needs more lines at 600 px than at the default width, the surface really takes them, every character is still on screen, and the pane is what gave the space up - so the fix does not depend on a window manager granting a resize, which is the one thing the costed widen-the-window alternative did depend on - and a selection standing in the status line survives the resize, because a refit that repainted text it had not changed would put the user's own selection down under their hand} \
+    [list [expr {$SL8_W < 700 ? 1 : 0}] \
+          [expr {$SL8_H1 > $SL8_H0 ? 1 : 0}] \
+          [expr {$SL8_P1 < $SL8_P0 ? 1 : 0}] \
+          $SL8_PROBE $SL8_SEL0 $SL8_SEL1] \
+    [list 1 1 1 {1 1 1 1} 1 1]
+
+  sl_set {}
+  catch {destroy .rdw.scope}
+  catch {rw_ans ::rdw::close}
+  catch {update idletasks}
+}
+
+
 
 # ============================================================================
 # SECTION KB — ISSUE 1358: THE WINDOW ANSWERS ITS OWN KEYS, WHEREVER THE
@@ -6555,7 +6908,20 @@ else { set ::ev_precision $RW_EVP_SAVE }
 ## answer, a context or a list identity.  The behavioural row is LK3 of
 ## test_rdw_keys_1245.tcl, which needs the real canvas and its real binds.  A
 ## floor is raised when rows are added and NEVER lowered to make a run pass.
-set RW_FLOOR 162
+## ⚠ AND RAISED 162 -> 165 BY THE REPAIR OF ISSUE 1362, IN THE SAME COMMIT AS
+## THE THREE ROWS OF SECTION SL THAT RUN ON BOTH ARMS: SL1 (the status
+## surface's height is a clamped pure function with a named cap), SL2 (one
+## wrapping surface and exactly one writer for it) and SL3 (the model is the
+## record and the elision marker has one definition).  This section's other
+## five rows - SL4, SL5, SL6, SL7 and SL8 - need a mapped window, a real font,
+## a real pane selection and a real resize, so they are `live_tk`-gated and are
+## deliberately NOT counted here: the floor is the arm that runs FEWEST rows.
+## Issue 1362 adds no row to test_rdw_keys_1245.tcl and its `KX_FLOOR` is
+## unchanged at 88 - what that suite gained is the text-widget spelling inside
+## rows CP14 and CP16, whose names, properties and expected values did not
+## move.  A floor is raised when rows are added and NEVER lowered to make a run
+## pass.
+set RW_FLOOR 165
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\

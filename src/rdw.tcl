@@ -1733,46 +1733,234 @@ proc rdw::push {block} {
     return $block
 }
 
-# The window's own status line.  The variable is always settable, so the inert
-# buttons are drivable under --nogui too; the entry is wired to it by
-# -textvariable, so there is nothing to update by hand.  An empty message
-# clears the field.
-# ⚠ AND IT ONE-LINES, ITEM B5.  `::rdw::statusmsg` is an `entry
-# -textvariable` and item B5 is the first thing that puts the LIST STORE's own
-# prose in it: `op_param_lists::said`'s reports interpolate caught errors
-# (write_conf's `$err`), which are multi-line by nature.  A newline in an entry
-# is not wrapped, it is swallowed -- the user reads the first line and never
-# learns the rest.  rdw::_line has carried the same rule for every BLOCK line
-# since B3; this was the one emit point outside it.  Collapsed at the emit
-# point, not at the ten call sites, for _line's own reason: the eleventh call
-# site is the one the next author forgets.
-# ⚠ AND A REWRITE PUTS DOWN ANY SELECTION IT INVALIDATES (issue 1351).  The
-# entry's selection is a pair of INDICES, not a hold on the characters, so
-# replacing the -textvariable leaves the range standing over text the user
-# never selected.  MEASURED by issue 1344's adversary, in two presses of the
-# chord that item added: the line reads `alpha    beta`, the user selects the
-# four spaces (a double-click on the gap does exactly this), Ctrl-C is refused
-# -- and the refusal is not routed through rdw::_copy_report, so it REPLACES
-# the line.  The range 5-9 survives the rewrite verbatim and now covers ` is `
-# of the refusal sentence, so a second Ctrl-C copies ` is ` onto the clipboard
-# SILENTLY, because the source is still that entry.  That is item R3's own
-# quoted defect -- "silently handed you the wrong text" -- reached in two
-# presses.
+# THE STATUS SURFACE, AND WHY IT WRAPS (issue 1362).
 #
-# Cleared HERE, at the one emit point, for rdw::_oneline's own reason: the
-# eleventh call site is the one the next author forgets.  Only when the text
-# actually CHANGES -- a status line reset to what it already said has not
-# invalidated anything, and dropping a live selection for no reason is its own
-# small defect.
+# ⚠ THE ONE-LINE ENTRY SILENTLY AMPUTATED SENTENCES, AND THE HALF IT TOOK
+# WAS THE ANSWER.  `.rdw.s.msg` used to be a one-line `entry` driven by
+# -textvariable.  MEASURED at HEAD 2004f5e6 on :99 by three independent
+# passes: 887 px wide at the window's own default 893x498, -xscrollcommand
+# empty, no scrollbar, `xview` parked at 0.0-0.85, and issue 1356's verdict --
+# 147 characters, 1045 px of TkTextFont -- arriving as
+#   "Delete: removed id from the summary list for class mos. Selecting lines
+#    does not choose them for editing - the buttons act on"
+# with " the shaded row alone." off the right-hand edge.  The clause exists
+# BECAUSE the user asked what it answers; the reader got a sentence that stops
+# mid-clause, which reads as a second bug rather than as an answer.
+#
+# ⚠ AND IT WAS NEVER ONE STRING.  Two more shipped sentences overflowed the
+# same entry (the `$notin` refusal at 1082 px, "no row is marked ..." at
+# 893 px), this proc has 34 call sites, and three of them paste an unbounded
+# parameter name or filesystem path into the sentence.  Shortening the clause
+# would have moved the cliff by one sentence.  So the SURFACE changed: a
+# wrapping text widget that takes as many lines as its message needs, borrowed
+# from the pane and given back.  Section SL of test_rdw_window_1245.tcl fences
+# the general property -- for ANY message, all of it is displayed.
+#
+# ⚠ AND NOT ONE PIXEL CONSTANT, DELIBERATELY.  The measurement above is a
+# font metric as Xvfb resolves TkTextFont; the user's own server ($DISPLAY
+# 172.20.160.1:0, vendor HC-Consult) may substitute a different font, so a fix
+# that widened the window to the 1051 px this one sentence needs would be
+# wrong on their machine by construction, and wrong for the next sentence on
+# any machine.  `rdw::_status_show` asks the WIDGET how many display lines it
+# needs, in whatever font the server actually resolved.  Look debt
+# `rdw_1362_status_wrap` is what remains: their eyes, not a number.
+#
+# THE THREE ALTERNATIVES, COSTED AND REJECTED, so nobody re-derives them:
+#   * shorten the sentence -- cheapest, but the clause answers a question the
+#     user asked, and it fixes exactly one of the sentences that overflow;
+#   * widen the window's default to 1051 px -- a per-sentence answer to a
+#     general problem, and a window manager is free to refuse the size;
+#   * move the clause off the status line into the pane or the chrome -- the
+#     pane is the artifact the user pastes into a design review (row LX10 is
+#     the fence that keeps chrome OUT of it) and the chrome is per-identity,
+#     not per-verdict, so neither can carry a verdict about one press.
+#
+# THE CAP AND THE MARK ARE `cadence::_annot_fit`'S DECISION, ONE SURFACE OVER.
+# utils/annot_mode.tcl:724 fits the C status line's 255 bytes by cutting at a
+# space and marking the cut with "...", and issue 0639 is what a silent
+# amputation cost there.  The unbounded-path sentences make some cap
+# unavoidable here too; what is not optional is that the reader be told a tail
+# exists.  `::rdw::statusmsg` keeps the sentence WHOLE either way -- it is the
+# record, it is what the --nogui arm asserts against and what rdw::copy hands
+# over, so the painter may shorten what it DRAWS and never what it HOLDS.
+proc rdw::status_max_lines {} { return 4 }
+
+# The elision marker, in ONE place, so the painter and row SL6 cannot drift.
+proc rdw::_status_cut_mark {} { return {...} }
+
+# The clamp, split out so it can be driven with no Tk at all (row SL1).  A
+# widget that has never been mapped answers a nonsense display-line count, and
+# a status write is the last place in this file that may raise -- every button
+# verdict ends in one.
+proc rdw::_status_height {want} {
+    if {![string is integer -strict $want] || $want < 1} { return 1 }
+    set cap [rdw::status_max_lines]
+    if {$want > $cap} { return $cap }
+    return $want
+}
+
+# PAINT THE MODEL ONTO THE SURFACE AND FIT THE SURFACE TO IT.
+#
+# ⚠ THE ONLY PLACE IN THIS FILE THAT PUTS CHARACTERS INTO `.rdw.s.msg`, and
+# row SL2 is the fence.  A second writer is a sentence that reaches the screen
+# without being fitted, which is the defect this proc exists to end.
+#
+# ⚠ THE WIDGET IS ASKED, NOT A FONT TABLE.  `count -displaylines` is the
+# real wrap, at the real width, in the real font.  When the answer exceeds the
+# cap the text is cut by BINARY SEARCH on the same question rather than by any
+# character-per-line estimate -- twelve iterations for a 4000-character
+# sentence, and only on the path an unbounded path reaches.
+#
+# ⚠ AND IT REFUSES TO MEASURE AN UNMAPPED WIDGET.  Before the first map
+# `winfo width` is 1, every message needs hundreds of lines and a fit computed
+# then would elide the sentence to nothing.  The <Configure> bind in rdw::build
+# re-fits the moment there is a real width, and again on every user resize --
+# which is the case a fit computed once would get wrong the first time the
+# window is made narrower.
+proc rdw::_status_show {} {
+    variable statusmsg
+    if {![rdw::have_tk]} { return 0 }
+    if {![winfo exists .rdw.s.msg]} { return 0 }
+    set cap [rdw::status_max_lines]
+    set txt $statusmsg
+    rdw::_status_put $txt
+    if {[winfo width .rdw.s.msg] < 20} {
+        .rdw.s.msg configure -height 1
+        return 1
+    }
+    set n [rdw::_status_lines]
+    if {$n > $cap} {
+        set mark [rdw::_status_cut_mark]
+        set lo 0
+        set hi [string length $txt]
+        while {$lo < $hi} {
+            set mid [expr {($lo + $hi + 1) / 2}]
+            rdw::_status_put "[string range $txt 0 [expr {$mid - 1}]]$mark"
+            if {[rdw::_status_lines] > $cap} { set hi [expr {$mid - 1}] } \
+            else { set lo $mid }
+        }
+        # Back off to a word boundary, the way the C status line does, so the
+        # marked cut does not land mid-token.
+        set head [string range $txt 0 [expr {$lo - 1}]]
+        set sp [string last { } $head]
+        if {$sp > 0} { set head [string range $head 0 [expr {$sp - 1}]] }
+        rdw::_status_put "$head$mark"
+        set n [rdw::_status_lines]
+    }
+    set h [rdw::_status_height $n]
+    if {[.rdw.s.msg cget -height] != $h} { .rdw.s.msg configure -height $h }
+    return $h
+}
+
+# ⚠ AND IT DOES NOT REPAINT WHAT IS ALREADY THERE.  A repaint destroys the
+# `sel` tag, and the <Configure> refit runs on every user resize -- so without
+# this guard, dragging the window's edge while the settings-file path is
+# selected in the status line would put that selection down under the user's
+# hand, which is issue 1344 defect c reached by a different gesture.  The
+# elide path still repaints, because a different width really is a different
+# cut.  Row SL8's last leg is the fence.
+proc rdw::_status_put {txt} {
+    set now {}
+    if {![catch {.rdw.s.msg get 1.0 {end - 1c}} now] && $now eq $txt} { return {} }
+    .rdw.s.msg configure -state normal
+    .rdw.s.msg delete 1.0 end
+    .rdw.s.msg insert 1.0 $txt
+    .rdw.s.msg configure -state disabled
+    return {}
+}
+
+proc rdw::_status_lines {} {
+    set n 1
+    catch {set n [.rdw.s.msg count -displaylines 1.0 end]}
+    if {![string is integer -strict $n] || $n < 1} { return 1 }
+    return $n
+}
+
+# ⚠ THE SURFACE NEVER OWNS ITS OWN MANDATORY TRAILING NEWLINE (issue 1362).
+# A Tk text always holds one final "\n" that no editing can remove, and a drag
+# that runs past the end of the sentence -- which is what dragging to the
+# right-hand edge of a one-line field IS -- lands on index 2.0 and selects it.
+# MEASURED by row CP14 the moment the class changed: PRIMARY came back as the
+# settings-file path with a newline glued on, so the path the user copied would
+# not have pasted as a path, and neither Ctrl-C here nor a middle-click in
+# another application would have got it right.  The readonly `entry` this
+# replaced could not do that, so it is a defect the widget swap introduced and
+# the swap has to answer for.
+#
+# ⚠ FIXED AT THE SELECTION, NOT AT THE COPY, AND THAT IS THE WHOLE POINT.
+# Clamping inside rdw::copy would leave the X PRIMARY selection wrong for every
+# other consumer on the display; clamping the `sel` tag means the window never
+# publishes a selection it did not mean.  Row CP15 states the same rule for the
+# pane in its own words: what reaches the clipboard is the widget's text and
+# never the Tk text widget's mandatory trailing newline.
+#
+# The recursion terminates by construction: removing the tag from that one
+# character fires <<Selection>> again, and the second pass finds nothing past
+# `end - 1c` to remove.
+proc rdw::_status_clamp_sel {} {
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw.s.msg]} { return {} }
+    set rng {}
+    if {[catch {.rdw.s.msg tag ranges sel} rng]} { return {} }
+    if {[llength $rng] < 2} { return {} }
+    set over 0
+    if {[catch {.rdw.s.msg compare [lindex $rng end] > {end - 1c}} over]} { return {} }
+    if {!$over} { return {} }
+    catch {.rdw.s.msg tag remove sel {end - 1c} end}
+    return {}
+}
+
+# THE ONE RE-FIT DOOR.  Bound to the surface's own <Configure> (rdw::build), so
+# the first map and every user resize re-ask the same question.  The guard in
+# `_status_show` -- only reconfigure when the height really changes -- is what
+# stops a Configure that a height change caused from causing another.
+proc rdw::_status_refit {} {
+    if {![rdw::have_tk]} { return {} }
+    if {![winfo exists .rdw.s.msg]} { return {} }
+    rdw::_status_show
+    return {}
+}
+
+# The window's own status line.  The variable is always settable, so the inert
+# buttons are drivable under --nogui too; `rdw::_status_show` is what puts it
+# on screen.  An empty message clears the field.
+# ⚠ AND IT ONE-LINES, ITEM B5.  `::rdw::statusmsg` is a STATUS LINE and item
+# B5 is the first thing that puts the LIST STORE's own prose in it:
+# `op_param_lists::said`'s reports interpolate caught errors (write_conf's
+# `$err`), which are multi-line by nature.  A newline would turn a one-line
+# verdict into an arbitrary block, and the wrap this surface does is the
+# window's decision about width, not the message's.  rdw::_line has carried the
+# same rule for every BLOCK line since B3; this was the one emit point outside
+# it.  Collapsed at the emit point, not at the ten call sites, for _line's own
+# reason: the eleventh call site is the one the next author forgets.
+# ⚠ AND A REWRITE PUTS DOWN ANY SELECTION IT INVALIDATES (issue 1351).  When
+# the surface was an entry its selection was a pair of INDICES, not a hold on
+# the characters, so replacing the -textvariable left the range standing over
+# text the user never selected.  MEASURED by issue 1344's adversary, in two
+# presses of the chord that item added: the line reads `alpha    beta`, the
+# user selects the four spaces (a double-click on the gap does exactly this),
+# Ctrl-C is refused -- and the refusal is not routed through rdw::_copy_report,
+# so it REPLACES the line.  The range 5-9 survived the rewrite verbatim and now
+# covered ` is ` of the refusal sentence, so a second Ctrl-C copied ` is ` onto
+# the clipboard SILENTLY, because the source was still that widget.  That is
+# item R3's own quoted defect -- "silently handed you the wrong text" --
+# reached in two presses.
+#
+# ⚠ THE TEXT WIDGET DOES NOT MAKE THAT LINE UNNECESSARY, IT MAKES IT CHEAP.
+# A `sel` tag IS a hold on the characters and is destroyed by the repaint, so
+# the invalidated range cannot survive -- but ONLY because the repaint happens,
+# and the repaint happens only when the text really changed.  Row CP16's last
+# leg is the other half: a line rewritten to the string it already held has
+# invalidated nothing, so a selection standing in it must SURVIVE, which is why
+# the guard below is on the change and not on every call.
 proc rdw::status {msg} {
     variable statusmsg
     set new [rdw::_oneline $msg]
-    if {$new ne $statusmsg} {
-        if {[rdw::have_tk] && [winfo exists .rdw.s.msg]} {
-            catch {.rdw.s.msg selection clear}
-        }
-    }
+    set changed [expr {$new ne $statusmsg}]
     set statusmsg $new
+    if {$changed && [rdw::have_tk] && [winfo exists .rdw.s.msg]} {
+        catch {rdw::_status_show}
+    }
     return {}
 }
 
@@ -2107,15 +2295,46 @@ proc rdw::build {} {
     # settings-file path it wrote.  A button that does nothing AND says
     # nothing cannot be told from a broken one.
     frame .rdw.s -background [rdw::color panel]
-    entry .rdw.s.msg -textvariable ::rdw::statusmsg -state readonly \
-        -relief sunken -borderwidth 1 -takefocus 0 \
+    ## ⚠ A WRAPPING `text`, NOT AN `entry`, AND ISSUE 1362 IS THE WHOLE REASON.
+    ## An entry cannot wrap and has no scrollbar here, so a sentence wider than
+    ## the window was silently amputated -- measured at 147 characters against
+    ## an 887 px field, with the clause that answered the user's question in the
+    ## missing half.  `rdw::status` is unchanged as a door; what changed is the
+    ## surface underneath it.  See rdw::_status_show for the costed alternatives.
+    ##
+    ## ⚠ `-state disabled`, WHICH IS THE `text` SPELLING OF `readonly` FOR
+    ## ISSUE 1308's PURPOSE.  tk::TextButton1 takes the keyboard only when the
+    ## state is `normal`, exactly as tk::EntryButton1 did for the readonly
+    ## entry, so a click here still leaves the focus where it was -- and the
+    ## Text class bindings still select on a drag, which is what ruling DD-5
+    ## and rows CP14/CP16 need: the settings-file path item B5 writes here is
+    ## the most copy-worthy string in the window.
+    ##
+    ## ⚠ AND NO -textvariable, BECAUSE A `text` HAS NONE AND BECAUSE IT WOULD BE
+    ## A SECOND WRITER.  `rdw::_status_show` is the one painter (row SL2); the
+    ## model stays `::rdw::statusmsg`, which is what the --nogui arm and every
+    ## other row in this file assert against.
+    ##
+    ## -height 1 is the resting size: at rest this surface costs exactly what
+    ## the entry did.  -wrap word is the fix.
+    text .rdw.s.msg -height 1 -wrap word -state disabled \
+        -relief sunken -borderwidth 1 -takefocus 0 -exportselection 1 \
+        -font TkTextFont -padx 2 -pady 1 -highlightthickness 0 \
         -background [rdw::color field] \
-        -readonlybackground [rdw::color field] \
         -foreground [rdw::color fieldfg] \
         -selectbackground [rdw::color selectbg] \
         -selectforeground [rdw::color selectfg]
+    ## THE ONE RE-FIT DOOR: the first map, and every user resize.  A fit
+    ## computed once at build time would be computed against `winfo width` 1.
+    bind .rdw.s.msg <Configure> {rdw::_status_refit}
+    ## And the surface never publishes the one character it is forced to hold.
+    bind .rdw.s.msg <<Selection>> {rdw::_status_clamp_sel}
     pack .rdw.s.msg -side left -fill x -expand 1 -padx 3 -pady 3
     pack .rdw.s -side bottom -fill x
+    ## The window may be built with a verdict already standing (rdw::open is
+    ## reachable from a button that has just spoken), so paint what the model
+    ## already holds rather than waiting for the next write.
+    rdw::_status_show
 
     # The button column, greyed per spec 4.2 B7 and WIRED by item B5.
     #
@@ -2660,10 +2879,12 @@ proc rdw::_selection_note_for {n} {
 # THE SELECTION STANDING IN SOME OTHER WIDGET OF THIS WINDOW: {widget text},
 # or {} when no widget of .rdw except the pane holds one.
 #
-# ⚠ THE STATUS ENTRY IS NOT A CURIOSITY, IT IS THE POINT.  `.rdw.s.msg` is a
-# readonly `entry` with -exportselection 1 and a real drag selects in it; item
-# B5 writes the settings-file path there, and a path is exactly the sort of
-# string a user copies.  Ruling DD-5 gave this window a copy that works from
+# ⚠ THE STATUS SURFACE IS NOT A CURIOSITY, IT IS THE POINT.  `.rdw.s.msg` is a
+# disabled `text` with -exportselection 1 and a real drag selects in it (issue
+# 1362 changed the class from a readonly `entry`; the Text class bindings
+# select on a drag exactly as the Entry class ones did); item B5 writes the
+# settings-file path there, and a path is exactly the sort of string a user
+# copies.  Ruling DD-5 gave this window a copy that works from
 # anywhere in it -- so "anywhere in it" has to include the one widget whose
 # contents the user most wants.
 #
@@ -2719,8 +2940,8 @@ proc rdw::_copy_lines {txt} {
 
 # SAY WHAT THE COPY DID -- UNLESS THE STATUS LINE IS THE THING BEING COPIED
 # (issue 1344, defect c).  rdw::status writes ::rdw::statusmsg, which is the
-# -textvariable of `.rdw.s.msg`; writing it REPLACES that entry's contents and
-# with them the user's live selection.  MEASURED before this proc existed: the
+# model behind `.rdw.s.msg`; writing it REPAINTS that surface and with it
+# destroys the user's live selection.  MEASURED before this proc existed: the
 # user selects the settings-file path in the status line, presses Ctrl-C, and
 # the path vanishes under their own selection.
 #
