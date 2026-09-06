@@ -1,6 +1,8 @@
 # 1376 — middle-button press-drag does not pan on the user's own servers, and every layer this tree can reach is innocent
 
-**Status: OPEN, NOT REPRODUCED HERE.** Reported by the user against both their
+**Status: CLOSED - NOT A DEFECT IN THIS TREE. The user's mouse had a failing
+middle button.** Kept in full because the investigation's method errors are the
+reusable part, and because it records a latent exposure that IS real. Reported by the user against both their
 VcXsrv display (`172.20.160.1:0`, vendor `HC-Consult`) and WSLg `:0`, always
 running `src/cadence_style_rc`. Subject: `src/callback.c`
 (`handle_button_press`'s `button==Button2 && state==0` arm, `start_pan_logged`,
@@ -86,3 +88,50 @@ sourced and the user's own `tb_bandgap` loaded, unless stated.
   bare zero.
 * **Middle-button emulation.** VcXsrv can synthesise button 2 from a 1+3 chord;
   the probe's button numbers will say whether button 2 arrives at all.
+
+
+---
+
+## Resolution: the mouse
+
+The user, after swapping hardware:
+
+> It was the mouse.. I had noticed a couple days ago that doing an MMB click in
+> Chrome wasn't getting me that mode where I could move the pointer relative to
+> where I did the MMB click and then get autoscrolling..
+
+That is the whole answer, and it is corroborated by an application xschem has
+nothing to do with: Chrome's autoscroll needs exactly the same middle-button
+press, and it had already stopped working days earlier. An old Logitech; the
+wheel-click microswitch is the usual first failure.
+
+Every layer measured innocent above really was innocent.
+
+## ⚠ THE METHOD LESSON, WHICH IS WHY THIS FILE SURVIVES
+
+**The cheapest discriminator was never asked for.** The report said the gesture
+failed on BOTH the VcXsrv display AND WSLg `:0`. Two independent X servers
+failing the same way is already an argument that nothing above the input device
+is responsible, and one question - "does that button do its usual thing in any
+other application?" - would have closed this in ten seconds. Instead the software
+was exonerated one layer at a time: the C arm, the Tk bindings, the cadence
+profile, the modifier strip, three servers' modifier maps, the graph-rect route,
+a loaded raw. All correct, all beside the point.
+
+Ask the cross-application question in the FIRST reply to any reported input-gesture
+failure, before reading code - and especially when the report already spans more
+than one display or server.
+
+The two tooling errors recorded above stand on their own and are unaffected by the
+resolution: `xschem callback` is not evidence about a gesture, and `event generate`
+fires a `<Button>` binding only at state 0.
+
+## What remains open, and it is NOT the user's bug
+
+The `state == 0` exposure measured in this file is real and latent: Mod3, Mod4
+(Super) and Mod5 each kill the middle-button pan silently, because `callback()`
+strips only the button masks, `Mod2Mask` and `LockMask`. No server here reports
+one of those at rest, so nobody has hit it - but a server or an `xmodmap` that did
+would produce this exact report, with the same silence. Hardening it is tracked
+separately and is the user's call, not a fix that should ride in on a hardware
+fault.
