@@ -1775,18 +1775,74 @@ proc rdw::push {block} {
 #     the fence that keeps chrome OUT of it) and the chrome is per-identity,
 #     not per-verdict, so neither can carry a verdict about one press.
 #
-# THE CAP AND THE MARK ARE `cadence::_annot_fit`'S DECISION, ONE SURFACE OVER.
-# utils/annot_mode.tcl:724 fits the C status line's 255 bytes by cutting at a
-# space and marking the cut with "...", and issue 0639 is what a silent
-# amputation cost there.  The unbounded-path sentences make some cap
-# unavoidable here too; what is not optional is that the reader be told a tail
-# exists.  `::rdw::statusmsg` keeps the sentence WHOLE either way -- it is the
-# record, it is what the --nogui arm asserts against and what rdw::copy hands
-# over, so the painter may shorten what it DRAWS and never what it HOLDS.
+# THE CAP IS A HEIGHT AND NEVER A LENGTH -- ISSUE 1365.
+#
+# ⚠ THE FIRST ANSWER HERE WAS AN ELISION, AND IT PUT ISSUE 1344's DEFECT BACK.
+# Issue 1362 capped the surface at `rdw::status_max_lines` DISPLAY LINES and,
+# past the cap, replaced the tail of the sentence with "..." in the widget --
+# keeping the whole sentence in `::rdw::statusmsg` and arguing that the painter
+# "may shorten what it DRAWS and never what it HOLDS".  The argument was
+# false about this window, in three measured ways, and its adversary landed
+# all three:
+#
+#   * THE COPY HANDS OVER WHAT IS DRAWN, NOT WHAT IS HELD.  `rdw::copy`'s
+#     second leg is `rdw::_sibling_selection`, which asks the X PRIMARY
+#     selection; `::rdw::statusmsg` is never consulted on that path and could
+#     not be -- the user selected a RANGE of the widget, and only the widget
+#     knows which characters those are.  MEASURED on a 618-character composed
+#     verdict at 893x498: before 1362 the clipboard came back 618 characters
+#     ending "the shaded row alone."; after it, 474 ending in a literal "...".
+#     That is issue 1344's own defect -- this window handing over text the user
+#     did not select -- returning through the door 1344 was fixed for, in the
+#     window whose stated purpose is select-and-paste.
+#   * THE ELISION MADE THE PAINTED STRING DEPEND ON THE WIDTH, so every resize
+#     repainted and every repaint destroyed the `sel` tag.  MEASURED: a
+#     selection standing in a 618-character verdict died on THREE PIXELS of
+#     drag; the pre-1362 entry survived the identical gesture.
+#   * AND IT STILL AMPUTATED SHIPPED VERDICTS.  The cliff MEASURED at 492
+#     characters at the window's own default width, against composed verdicts
+#     of 618-778 -- `rdw::_edit`'s sentence already carries `_sheet_note`,
+#     `_drawn_note` and `_shadow_why`, and `rdw::_bstatus` appends
+#     `_selection_note` on top.  A path-free composition reaches 449.  So the
+#     cliff moved from 122 characters to 492 and the sentence that answers the
+#     user's question still did not arrive whole.
+#
+# ⚠ SO THE CAP IS A HEIGHT NOW AND THE TEXT IS NEVER CUT.  The surface holds
+# every character of the model at every length; it takes at most
+# `rdw::status_max_lines` lines of the window; and when the sentence needs more
+# than that a SCROLLBAR appears beside it.  All three defects close by
+# construction rather than by three guards: the clipboard is whole because the
+# widget is whole, the no-repaint guard fires because the painted string no
+# longer depends on the width, and nothing is amputated at any length.
+#
+# ⚠ AND A SCROLLBAR IS THE AFFORDANCE "..." ONLY LOOKED LIKE.  Both say "there
+# is more"; only one of them can be used to read it, and only one of them
+# leaves the text where a selection, a copy and a middle-click paste can reach
+# it.  `cadence::_annot_fit` (utils/annot_mode.tcl:724) elides the C status bar
+# because that bar is a fixed-size drawing with no widget behind it and nothing
+# can be selected in it; this surface is a Tk text the user copies from, and
+# ruling DD-5 is what makes that difference load-bearing rather than stylistic.
+#
+# THE ALTERNATIVES, COSTED AND REJECTED, so nobody re-derives them:
+#   * go back to the one-line entry -- it held the sentence whole, which is why
+#     the pre-1362 copy was correct, but it showed 122 characters of 618 with
+#     no scrollbar and no marker, which is issue 1362 itself;
+#   * keep the elision and teach `rdw::copy` to hand over the model -- the user
+#     selected a RANGE; there is no honest map from a range of the elided
+#     picture back to a range of the sentence, and it fixes neither the resize
+#     nor the amputation;
+#   * raise the cap until today's longest verdict fits -- a per-sentence answer
+#     to a general problem, and the three sentences that interpolate a
+#     filesystem path have no longest;
+#   * widen the window -- costed and rejected by 1362 for reasons that still
+#     hold: a window manager is free to refuse the size.
+#
+# WHAT IS STILL THE USER'S: the cap itself (rule debt 1362) -- four lines shows
+# about 474 characters at 893 px, so a 618-character verdict is four lines read
+# and two lines scrolled.  Nothing is lost either way; how much of the window a
+# status line may take is theirs to say, and the number is a proc so that
+# changing it is a one-line change with a row that notices.
 proc rdw::status_max_lines {} { return 4 }
-
-# The elision marker, in ONE place, so the painter and row SL6 cannot drift.
-proc rdw::_status_cut_mark {} { return {...} }
 
 # The clamp, split out so it can be driven with no Tk at all (row SL1).  A
 # widget that has never been mapped answers a nonsense display-line count, and
@@ -1801,54 +1857,37 @@ proc rdw::_status_height {want} {
 
 # PAINT THE MODEL ONTO THE SURFACE AND FIT THE SURFACE TO IT.
 #
-# ⚠ THE ONLY PLACE IN THIS FILE THAT PUTS CHARACTERS INTO `.rdw.s.msg`, and
-# row SL2 is the fence.  A second writer is a sentence that reaches the screen
-# without being fitted, which is the defect this proc exists to end.
+# ⚠ THE STRING PAINTED IS THE MODEL, ALWAYS AND WHATEVER THE WIDTH, and that
+# is the whole of issue 1365.  It is what makes `rdw::_status_put`'s guard able
+# to fire on a resize, it is what makes the X PRIMARY selection this surface
+# publishes a real substring of the sentence, and it is what stops any verdict
+# being cut at any width.  The only thing the measurement below decides is how
+# many lines of the WINDOW the surface takes.
 #
-# ⚠ THE WIDGET IS ASKED, NOT A FONT TABLE.  `count -displaylines` is the
-# real wrap, at the real width, in the real font.  When the answer exceeds the
-# cap the text is cut by BINARY SEARCH on the same question rather than by any
-# character-per-line estimate -- twelve iterations for a 4000-character
-# sentence, and only on the path an unbounded path reaches.
+# ⚠ THE WIDGET IS ASKED, NOT A FONT TABLE.  `count -displaylines` is the real
+# wrap, at the real width, in the real font -- so no pixel constant appears
+# here or in section SL, and the same code is right on a server whose font
+# substitution differs from this one's.
 #
 # ⚠ AND IT REFUSES TO MEASURE AN UNMAPPED WIDGET.  Before the first map
-# `winfo width` is 1, every message needs hundreds of lines and a fit computed
-# then would elide the sentence to nothing.  The <Configure> bind in rdw::build
-# re-fits the moment there is a real width, and again on every user resize --
-# which is the case a fit computed once would get wrong the first time the
-# window is made narrower.
+# `winfo width` is 1 and every message needs hundreds of lines.  The
+# <Configure> bind in rdw::build re-fits the moment there is a real width, and
+# again on every user resize -- which is the case a fit computed once would get
+# wrong the first time the window is made narrower.
 proc rdw::_status_show {} {
     variable statusmsg
     if {![rdw::have_tk]} { return 0 }
     if {![winfo exists .rdw.s.msg]} { return 0 }
-    set cap [rdw::status_max_lines]
-    set txt $statusmsg
-    rdw::_status_put $txt
+    rdw::_status_put $statusmsg
     if {[winfo width .rdw.s.msg] < 20} {
-        .rdw.s.msg configure -height 1
+        if {[.rdw.s.msg cget -height] != 1} { .rdw.s.msg configure -height 1 }
+        rdw::_status_scroll_sync 1 1
         return 1
     }
     set n [rdw::_status_lines]
-    if {$n > $cap} {
-        set mark [rdw::_status_cut_mark]
-        set lo 0
-        set hi [string length $txt]
-        while {$lo < $hi} {
-            set mid [expr {($lo + $hi + 1) / 2}]
-            rdw::_status_put "[string range $txt 0 [expr {$mid - 1}]]$mark"
-            if {[rdw::_status_lines] > $cap} { set hi [expr {$mid - 1}] } \
-            else { set lo $mid }
-        }
-        # Back off to a word boundary, the way the C status line does, so the
-        # marked cut does not land mid-token.
-        set head [string range $txt 0 [expr {$lo - 1}]]
-        set sp [string last { } $head]
-        if {$sp > 0} { set head [string range $head 0 [expr {$sp - 1}]] }
-        rdw::_status_put "$head$mark"
-        set n [rdw::_status_lines]
-    }
     set h [rdw::_status_height $n]
     if {[.rdw.s.msg cget -height] != $h} { .rdw.s.msg configure -height $h }
+    rdw::_status_scroll_sync $n $h
     return $h
 }
 
@@ -1856,9 +1895,10 @@ proc rdw::_status_show {} {
 # `sel` tag, and the <Configure> refit runs on every user resize -- so without
 # this guard, dragging the window's edge while the settings-file path is
 # selected in the status line would put that selection down under the user's
-# hand, which is issue 1344 defect c reached by a different gesture.  The
-# elide path still repaints, because a different width really is a different
-# cut.  Row SL8's last leg is the fence.
+# hand, which is issue 1344 defect c reached by a different gesture.  Since
+# 1365 the painted string does not depend on the width at all, so on a resize
+# this guard always fires; before 1365 it could never fire on a capped message
+# and rows SL10 and SL8 disagree about nothing else.
 proc rdw::_status_put {txt} {
     set now {}
     if {![catch {.rdw.s.msg get 1.0 {end - 1c}} now] && $now eq $txt} { return {} }
@@ -1866,6 +1906,9 @@ proc rdw::_status_put {txt} {
     .rdw.s.msg delete 1.0 end
     .rdw.s.msg insert 1.0 $txt
     .rdw.s.msg configure -state disabled
+    ## A NEW verdict is read from its beginning.  Only on the path that really
+    ## repainted, so a refit never scrolls a sentence the user was reading.
+    catch {.rdw.s.msg yview moveto 0}
     return {}
 }
 
@@ -1874,6 +1917,49 @@ proc rdw::_status_lines {} {
     catch {set n [.rdw.s.msg count -displaylines 1.0 end]}
     if {![string is integer -strict $n] || $n < 1} { return 1 }
     return $n
+}
+
+# THE SCROLLBAR APPEARS ONLY WHEN THERE IS SOMETHING TO SCROLL TO, and it is
+# the ONE thing on this surface that says a tail exists.
+#
+# ⚠ IT CANNOT OSCILLATE, AND THAT IS BY CONSTRUCTION RATHER THAN BY LUCK.
+# Packing it makes the text NARROWER, so the number of display lines the
+# sentence needs can only go up -- a packed scrollbar can never make itself
+# unnecessary.  Forgetting it makes the text wider, so the count can only go
+# down.  Both transitions are therefore one-way and the <Configure> the pack
+# fires settles on the second pass.  A `-yscrollcommand` that packed and
+# unpacked from inside the scroll callback -- the usual auto-scrollbar idiom --
+# has no such argument available to it, which is why the decision is taken here
+# and the callback below only moves the thumb.
+#
+# The DECISION is split out from the PACKING for `rdw::_status_height`'s own
+# reason (row SL1): it is the half that can be driven with no Tk at all, and a
+# status write is the last place in this file that may raise.
+proc rdw::_status_scroll_wanted {need h} {
+    if {![string is integer -strict $need]} { return 0 }
+    if {![string is integer -strict $h]} { return 0 }
+    return [expr {$need > $h ? 1 : 0}]
+}
+
+proc rdw::_status_scroll_sync {need h} {
+    if {![rdw::have_tk]} { return 0 }
+    if {![winfo exists .rdw.s.sb]} { return 0 }
+    set want [rdw::_status_scroll_wanted $need $h]
+    set now 0
+    catch {set now [expr {[winfo manager .rdw.s.sb] eq {pack} ? 1 : 0}]}
+    if {$want == $now} { return $want }
+    if {$want} {
+        catch {pack .rdw.s.sb -side right -fill y -padx {0 3} -pady 3 \
+                   -before .rdw.s.msg}
+    } else {
+        catch {pack forget .rdw.s.sb}
+    }
+    return $want
+}
+
+proc rdw::_status_scrollset {first last} {
+    catch {.rdw.s.sb set $first $last}
+    return {}
 }
 
 # ⚠ THE SURFACE NEVER OWNS ITS OWN MANDATORY TRAILING NEWLINE (issue 1362).
@@ -2317,13 +2403,24 @@ proc rdw::build {} {
     ##
     ## -height 1 is the resting size: at rest this surface costs exactly what
     ## the entry did.  -wrap word is the fix.
+    ##
+    ## ⚠ AND IT SCROLLS, WHICH IS ISSUE 1365.  The cap on the height is a cap
+    ## on how much of the WINDOW a verdict may take; it was briefly a cap on
+    ## how much of the SENTENCE the widget held, and that put issue 1344's
+    ## defect back -- `rdw::copy` hands over the X selection, which is what the
+    ## widget holds, so an elided widget was an elided clipboard.  See
+    ## rdw::_status_show for the three measurements and the costed alternatives.
     text .rdw.s.msg -height 1 -wrap word -state disabled \
         -relief sunken -borderwidth 1 -takefocus 0 -exportselection 1 \
         -font TkTextFont -padx 2 -pady 1 -highlightthickness 0 \
+        -yscrollcommand rdw::_status_scrollset \
         -background [rdw::color field] \
         -foreground [rdw::color fieldfg] \
         -selectbackground [rdw::color selectbg] \
         -selectforeground [rdw::color selectfg]
+    ## Created here and PACKED ONLY WHEN THERE IS A TAIL (rdw::_status_scroll_sync),
+    ## so a one-line verdict -- which is nearly all of them -- costs no width.
+    scrollbar .rdw.s.sb -command {.rdw.s.msg yview} -takefocus 0
     ## THE ONE RE-FIT DOOR: the first map, and every user resize.  A fit
     ## computed once at build time would be computed against `winfo width` 1.
     bind .rdw.s.msg <Configure> {rdw::_status_refit}

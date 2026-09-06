@@ -6405,6 +6405,22 @@ check {SL1 THE STATUS SURFACE'S HEIGHT IS A CLAMPED, PURE FUNCTION WITH A NAMED 
   [list $SL1_CAP $SL1_H] \
   [list 4 {1 1 2 3 4 4 4 1 1 1}]
 
+# --- SL12  THE SCROLLBAR'S DECISION IS PURE, AND ITS BOUNDARY IS DRIVEN ------
+## ⚠ SPLIT OUT FOR SL1's OWN REASON (issue 1365).  Since the cap became a cap
+## on HEIGHT rather than on the sentence, the scrollbar is the ONE thing on
+## this surface that tells the reader a tail exists -- and an off-by-one here
+## is a tail with nothing to say so, which is the silent amputation this whole
+## section is about wearing a taller widget.  The table drives the boundary at
+## exactly the cap and one past it, and the two non-integer answers a widget
+## that has never been mapped gives.
+set SL12 {}
+foreach _p {{1 1} {3 4} {4 4} {5 4} {35 4} {2 1} {1 4} {0 0} {{} 4} {4 {}} {x 4}} {
+  lappend SL12 [rw_ans ::rdw::_status_scroll_wanted [lindex $_p 0] [lindex $_p 1]]
+}
+check {SL12 THE SCROLLBAR APPEARS EXACTLY WHEN THERE IS SOMETHING TO SCROLL TO: a sentence that fits the surface asks for none, one line more than fits asks for one, the boundary is driven at the cap itself and one past it, and a non-integer count - which is what a widget that has never been mapped answers - asks for none rather than raising inside a status write} \
+  [list $SL12] \
+  [list {0 0 0 1 1 1 0 0 0 0 0}]
+
 # --- SL2  ONE SURFACE, ONE WRITER, AND IT WRAPS ------------------------------
 ## STRUCTURAL, because the defect was the WIDGET CLASS and no behavioural row
 ## can see a class.  The status surface must be a text widget that wraps (an
@@ -6422,23 +6438,30 @@ check {SL2 ONE WRAPPING SURFACE AND ONE WRITER FOR IT: the status line is no lon
         [rw_has $SL_F {rdw::_status_show}]] \
   {0 1 0 1 1 1}
 
-# --- SL3  THE MODEL IS THE RECORD, AND THE CUT IS MARKED IN ONE PLACE --------
-## `cadence::_annot_fit` (utils/annot_mode.tcl) took this decision for the C
-## status line and issue 0639 paid for it: the record keeps the sentence WHOLE
-## and the bar shows a MARKED elision, never an amputation.  This section
-## copies that split.  `::rdw::statusmsg` is the record here -- it is what the
-## --nogui arm asserts against, what rdw::copy hands over and what every other
-## row in this file reads -- so the painter may shorten what it DRAWS and may
-## never shorten what it HOLDS.
+# --- SL3  ONE STRING REACHES THE SURFACE, AND IT IS THE MODEL ----------------
+## ⚠ RE-SPELLED BY ISSUE 1365, AND THE OLD SPELLING IS WHY.  This row used to
+## gold the ELISION: `rdw::_status_cut_mark` existing, with exactly one
+## definition, returning "...".  That was 1362's answer to an unbounded
+## sentence and it was measured wrong three ways -- the clipboard handed over
+## the picture instead of the sentence (row SL9), the painted string depended
+## on the width so every resize destroyed a standing selection (row SL10), and
+## real composed verdicts of 618-778 characters were still cut at 492 (row
+## SL11).  The invariant is now the stronger one the old comment already
+## claimed and the code did not keep: WHAT THE SURFACE SHOWS IS WHAT THE MODEL
+## HOLDS, at every length, so there is no marker, no word-boundary backoff and
+## no second string anywhere on the path.  The structural legs are the fence
+## against all three coming back: the painter is handed `$statusmsg` and
+## nothing else, and no cut marker exists to be reached for.
 sl_set [sl_msg 4000]
 set SL3_LEN [expr {[info exists ::rdw::statusmsg] ? [string length $::rdw::statusmsg] : -1}]
 sl_set "one\ntwo\tthree"
 set SL3_ONELINE [expr {[info exists ::rdw::statusmsg] ? $::rdw::statusmsg : {NOVAR}}]
-check {SL3 WHAT THE WINDOW SHOWS MAY BE SHORTER THAN WHAT IT HOLDS, NEVER THE OTHER WAY ROUND: the cut marker has exactly one definition, a four-thousand-character sentence leaves the model four thousand characters long, and the one-lining that makes a status line a status line is untouched} \
-  [list [rw_ans ::rdw::_status_cut_mark] \
-        [rw_count $SL_F {proc rdw::_status_cut_mark}] \
+check {SL3 THE ONE STRING THAT REACHES THE SURFACE IS THE MODEL ITSELF: the painter is handed the whole of ::rdw::statusmsg and never a shortened copy of it, no elision marker exists anywhere in the file to be reached for, a four-thousand-character sentence leaves the model four thousand characters long, and the one-lining that makes a status line a status line is untouched} \
+  [list [rw_count $SL_F {rdw::_status_put $statusmsg}] \
+        [rw_count $SL_F {rdw::_status_cut_mark}] \
+        [rw_ans ::rdw::_status_cut_mark] \
         $SL3_LEN $SL3_ONELINE] \
-  [list {...} 1 4000 {one two three}]
+  [list 1 0 NOPROC 4000 {one two three}]
 
 ## ---------------------------------------------------------------------------
 ## THE LIVE HALF.  Four rows, all of them asking the real widget on a real
@@ -6537,27 +6560,37 @@ if {$live_tk} {
           $SL5_PROBE] \
     [list 1 1 1 {1 1 1 1}]
 
-  # --- SL6  PAST THE CAP THE CUT IS MARKED, NEVER SILENT --------------------
-  ## The three sentences that paste a filesystem path can be arbitrarily long,
-  ## so a cap is unavoidable and the only question is what happens AT it.
-  ## Issue 0639's answer, one surface over: a marked elision, so the reader
-  ## knows a tail exists, and the whole sentence still in the record.  A silent
-  ## amputation is the defect this section exists about; a capped surface that
-  ## said nothing would be the same defect with a taller widget.
+  # --- SL6  PAST THE CAP THE SENTENCE IS HELD, DRAWN AND REACHABLE ----------
+  ## ⚠ RE-SPELLED BY ISSUE 1365.  This row used to assert that past the cap the
+  ## surface shows a MARKED ELISION and keeps the sentence in the model.  It
+  ## was the right shape for a surface nothing can be copied out of -- which is
+  ## `cadence::_annot_fit`'s C status bar, issue 0639 -- and the wrong shape for
+  ## this one: ruling DD-5 gave this window a copy that works from anywhere in
+  ## it, `rdw::copy` hands over the X PRIMARY selection, and PRIMARY is what the
+  ## WIDGET holds.  So an elided widget was an elided clipboard (row SL9) and
+  ## the marker was an affordance that could not be used.  The cap is now a cap
+  ## on HEIGHT: the sentence is held whole, drawn whole, and the tail is
+  ## reachable by scrolling, with the scrollbar as the thing that says a tail
+  ## exists.  The three sentences that interpolate a filesystem path are still
+  ## the reason a cap is unavoidable; what changed is what happens AT it.
   sl_set [sl_msg 4000]
   set SL6_SHOWN [rw_w .rdw.s.msg get 1.0 {end - 1c}]
   set SL6_MODEL [expr {[info exists ::rdw::statusmsg] ? $::rdw::statusmsg : {NOVAR}}]
-  set SL6_MARK  [rw_ans ::rdw::_status_cut_mark]
-  set SL6_HEAD  [string range $SL6_SHOWN 0 [expr {[string length $SL6_SHOWN] - [string length $SL6_MARK] - 1}]]
-  check {SL6 A SENTENCE TOO LONG FOR ANY WINDOW IS CUT WITH A MARK AND IS STILL HELD WHOLE: past the cap the surface uses exactly the capped number of lines, what it shows ends in the elision marker, what it shows without that marker is a genuine prefix of the sentence, the model still carries the sentence entire, and nothing is scrolled out of view - the reader is told there is more rather than handed a sentence that stops mid-word} \
+  set SL6_NEED  [rw_w .rdw.s.msg count -displaylines 1.0 end]
+  set SL6_SB    [rw_w winfo manager .rdw.s.sb]
+  catch {.rdw.s.msg yview moveto 1.0}
+  catch {update idletasks}
+  set SL6_BB [rw_w .rdw.s.msg bbox {end - 2c}]
+  catch {.rdw.s.msg yview moveto 0.0}
+  catch {update idletasks}
+  check {SL6 A SENTENCE TOO LONG FOR ANY WINDOW IS HELD WHOLE, DRAWN WHOLE AND REACHABLE: past the cap the surface takes exactly the capped number of lines and no more of the window, the sentence really needs more lines than that, what the surface holds is the model character for character rather than a picture of it, a scrollbar is on screen to say a tail exists, and the last character of the sentence can be brought into view - the reader can read it, select it and paste it, which an elision marker cannot offer} \
     [list [rw_w .rdw.s.msg cget -height] \
-          [rw_w .rdw.s.msg count -displaylines 1.0 end] \
-          [expr {[string length $SL6_SHOWN] < [string length $SL6_MODEL] ? 1 : 0}] \
-          [expr {[string match "*$SL6_MARK" $SL6_SHOWN] ? 1 : 0}] \
-          [expr {[string length $SL6_HEAD] > 0 && [string first $SL6_HEAD $SL6_MODEL] == 0 ? 1 : 0}] \
+          [expr {[string is integer -strict $SL6_NEED] && $SL6_NEED > $SL1_CAP ? 1 : 0}] \
+          [expr {$SL6_SHOWN eq $SL6_MODEL ? 1 : 0}] \
           [string length $SL6_MODEL] \
-          [expr {[rw_w .rdw.s.msg yview] eq {0.0 1.0} ? 1 : 0}]] \
-    [list $SL1_CAP $SL1_CAP 1 1 1 4000 1]
+          $SL6_SB \
+          [expr {[sl_len $SL6_BB] == 4 ? 1 : 0}]] \
+    [list $SL1_CAP 1 1 4000 pack 1]
 
   # --- SL7  THE ROOM IS BORROWED FROM THE PANE AND GIVEN BACK ---------------
   ## The three costed alternatives all spent something the user owns.
@@ -6635,6 +6668,200 @@ if {$live_tk} {
           [expr {$SL8_P1 < $SL8_P0 ? 1 : 0}] \
           $SL8_PROBE $SL8_SEL0 $SL8_SEL1] \
     [list 1 1 1 {1 1 1 1} 1 1]
+
+  # ==========================================================================
+  # ISSUE 1365 — WHAT THE SURFACE DRAWS IS WHAT THE SURFACE HOLDS
+  # ==========================================================================
+  # Issue 1362's adversary refuted the fix above with three measurements, all
+  # re-derived here before a line was changed, on the real widget at :99:
+  #
+  #   (1) THE COPY HANDED OVER THE ELIDED TEXT.  `rdw::copy`'s second leg is
+  #       `rdw::_sibling_selection` -> `selection get PRIMARY`, i.e. WHAT IS
+  #       DRAWN; it never reads `::rdw::statusmsg`.  MEASURED on a 618-char
+  #       composed verdict: PRE-1362 the clipboard came back 618 characters
+  #       ending "the shaded row alone."; POST-1362 it came back 474 ending in
+  #       a literal "...".  That is issue 1344's own defect -- the window
+  #       handing over text the user did not select -- returning through the
+  #       door 1344 was fixed for, in the window whose stated purpose is
+  #       select-and-paste.
+  #   (2) A THREE-PIXEL RESIZE DESTROYED A SELECTION STANDING IN THE STATUS
+  #       LINE.  `rdw::_status_show` put the FULL model on the surface before
+  #       measuring, so on a capped message the widget always held different
+  #       text and `rdw::_status_put`'s no-repaint guard could not fire.
+  #       MEASURED: 618-char verdict, `sel` at 1.10-1.40, 893 -> 890, tag gone.
+  #       The PRE-1362 entry survived the identical drag.  Row SL8 could not
+  #       see it: its 260-character message never reaches the cap.
+  #   (3) A SHIPPED VERDICT WAS STILL CUT AT THE WINDOW'S DEFAULT SIZE.  The
+  #       cliff MEASURED at 492 characters at 893 px, against composed verdicts
+  #       of 618-778.  Rows SL4/SL5/SL6 could not see that either: SL4 drives
+  #       260 characters of filler, SL5 drives 147, and SL6 drives 4000 and
+  #       asserts only that the cut is MARKED.  Nothing composed a verdict out
+  #       of the parts `rdw::button` really emits.
+  #
+  # THE FIX IS THE ELISION'S REMOVAL, NOT A PATCH ON IT.  The cap is now a
+  # HEIGHT and never a length: the surface holds every character of the model,
+  # takes at most `rdw::status_max_lines` lines of the window, and a message
+  # that needs more gets a scrollbar -- an affordance that is operable, where
+  # "..." was an affordance that was not.  All three defects then close by
+  # construction rather than by three separate guards: the clipboard is whole
+  # because the widget is whole, the repaint guard fires because the painted
+  # string no longer depends on the width, and no verdict is amputated at any
+  # length.  The three rows below are the fences.
+
+  # --- SL9  THE SURFACE PUBLISHES THE SENTENCE, NOT A PICTURE OF IT ---------
+  ## ⚠ THIS IS ISSUE 1344's ROW, RE-ASKED OF THE STATUS SURFACE AT A LENGTH
+  ## PAST THE CAP.  CP14/CP16 fence the sibling copy at short lengths, where
+  ## drawn and held cannot differ; the whole of defect (1) lived in the gap
+  ## between "short enough to fit" and "long enough to be cut".  Every leg asks
+  ## the real X selection and the real clipboard through the real `rdw::copy`,
+  ## because `_sibling_selection` reads PRIMARY and a row that read the widget
+  ## directly would not have caught this.
+  sl_set [sl_msg 900]
+  set SL9_MODEL [expr {[info exists ::rdw::statusmsg] ? $::rdw::statusmsg : {NOVAR}}]
+  set SL9_SHOWN [rw_w .rdw.s.msg get 1.0 {end - 1c}]
+  set SL9_NEED  [rw_w .rdw.s.msg count -displaylines 1.0 end]
+  catch {.rdw.p.t tag remove sel 1.0 end}
+  catch {.rdw.s.msg tag add sel 1.0 {end - 1c}}
+  catch {update idletasks} ; catch {update}
+  set SL9_OWN  [rw_w selection own -displayof .rdw -selection PRIMARY]
+  set SL9_PRIM [rw_w selection get -displayof .rdw -selection PRIMARY]
+  catch {clipboard clear -displayof .rdw.p.t}
+  rw_ans ::rdw::copy
+  set SL9_CLIP [rw_w clipboard get -displayof .rdw.p.t]
+  catch {.rdw.s.msg tag remove sel 1.0 end}
+  check {SL9 A COPY FROM THE STATUS LINE HANDS OVER THE SENTENCE THE WINDOW IS REPORTING, AT A LENGTH PAST THE CAP: the surface holds the model character for character however long it is, the X PRIMARY selection a select-all publishes IS that model, and the clipboard rdw::copy writes is that model too - a surface that hands over its own elided picture of a sentence is issue 1344's defect returning through the door 1344 was fixed for, in the one window whose purpose is select-and-paste} \
+    [list [expr {$SL9_NEED > $SL1_CAP ? 1 : 0}] \
+          [expr {$SL9_SHOWN eq $SL9_MODEL ? 1 : 0}] \
+          $SL9_OWN \
+          [expr {$SL9_PRIM eq $SL9_MODEL ? 1 : 0}] \
+          [expr {$SL9_CLIP eq $SL9_MODEL ? 1 : 0}] \
+          [string length $SL9_CLIP]] \
+    [list 1 1 {.rdw.s.msg} 1 1 900]
+
+  # --- SL10  A SELECTION STANDING IN A CAPPED VERDICT SURVIVES A RESIZE -----
+  ## SL8 asserts this property and CANNOT see it: its 260-character message
+  ## fits inside the cap, so the painted string does not depend on the width
+  ## and `_status_put`'s guard fires for free.  MEASURED past the cap on the
+  ## unmodified source: three pixels of drag put the selection down.  The
+  ## control leg is the same gesture on a message inside the cap, so the row
+  ## says which half of the boundary it is about.
+  sl_set [sl_msg 900]
+  set SL10_G0 [rw_w wm geometry .rdw]
+  set SL10_W0 [rw_w winfo width .rdw]
+  set SL10_H0 [rw_w winfo height .rdw]
+  catch {.rdw.s.msg tag add sel 1.10 1.40}
+  catch {update idletasks} ; catch {update}
+  set SL10_SEL0 [rw_w .rdw.s.msg tag ranges sel]
+  set SL10_TXT0 [rw_w .rdw.s.msg get 1.10 1.40]
+  catch {wm geometry .rdw [expr {$SL10_W0 - 3}]x$SL10_H0}
+  catch {update idletasks} ; catch {update}
+  set SL10_SEL1 [rw_w .rdw.s.msg tag ranges sel]
+  set SL10_TXT1 [rw_w .rdw.s.msg get 1.10 1.40]
+  catch {.rdw.s.msg tag remove sel 1.0 end}
+  catch {wm geometry .rdw $SL10_G0}
+  catch {update idletasks} ; catch {update}
+  sl_set [sl_msg 60]
+  catch {.rdw.s.msg tag add sel 1.10 1.40}
+  catch {update idletasks} ; catch {update}
+  set SL10_CTL0 [sl_sel_present]
+  catch {wm geometry .rdw [expr {$SL10_W0 - 3}]x$SL10_H0}
+  catch {update idletasks} ; catch {update}
+  set SL10_CTL1 [sl_sel_present]
+  catch {.rdw.s.msg tag remove sel 1.0 end}
+  catch {wm geometry .rdw $SL10_G0}
+  catch {update idletasks} ; catch {update}
+  check {SL10 DRAGGING THE WINDOW'S EDGE DOES NOT PUT DOWN A SELECTION STANDING IN A LONG VERDICT: with a sentence past the cap in the status line and a selection standing in it, three pixels of resize leave the selection where it was and over the same characters - a refit whose painted string depended on the width repainted on every resize and destroyed the tag, which is issue 1344 defect c reached by the gesture SL8's shorter message cannot reach} \
+    [list $SL10_SEL0 $SL10_SEL1 [expr {$SL10_TXT1 eq $SL10_TXT0 ? 1 : 0}] \
+          $SL10_CTL0 $SL10_CTL1] \
+    [list {1.10 1.40} {1.10 1.40} 1 1 1]
+
+  # --- SL11  THE VERDICT THE BUTTON COLUMN REALLY EMITS ---------------------
+  ## ⚠ NOT FILLER, AND NOT A LITERAL EITHER.  Every clause below is the return
+  ## value of the proc `rdw::button` calls for it -- `rdw::_edit`'s own success
+  ## sentence, which already carries `rdw::_sheet_note`, `rdw::_drawn_note` and
+  ## `rdw::_shadow_why`, plus `rdw::_selection_note_for` appended exactly as
+  ## `rdw::_bstatus` appends it.  So the row is measured at whatever length
+  ## this window's real prose composes to, with real full stops, hyphens and a
+  ## real filesystem path in it, and a reworded clause is still measured.
+  ## Issue 1362's rows drove the elide path on punctuation-free filler only:
+  ## its word-boundary backoff could be changed from a space to a full stop and
+  ## all three suites stayed green while a real verdict lost a further 116
+  ## characters on screen.
+  b5_lists_reset
+  set SL11_TY [rw_ans ::op_annot::type M1]
+  set SL11_DESC0 [rw_ans ::op_annot::descriptor $SL11_TY]
+  catch {op_annot::register $SL11_TY $::B5_DESC}
+  rw_ans ::op_param_lists::set_class $SL11_TY b5cls
+  b5_fixture_blocks
+  rw_ans ::rdw::set_list annotation
+  rw_ans ::rdw::render_pane
+  catch {update idletasks}
+  ## The first block whose subject still resolves in the design section NW left
+  ## open -- SL5's own reason, and the row would otherwise measure a refusal.
+  set SL11_BI -1
+  set SL11_NB 0
+  catch {set SL11_NB [llength $::rdw::blocks]}
+  for {set _i 0} {$_i < $SL11_NB} {incr _i} {
+    set _s [rw_ans ::rdw::_subject $_i]
+    if {[rw_bad $_s] || $_s eq {}} continue
+    set _c {} ; catch {set _c [dict get $_s class]}
+    set _cn {} ; catch {set _cn [dict get $_s cellname]}
+    if {$_c eq {} || $_cn eq {}} continue
+    set SL11_BI $_i ; break
+  }
+  set SL11_SUBJ [rw_ans ::rdw::_subject $SL11_BI]
+  ## The sheet the dump was taken on, which is what `rdw::_capture_subject`
+  ## stamps at dump time; section NW has since loaded a different one, which is
+  ## the state ruling DD-16's sentence exists for.
+  if {![rw_bad $SL11_SUBJ] && $SL11_SUBJ ne {}} {
+    catch {dict set SL11_SUBJ schname $B5_SCH}
+  }
+  ## A NARROW delete first, so a device-flavor entry exists; then a BROAD one,
+  ## which is the gesture `rdw::_shadow_why` reports on.
+  set SL11_E1 [rw_ans ::rdw::_edit delete $SL11_SUBJ annotation narrow gds]
+  set SL11_E2 [rw_ans ::rdw::_edit delete $SL11_SUBJ annotation broad ids]
+  set SL11_V {}
+  if {[llength $SL11_E2] == 2 && [lindex $SL11_E2 0] eq {ok}} {
+    set SL11_V [rw_ans ::rdw::_bstatus "Delete: [lindex $SL11_E2 1]" \
+                        [rw_ans ::rdw::_selection_note_for 6]]
+  }
+  catch {update idletasks} ; catch {update}
+  set SL11_MSG [expr {[info exists ::rdw::statusmsg] ? $::rdw::statusmsg : {NOVAR}}]
+  set SL11_SHOWN [rw_w .rdw.s.msg get 1.0 {end - 1c}]
+  set SL11_NEED  [rw_w .rdw.s.msg count -displaylines 1.0 end]
+  catch {.rdw.p.t tag remove sel 1.0 end}
+  catch {.rdw.s.msg tag add sel 1.0 {end - 1c}}
+  catch {update idletasks} ; catch {update}
+  catch {clipboard clear -displayof .rdw.p.t}
+  rw_ans ::rdw::copy
+  set SL11_CLIP [rw_w clipboard get -displayof .rdw.p.t]
+  catch {.rdw.s.msg tag remove sel 1.0 end}
+  ## The last character of the sentence is REACHABLE -- scroll to the bottom
+  ## and it has a bounding box.  A capped surface that could not be scrolled
+  ## would hold the tail and still never show it.
+  catch {.rdw.s.msg yview moveto 1.0}
+  catch {update idletasks}
+  set SL11_BB [rw_w .rdw.s.msg bbox {end - 2c}]
+  catch {.rdw.s.msg yview moveto 0.0}
+  catch {update idletasks}
+  if {$SL11_DESC0 ne {} && ![string match {NOPROC*} $SL11_DESC0]} {
+    catch {op_annot::register $SL11_TY $SL11_DESC0}
+  }
+  check {SL11 A VERDICT COMPOSED THE WAY THE BUTTON COLUMN COMPOSES ONE IS READ AND COPIED WHOLE: rdw::_edit's own success sentence with the sheet note and the shadow clause it carries, plus the selection clause rdw::_bstatus appends, in real prose with real punctuation and a real filesystem path - it runs past the cap, the surface still holds every character of it, the clipboard gets every character of it, and its last character can be brought on screen} \
+    [list [expr {[llength $SL11_E1] == 2 ? [lindex $SL11_E1 0] : $SL11_E1}] \
+          [expr {[llength $SL11_E2] == 2 ? [lindex $SL11_E2 0] : $SL11_E2}] \
+          [rw_has $SL11_MSG {which is not the sheet now open}] \
+          [rw_has $SL11_MSG {precedence is file order}] \
+          [rw_has $SL11_MSG {the buttons act on the shaded row alone}] \
+          [rw_has $SL11_MSG $B5_SCH] \
+          [expr {[rw_count $SL11_MSG {. }] >= 3 ? 1 : 0}] \
+          [expr {[string length $SL11_MSG] > 500 ? 1 : 0}] \
+          [expr {$SL11_NEED > $SL1_CAP ? 1 : 0}] \
+          [expr {$SL11_SHOWN eq $SL11_MSG ? 1 : 0}] \
+          [expr {$SL11_CLIP eq $SL11_MSG ? 1 : 0}] \
+          [expr {[sl_len $SL11_BB] == 4 ? 1 : 0}]] \
+    [list ok ok 1 1 1 1 1 1 1 1 1 1]
+  b5_lists_reset
 
   sl_set {}
   catch {destroy .rdw.scope}
@@ -6921,7 +7148,21 @@ else { set ::ev_precision $RW_EVP_SAVE }
 ## rows CP14 and CP16, whose names, properties and expected values did not
 ## move.  A floor is raised when rows are added and NEVER lowered to make a run
 ## pass.
-set RW_FLOOR 165
+## ⚠ AND RAISED 165 -> 166 BY THE REPAIR OF ISSUE 1365, IN THE SAME COMMIT AS
+## THE ONE ROW OF SECTION SL IT ADDS THAT RUNS ON BOTH ARMS: SL12, the
+## scrollbar's decision driven at the cap, one past it and at the two
+## non-integer counts an unmapped widget answers.  The repair's other three
+## rows - SL9 (the copy hands over the sentence and not a picture of it),
+## SL10 (a resize does not put down a selection standing in a capped verdict)
+## and SL11 (a verdict composed the way the button column composes one, in real
+## prose, read and copied whole) - need a mapped window, a real X PRIMARY
+## selection, a real clipboard and a real resize, so they are `live_tk`-gated
+## and are deliberately NOT counted here: the floor is the arm that runs FEWEST
+## rows.  Rows SL3 and SL6 are RE-SPELLED by the same commit rather than added
+## - the elision they golded is gone - so neither moves the count.  Issue 1365
+## adds no row to test_rdw_keys_1245.tcl and its `KX_FLOOR` is unchanged at 88.
+## A floor is raised when rows are added and NEVER lowered to make a run pass.
+set RW_FLOOR 166
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\

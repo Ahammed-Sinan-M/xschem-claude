@@ -1,6 +1,22 @@
 # 1362 — the RDW's status line silently amputated its own sentences, and the half it took was the answer
 
-**Status: FIXED** (commit on `fluid-editing`).
+**Status: FIXED** (commit `fa0eb0b0` on `fluid-editing`) — **but its ELISION
+was itself a defect and is now gone; see issue 1365.**
+
+> ⚠ **SUPERSEDED IN PART BY 1365, AND THE SUPERSEDED PART IS THIS FILE'S OWN
+> CENTRAL ARGUMENT.** Everything below about the one-line `entry` and about the
+> wrapping surface still stands. What does not is the claim that a cap on the
+> DRAWN text is harmless because "`::rdw::statusmsg` still holds every sentence
+> whole ... the painter may shorten what it DRAWS and never what it HOLDS".
+> `rdw::copy`'s sibling leg is `rdw::_sibling_selection` -> `selection get
+> PRIMARY` — what the WIDGET holds — so an elided widget was an **elided
+> clipboard** (MEASURED: 474 characters ending in `...`, against 618 before
+> 1362), which is issue 1344's defect returning. The elision also made the
+> painted string depend on the WIDTH, so a three-pixel resize destroyed a
+> standing selection; and it merely moved the cliff, from 122 characters to 492,
+> against real composed verdicts of 618-778. `rdw::_status_cut_mark` no longer
+> exists: the cap is a cap on the surface's HEIGHT and the tail is scrolled to.
+
 **Subject:** `.rdw.s.msg` and `rdw::status` in `src/rdw.tcl` — the one-line
 field at the bottom of the Results Display Window.
 **Why it matters:** issue **1356** minted a clause *specifically* to answer the

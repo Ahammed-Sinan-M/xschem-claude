@@ -1976,6 +1976,13 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   unmoved, `KX_FLOOR` unchanged at 88. Carries **the pixel half unpaid**: look
   debt `rdw_1362_status_wrap` and rule debt **1362** (the cap, and letting the
   window's height follow the verdict).
+  ⚠ **SUPERSEDED IN PART BY 1365.** `rdw::_status_cut_mark` and the elision it
+  marked are GONE. The sentence above — "`::rdw::statusmsg` still holds every
+  sentence whole", offered as the reason a painter may shorten what it draws —
+  was **measured false as an argument**: `rdw::copy` hands over the X PRIMARY
+  selection, which is what the WIDGET holds, so an elided widget was an elided
+  clipboard (issue 1344's defect, returning). The surface change stands; the
+  cap is now a cap on HEIGHT and the tail scrolls. See **1365**.
 
 - **1363** — shape `d` went live and left **two ASE suites standing red**, and
   nobody filed it. Measured at HEAD `fa0eb0b0`: `test_ase_core` 10 FAILED (172),
@@ -2017,4 +2024,40 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   reads **ALL PASS (81)** under the user's real registry AND under a HOME with
   none, where before it read 6 FAILED (74) / ALL PASS (80) on the same commit.
 
-**The next free number is 1365.**
+- **1365** — the Results window's status surface handed over **its own elided
+  picture** of a sentence. Issue 1362 replaced the one-line `entry` with a
+  wrapping `text` capped at four display lines and, past the cap, elided at a
+  word boundary with a `...` marker — staking itself on "`::rdw::statusmsg`
+  still holds every sentence WHOLE ... the painter may shorten what it DRAWS
+  and never what it HOLDS". **The second half of that sentence is false about
+  this window.** `rdw::copy`'s sibling leg is `rdw::_sibling_selection` ->
+  `selection get PRIMARY`, i.e. what the WIDGET holds; the model is never
+  consulted there and cannot be, because the user selected a RANGE. MEASURED on
+  a 618-character composed verdict at 893x498: pre-1362 the clipboard came back
+  **618** characters ending `the shaded row alone.`, at `fa0eb0b0` it came back
+  **474** ending in a literal `...` — **issue 1344's defect returning through
+  the door 1344 was fixed for**, in the window whose purpose is select-and-paste.
+  Two more, same root: `rdw::_status_show` put the FULL model on the surface
+  before measuring, so on a capped message `_status_put`'s no-repaint guard
+  could never fire and **three pixels** of resize destroyed a standing selection
+  (the pre-1362 entry survived it); and the cliff merely MOVED, from 122
+  characters to **492**, against real composed verdicts of 618–778 — so a
+  shipped verdict was still amputated at the window's default size. Row SL8
+  could not see the first (its message never reaches the cap) and SL4/SL5/SL6
+  could not see the second (260 / 147 characters of filler, and a 4000-character
+  row that asserts only that the cut is MARKED). **FIXED** by removing the
+  elision rather than patching it: the cap is a cap on the surface's HEIGHT, the
+  widget holds every character of the model at every length, and a scrollbar
+  appears when the sentence needs more lines than the surface has — an
+  affordance that is operable, where `...` was one that was not. All three close
+  by construction. Fenced by **SL9** (the clipboard IS the sentence, past the
+  cap), **SL10** (a selection survives a resize on a capped verdict, with a
+  control inside the cap), **SL11** (a verdict composed the way `rdw::button`
+  composes one — `rdw::_edit` + `_sheet_note` + `_shadow_why` + `_selection_note`
+  — MEASURED at **676 characters / 7 display lines** with real punctuation and a
+  real path, read and copied whole) and **SL12** (the scrollbar's pure decision
+  at its boundary); **SL3** and **SL6** are re-spelled, since the elision they
+  golded is gone. `RW_FLOOR` 165 -> 166 in-commit; `KX_FLOOR` unchanged at 88.
+  Seven sabotages, each row red where another is green.
+
+**The next free number is 1366.**
