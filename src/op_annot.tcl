@@ -352,6 +352,12 @@ namespace eval op_annot {
   if {![info exists _c_name]} { set _c_name 0 }
   variable _c_model
   if {![info exists _c_model]} { set _c_model 0 }
+  ## Issue 1364's re-entry latch. Set for the length of op_annot::opdump_read's
+  ## republish, read by op_annot::opdump_autofill: `xschem update_op` is now a
+  ## door onto the merge, and a merge inside a merge is not what the caller
+  ## asked for. See the two procs for the whole story.
+  variable opdump_merging
+  if {![info exists opdump_merging]} { set opdump_merging 0 }
 }
 
 ## The effective row cap: a positive integer, or 0 for no limit. Anything the
@@ -1786,20 +1792,27 @@ proc op_annot::db_attach {path {level {}}} {
     }
     return [list 0 $e]
   }
-  ## ⚠ THE SIDECAR MERGE, AND IT GOES HERE RATHER THAN IN A RUN CALLBACK
-  ## (issue 1333). Two measured reasons. `xschem raw add` raises "No raw file
-  ## loaded" unless a database is already on this window, so the merge cannot
-  ## happen when the run finishes -- only when one is attached. And db_attach is
-  ## the ONE place that puts an operating point onto a window: ASE-L's surface
-  ## (ase_window.tcl) and the cadence profile (utils/annot_mode.tcl) both come
-  ## through here, so one call covers both and neither can be forgotten.
+  ## ⚠ THE SIDECAR MERGE IS NO LONGER CALLED FROM HERE, AND ITS ABSENCE IS THE
+  ## FIX (issue 1364). Issue 1333 put a `catch {::op_annot::opdump_merge $np}`
+  ## on this line under a comment claiming "db_attach is the ONE place that puts
+  ## an operating point onto a window". THAT CLAIM WAS FALSE and the falseness
+  ## was the defect: `xschem annotate_op` is the general-purpose verb, and 61
+  ## committed schematics carrying a `tclcommand="xschem annotate_op …"`
+  ## launcher, both `Annotate Operating Point into schematic` menu items, the
+  ## raw carried into a new window by open_sub_schematic / hi_descend and
+  ## `results::select` all reach it WITHOUT coming through here. Rows F36-F41 of
+  ## tests/headless/test_annot_stale_0684.tcl say so in their own header. On the
+  ## user's registry (`tier d reason dump`) every one of those paths rendered
+  ## `id` and left `gm gds vgs vth vds` blank -- issue 0617 restored.
   ##
-  ## CAUGHT, and deliberately not fatal. The raw itself attached successfully;
-  ## its node half is good and every shape but d has all its numbers in it. A
-  ## sidecar that will not parse must not turn a working attach into a refusal —
-  ## ase::op_report_missing is the surface that speaks about a dump that did not
-  ## arrive, and it has the run's shape in hand to say it precisely.
-  catch {::op_annot::opdump_merge $np}
+  ## The merge now happens ONCE, in the tree's own choke point: update_op()
+  ## (src/save.c) calls op_annot::opdump_autofill just below its three refusals.
+  ## `xschem annotate_op` above therefore merges before it publishes, and this
+  ## proc's own postcondition proves it did -- `op_annot::_annotated` is true
+  ## only when `annot_p >= 0`, which only update_op() sets, so an attach that
+  ## reaches the stamp below is an attach whose merge has already run. Calling
+  ## it a second time here would parse the same sidecar twice (36 ms on the
+  ## user's own 280 KB / 7825-parameter dump) for an answer that cannot differ.
   ::op_annot::_db_stamp $np
   return [list 1 {}]
 }
@@ -3728,6 +3741,95 @@ proc op_annot::opdump_merge {rawpath} {
   return $r
 }
 
+## op_annot::opdump_autofill -> {} | whatever op_annot::opdump_merge answered.
+##
+## ⚠ THE SECOND DOOR (issue 1364), AND IT IS THE ONE EVERY ANNOTATION PATH THAT
+## IS NOT THE ASE-L WINDOW GOES THROUGH. Issue 1333 gave `opdump_merge` its
+## first caller, in `op_annot::db_attach`, and that wired ONE door: ASE-L's
+## Results > Annotate and the cadence profile's `6`, both of which come through
+## db_attach. `xschem annotate_op` -- the general-purpose C verb -- did not, and
+## neither did anything reached through it: the 61 committed schematics carrying
+## a `tclcommand="xschem annotate_op …"` launcher, the shipped
+## Simulation > Graphs > Annotate Operating Point menu item (twice, once per
+## menubar), the raw carried across by Open-in-new-window and by hi_descend,
+## `results::select`'s `xschem raw select`, and the cadence Alt-6 rungs that
+## acquire with `xschem raw read` / `xschem raw switch` and publish with
+## `xschem update_op`. MEASURED on the user's own registry (ngspice-ver50, so
+## `ase::op_save_tier` answers `tier d reason dump`): after `xschem annotate_op
+## <raw> 0 op`, `op_annot::text M1` rendered `id` and left `gm gds vgs vth vds`
+## BLANK -- and the one row that appeared is the accident, `.options
+## savecurrents` putting `i(@dev[id])` in the raw with no card present. Issue
+## 0617 restored, on a run that exited 0 with a perfect raw and a clean log.
+##
+## ⚠ WHERE IT IS CALLED FROM, AND WHY THERE. `update_op()` (src/save.c) is the
+## tree's own choke point -- its comment has said so since RULING D5-3: "the
+## `annotate_op` arm, both `raw switch` gates and the bare [verb]" all funnel
+## through it, and `raw select` joined them since. One call there covers every
+## door above, present and future, which is exactly what wiring the doors one at
+## a time did not. It sits AFTER that function's three refusals (digital,
+## zero-point, not-op/dc), so a database that is not going to be published as an
+## operating point is never merged into.
+##
+## ⚠ THE GATE IS REPEATED HERE RATHER THAN INHERITED, because this proc is also
+## callable from Tcl and a caller cannot be relied on to have earned it:
+##   * `xschem raw add` raises "No raw file loaded" with nothing attached, so
+##     the merge cannot run before a database is on the window (issue 1333's
+##     first measured reason, re-checked at scheduler.c's `raw` dispatcher and
+##     still true);
+##   * op/dc ONLY. The dump is one snapshot; painting it over a TRANSIENT would
+##     put a number nobody measured beside the thing it is drawn next to, which
+##     RULING D5-1 forbids in those words. `cadence::_annot_tran_supply` reaches
+##     `xschem annotate_op <path> <lvl>` as its second ask and can land on the
+##     op plot of a file whose transient is on screen -- that arm is why the
+##     type is asked here and not assumed;
+##   * ONE POINT ONLY, the same term `raw switch` / `raw select` / `switch_back`
+##     require before they republish. `update_op()` is deliberately one term
+##     weaker (issue 0862: a multi-point .dc sweep still publishes its FIRST
+##     step), and `show` dumps the state at the END of the run -- so on a sweep
+##     the merge would paint the last step's numbers flat across every step and
+##     publish them as the first. Blank is the honest answer there.
+##
+## ⚠ SILENT, ALWAYS (issue 0975). A missing, empty, legacy or stale sidecar is
+## not this proc's news to break: `ase::op_report_missing` is the one surface
+## that speaks about a dump that did not arrive, and it has the run's shape in
+## hand to say it precisely. A raw with no sidecar beside it is EVERY run of
+## every other shape, which is why silence is the right answer and not a
+## swallowed error.
+##
+## ⚠ AND IT IS IDEMPOTENT, which is what makes ONE call site enough rather than
+## a call site per door. `xschem raw add <name> <value>` on a name already in
+## the database adds no column and re-writes the same value through
+## plot_raw_custom_data() (raw_add_vector(), src/save.c), so a second publish
+## over the same database answers the same rows. MEASURED on the user's own
+## 280 KB / 7825-parameter sidecar: 36 ms per pass, byte-identical dict,
+## identical rendered rows. Row W12 is the fence. `op_annot::db_attach`'s own
+## `opdump_merge` call (issue 1333) is GONE for the same reason -- it now sits
+## downstream of `xschem annotate_op`, which merges before it publishes.
+proc op_annot::opdump_autofill {} {
+  variable opdump_merging
+  ## G0 -- NO MERGE INSIDE A MERGE. op_annot::opdump_read republishes with
+  ## `xschem update_op`, which is one of this hook's own doors, so without this
+  ## latch a hand-driven `opdump_read <some other dump>` would additionally pull
+  ## in the CURRENT raw's sidecar behind the caller's back, and the ordinary
+  ## path would parse its own sidecar twice.
+  if {[info exists opdump_merging] && $opdump_merging} { return {} }
+  set ty {}
+  if {[catch {xschem raw sim_type} ty]} { return {} }
+  if {$ty ne {op} && $ty ne {dc}} { return {} }
+  set npts {}
+  if {[catch {xschem raw points} npts]} { return {} }
+  if {![string is integer -strict $npts] || $npts != 1} { return {} }
+  set rf {}
+  if {[catch {xschem raw rawfile} rf]} { return {} }
+  if {[string trim $rf] eq {}} { return {} }
+  set path {}
+  if {[catch {file normalize $rf} path]} { return {} }
+  if {$path eq {}} { return {} }
+  set r {}
+  if {[catch {::op_annot::opdump_merge $path} r]} { return {} }
+  return $r
+}
+
 proc op_annot::opdump_read {path} {
   set path [string tolower $path]
 
@@ -3800,7 +3902,19 @@ proc op_annot::opdump_read {path} {
   }
 
   ## Publish. See the note above: without this the accessors read zeros.
-  xschem update_op
+  ##
+  ## ⚠ AND IT IS LATCHED SINCE ISSUE 1364. `xschem update_op` is now the door
+  ## the blanket dump is merged through, so this republish lands back in
+  ## op_annot::opdump_autofill. Left unlatched it would parse this very sidecar
+  ## a second time on the ordinary path, and on a hand-driven call -- a caller
+  ## naming a dump that is NOT the current raw's -- it would silently merge the
+  ## current raw's sidecar as well. The latch is cleared before the error is
+  ## re-raised so a failed republish cannot leave the door bolted.
+  variable opdump_merging
+  set opdump_merging 1
+  set _uprc [catch {xschem update_op} _uperr]
+  set opdump_merging 0
+  if {$_uprc} { return -code error $_uperr }
 
   return [dict create devices $ndev params $nparam skipped $nskip \
                       dups $ndup path $path]

@@ -3547,6 +3547,46 @@ int netlist_case_mode(void)
   return mode;
 }
 
+/* GIVE THE Tcl SIDE THE CHANCE TO MERGE THE BLANKET OPERATING-POINT DUMP THAT
+ * BELONGS TO THE DATABASE ABOUT TO BE PUBLISHED (issue 1364).
+ *
+ * ⚠ WHY A HOOK AND NOT A READER. The sidecar ngspice's `set altshow` + `show
+ * all >` writes is only HALF a database: the node voltages come from the deck's
+ * own `.save all` and carry no hierarchy knowledge, so a reader that BUILT
+ * xctx->raw from the dump would throw them away. It is merged in through
+ * `xschem raw add`, which is Tcl, which is where op_annot.tcl's parser already
+ * lives -- and re-implementing that parser in C to avoid one tcleval() would be
+ * two parsers for one grammar.
+ *
+ * ⚠ WHY HERE. update_op() is this tree's own choke point for "annotate the
+ * operating point" -- the D5-3 comment below has said so since it was written,
+ * and `raw select` joined the three callers it names. Wiring the doors one at a
+ * time is what issue 1364 IS: issue 1333 wired `op_annot::db_attach` and left
+ * `xschem annotate_op` -- the verb 61 committed schematics, both Annotate
+ * Operating Point menu items and every carried-across raw go through -- with no
+ * merge at all.
+ *
+ * ⚠ THE RE-ENTRY GUARD IS LOAD-BEARING, NOT BELT. op_annot::opdump_read ends
+ * with `xschem update_op` (its own comment explains why: without that republish
+ * the accessors read zeros), which lands straight back here. `busy` is what
+ * makes the merge run once and the publish run twice, instead of recursing.
+ *
+ * ⚠ AND IT MUST NOT RAISE INTO THE PUBLISHER. The script tests for the proc
+ * before calling it (a session that never sourced op_annot.tcl is not an error)
+ * and catches it (a sidecar that will not parse must not turn a good attach into
+ * a refusal -- the raw's node half is still good). The result is reset so this
+ * hook cannot be mistaken for the command's own answer. */
+static void op_annot_autofill(void)
+{
+  static int busy = 0;
+  if(busy) return;
+  busy = 1;
+  tcleval("if {[info procs ::op_annot::opdump_autofill] ne {}}"
+          " {catch {::op_annot::opdump_autofill}}");
+  Tcl_ResetResult(interp);
+  busy = 0;
+}
+
 int update_op()
 {
   int res = 0, p = 0, i;
@@ -3782,6 +3822,16 @@ int update_op()
         (xctx->raw && xctx->raw->sim_type) ? xctx->raw->sim_type : "<none>");
     return 0;
   }
+  /* ⚠ THE BLANKET DUMP IS MERGED HERE, BELOW EVERY REFUSAL AND ABOVE THE
+   * PUBLISH (issue 1364). Below, so a digital, zero-point or non-op/dc
+   * database is never merged into -- the three guards above have already
+   * decided nothing is going to be published. Above, so the columns it adds are
+   * in nvars by the time cursor_b_val[] is filled and ngspice_data_arm() takes
+   * its view; run it after the loop and the very numbers it supplied would
+   * publish one press late. See op_annot::opdump_autofill (src/op_annot.tcl)
+   * for the gate it applies to itself, and rows W8..W15 of
+   * tests/headless/test_op_dump_altshow.tcl for the fence. */
+  op_annot_autofill();
   if(xctx->raw && xctx->raw->values) {
     xctx->raw->annot_p = 0;
     dbg(1, "update_op(): nvars=%d\n", xctx->raw->nvars);

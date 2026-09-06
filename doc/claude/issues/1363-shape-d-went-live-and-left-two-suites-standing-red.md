@@ -1,6 +1,24 @@
 # 1363 — shape `d` went live and left two ASE suites standing red, unfiled
 
-**Status: FILED, NOT FIXED.** Found while fixing issue 1354, which is a
+**Status: `test_ase_final` FIXED (issue 1364); `test_ase_core` STILL RED.**
+
+> **2026-09-05, by issue 1364.** The measurement this file asked for was taken.
+> `F16`/`F17` were **not** a stale expectation: they were the real defect —
+> `op_annot::opdump_merge` had exactly one caller, in `op_annot::db_attach`, and
+> `xschem annotate_op` (which is what `F16` drives, and what the user's own
+> launcher buttons and menu items drive) never merged at all. Fixed in
+> `update_op()`. `F12`/`F14`/`F21` were the stale expectations this file
+> predicted, and `test_ase_final` is now shape-aware: **ALL PASS (81 checks)**
+> under the user's registry and under a HOME with none.
+>
+> `test_ase_core` is **untouched**. Re-measured 2026-09-05 at the 1364 commit:
+> 10 FAILED (172 passed) with the user's `ase_simulators`, **3 FAILED (179
+> passed)** with a HOME carrying none — so `E1e` is registry-dependent for a
+> reason that is not the tier, and `C11` / `NT17` / `NT18` survive both. Because
+> those three survive either way the suite cannot reach zero by making
+> `C5b`/`C6`×4/`C8` shape-aware, which is why 1364 did not do half of it.
+
+**Original status: FILED, NOT FIXED.** Found while fixing issue 1354, which is a
 different defect on the same road. Filed rather than fixed because it is outside
 that item and because one of the reds (`F16`/`F17`) may be a real blank
 annotation rather than a stale expectation, and telling those two apart is a

@@ -364,6 +364,240 @@ check_true {W7 and a raw with no sidecar at all attaches exactly as it always di
 catch {xschem raw clear}
 
 # ============================================================================
+# W8 .. W15 — THE SECOND DOOR: `xschem annotate_op`, WHICH NEVER MERGED
+#            (issue 1364)
+# ============================================================================
+# ⚠ ISSUE 1333 WIRED ONE DOOR AND THE COMMENT IT WROTE SAID SO IN WORDS THAT
+# WERE FALSE. It put the merge in `op_annot::db_attach` "because db_attach is
+# the ONE place that puts an operating point onto a window". It is not.
+# `xschem annotate_op` is the general-purpose verb, and NOTHING that reaches it
+# directly came through db_attach:
+#
+#   * 61 committed schematics carry a launcher whose
+#     `tclcommand="xschem annotate_op …"` is the button the user presses
+#     (xschem_library/examples, sky130A/xschem_libs/sky130_tests, …);
+#   * `Simulation > Graphs > Annotate Operating Point into schematic` and the
+#     waveform window's `Waves > Op Annotate` are both a bare `xschem
+#     annotate_op` -- rows F36-F41 of tests/headless/test_annot_stale_0684.tcl
+#     say exactly that in their own header;
+#   * `open_sub_schematic` and `hi_descend` carry an annotated raw into a new
+#     window/tab with `xschem annotate_op $rawfile` (src/xschem.tcl);
+#   * `cadence::_annot_tran_supply`'s second ask (utils/annot_mode.tcl);
+#   * `results::select` -> `xschem raw select`, and the cadence Alt-6 rungs,
+#     which acquire with `xschem raw read` / `xschem raw switch` and publish
+#     with `xschem update_op`.
+#
+# MEASURED on the user's own registry (ngspice-ver50 -> `ase::op_save_tier`
+# answers `tier d reason dump`): after a real run, `xschem annotate_op <raw> 0
+# op` rendered `id` and left `gm gds vgs vth vds` BLANK. The one row that
+# appeared is the accident -- `.options savecurrents` puts `i(@dev[id])` in the
+# raw with no card present (test_ase_final's own F18 trap) -- so the feature's
+# own five were exactly the five that vanished. Issue 0617 restored.
+#
+# THE FIX IS ONE CALL IN THE ONE CHOKE POINT: update_op() (src/save.c) calls
+# op_annot::opdump_autofill below its three refusals and above its publish.
+# These rows drive the door WITHOUT db_attach anywhere, which is what makes
+# them red on a tree that wires only the first door.
+## ⚠ EVERY FIXTURE BELOW GETS ITS OWN DIRECTORY, and that is not tidiness.
+## Row W10's subject is a raw with NO sidecar; with the fixtures sharing one
+## directory, a door that fell back to "any .opinfo next door" would still find
+## one and W10 could not tell. One raw per directory is what makes the absence
+## real.
+proc w_dir {tag} {
+  set d [file join $::scratch xdoor $tag]
+  file mkdir $d
+  return $d
+}
+
+## one-point Operating Point raw, node half only — the shape `d` leaves behind
+proc w_oppoint {path} {
+  set fh [open $path w]
+  puts $fh "Title: t"
+  puts $fh "Plotname: Operating Point"
+  puts $fh "Flags: real"
+  puts $fh "No. Variables: 2"
+  puts $fh "No. Points: 1"
+  puts $fh "Variables:"
+  puts $fh "\t0\tv(vbg)\tvoltage"
+  puts $fh "\t1\tv(vcc)\tvoltage"
+  puts $fh "Values:"
+  puts $fh "0\t1.2"
+  puts $fh "\t1.8"
+  close $fh
+}
+## a sidecar for <raw>, <age> seconds newer than it (negative = stale)
+proc w_sidecar {raw dev age {body {}}} {
+  set d [::op_annot::opdump_path $raw]
+  set fh [open $d w]
+  puts $fh "${dev}:"
+  if {$body eq {}} {
+    puts $fh "    id                 = 5.33333e-05"
+    puts $fh "    gm                 = 0.000266667"
+  } else {
+    puts $fh $body
+  }
+  close $fh
+  file mtime $d [expr {[file mtime $raw] + $age}]
+  return $d
+}
+## is <name> a column of the CURRENTLY loaded database?  Asked of `raw list`
+## rather than of a value, because a transient publishes nothing either way and
+## a row built on the value could not tell "refused to merge" from "refused to
+## publish".
+proc w_hascol {name} {
+  set l {}
+  if {[catch {xschem raw list} l]} { return -1 }
+  return [expr {[lsearch -exact [split $l "\n"] $name] >= 0 ? 1 : 0}]
+}
+
+set XRAW [file join [w_dir x] x.raw]
+w_oppoint $XRAW
+set XDUMP [w_sidecar $XRAW {m.x1.xm1.mnfet} 1]
+catch {xschem raw clear}
+set x8rc [catch {xschem annotate_op $XRAW}]
+check {W8 THE SECOND DOOR: `xschem annotate_op` alone -- no db_attach anywhere -- merges the sidecar, and the node half the deck's own `.save all` supplied survives beside it} \
+  [list $x8rc [::op_annot::raw_or_blank {@m.x1.xm1.mnfet[id]}] \
+        [::op_annot::raw_or_blank {@m.x1.xm1.mnfet[gm]}] \
+        [::op_annot::raw_or_blank {v(vbg)}]] \
+  {0 5.33333e-05 0.000266667 1.2}
+
+check {W12 and a SECOND publish over the same database is idempotent: same rows, no column added -- which is what makes one call site in the choke point enough instead of one per door} \
+  [list [xschem raw vars] \
+        [expr {[catch {xschem update_op}] ? {RAISED} : {ok}}] \
+        [xschem raw vars] \
+        [::op_annot::raw_or_blank {@m.x1.xm1.mnfet[id]}]] \
+  [list 4 ok 4 5.33333e-05]
+
+## W13 -- THE ACQUIRE-THEN-PUBLISH RUNGS. `cadence::_annot_op_db_ok` rung 3
+## reads with `xschem raw read` (which deliberately does NOT publish) and then
+## publishes with `xschem update_op`; rung 2 does the same through `xschem raw
+## switch`, and `results::select` through `xschem raw select`. None of them ever
+## calls annotate_op, so the merge has to be where the PUBLISH is, not where the
+## read is. The first term is the non-vacuity half: the column must be ABSENT
+## after the read, or the row would pass on a tree that merged at read time.
+catch {xschem raw clear}
+catch {xschem raw read $XRAW op}
+set x13a [w_hascol {@m.x1.xm1.mnfet[id]}]
+catch {xschem update_op}
+check {W13 a raw acquired with `xschem raw read` and published with `xschem update_op` -- the cadence Alt-6 rungs and `results::select`'s road -- gets the merge at the publish, not at the read} \
+  [list $x13a [w_hascol {@m.x1.xm1.mnfet[id]}] \
+        [::op_annot::raw_or_blank {@m.x1.xm1.mnfet[id]}]] \
+  {0 1 5.33333e-05}
+
+## W9 -- ISSUE 0838's RULE MUST SURVIVE THE NEW DOOR. A number painted onto a
+## schematic carries no provenance and no timestamp, so a sidecar left behind by
+## an EARLIER run is indistinguishable from a live one. `opdump_merge` refuses
+## one older than its raw; the second door must not be a way round that.
+set X9RAW [file join [w_dir x9] x9.raw]
+w_oppoint $X9RAW
+w_sidecar $X9RAW {m.x1.xm1.mnfet} -60
+catch {xschem raw clear}
+set x9rc [catch {xschem annotate_op $X9RAW}]
+check {W9 the stale rule holds at the SECOND door too: a sidecar OLDER than its raw is not merged by `xschem annotate_op` either, and the raw still attaches because its node half is good} \
+  [list $x9rc [::op_annot::raw_or_blank {@m.x1.xm1.mnfet[id]}] \
+        [::op_annot::raw_or_blank {v(vbg)}]] \
+  {0 {} 1.2}
+
+## W10 -- ISSUE 0975's SILENCE. A raw with no sidecar beside it is EVERY run of
+## every other shape; the door must be a no-op there and must not raise, print
+## or refuse. `ase::op_report_missing` is the one surface that speaks about a
+## dump that did not arrive.
+set X10RAW [file join [w_dir x10] x10.raw]
+w_oppoint $X10RAW
+catch {xschem raw clear}
+set x10rc [catch {xschem annotate_op $X10RAW} x10err]
+check {W10 a raw with NO sidecar annotates exactly as it always did -- no raise, no refusal, the node half published and the device column simply absent} \
+  [list $x10rc [w_hascol {@m.x1.xm1.mnfet[id]}] \
+        [::op_annot::raw_or_blank {v(vbg)}] \
+        [expr {[file exists [::op_annot::opdump_path $X10RAW]] ? 1 : 0}]] \
+  {0 0 1.2 0}
+
+## W11 -- RULING D5-1: A TRANSIENT IS NEVER MERGED INTO. The dump is ONE
+## snapshot; `gm` and `vth` move over a transient, so painting the snapshot flat
+## across every time point would put a number nobody measured beside the thing
+## it is drawn next to. `cadence::_annot_tran_supply` reaches `xschem
+## annotate_op <path> <lvl>` as its SECOND ask and can land on a file that has
+## a sidecar, which is why this is a real arm and not a hypothetical.
+## Asked of `raw list`, not of a value: a transient publishes nothing either
+## way, so a value-based row could not tell the two refusals apart.
+##
+## ⚠ ONE POINT, DELIBERATELY. A three-point transient is refused by the
+## single-point gate before the type is ever consulted, so the row would have
+## fenced W14's term twice and the TYPE gate not at all -- measured: removing
+## `$ty ne {op} && $ty ne {dc}` left every row in this file green. At one point
+## the type is the only thing standing between this raw and the merge.
+set X11RAW [file join [w_dir x11] x11.raw]
+set fh [open $X11RAW w]
+puts $fh "Title: t"
+puts $fh "Plotname: Transient Analysis"
+puts $fh "Flags: real"
+puts $fh "No. Variables: 2"
+puts $fh "No. Points: 1"
+puts $fh "Variables:"
+puts $fh "\t0\ttime\ttime"
+puts $fh "\t1\tv(vbg)\tvoltage"
+puts $fh "Values:"
+puts $fh "0\t0"
+puts $fh "\t1.0"
+close $fh
+w_sidecar $X11RAW {m.x1.xm1.mnfet} 1
+catch {xschem raw clear}
+set x11rc [catch {xschem annotate_op $X11RAW -1 tran}]
+check {W11 a TRANSIENT is never merged into, even with a fresh sidecar sitting beside it: the snapshot would be flat across every time point and RULING D5-1 forbids painting a number nobody measured} \
+  [list $x11rc [xschem raw sim_type] [xschem raw points] \
+        [w_hascol {@m.x1.xm1.mnfet[id]}]] \
+  {0 tran 1 0}
+
+## W14 -- AND NEITHER IS A MULTI-POINT DATABASE. update_op() is deliberately one
+## term weaker than the `raw switch` / `raw select` gates (issue 0862: a
+## multi-point .dc sweep still publishes its FIRST step), while `show` reports
+## the state at the END of the run -- so merging here would paint the last
+## step's numbers flat across the sweep and publish them as the first.
+set X14RAW [file join [w_dir x14] x14.raw]
+set fh [open $X14RAW w]
+puts $fh "Title: t"
+puts $fh "Plotname: DC transfer characteristic"
+puts $fh "Flags: real"
+puts $fh "No. Variables: 2"
+puts $fh "No. Points: 3"
+puts $fh "Variables:"
+puts $fh "\t0\tv-sweep\tvoltage"
+puts $fh "\t1\tv(vbg)\tvoltage"
+puts $fh "Values:"
+puts $fh "0\t0"
+puts $fh "\t1.0"
+puts $fh "1\t0.5"
+puts $fh "\t1.1"
+puts $fh "2\t1.0"
+puts $fh "\t1.2"
+close $fh
+w_sidecar $X14RAW {m.x1.xm1.mnfet} 1
+catch {xschem raw clear}
+set x14rc [catch {xschem annotate_op $X14RAW -1 dc}]
+check {W14 a MULTI-POINT dc sweep is not merged into either: the dump is one snapshot taken at the END of the run and update_op() publishes point 0, so the merge would label the last step as the first} \
+  [list $x14rc [xschem raw sim_type] [xschem raw points] \
+        [w_hascol {@m.x1.xm1.mnfet[id]}]] \
+  {0 dc 3 0}
+
+## W15 -- NO MERGE INSIDE A MERGE. `op_annot::opdump_read` republishes with
+## `xschem update_op`, which is now one of the door's own entrances. Without the
+## latch, a caller naming a dump BY HAND would silently get the current raw's
+## sidecar pulled in behind it as well -- and the ordinary path would parse its
+## own sidecar twice.
+set X15RAW [file join [w_dir x15] x15.raw]
+w_oppoint $X15RAW
+w_sidecar $X15RAW {q.other.qpnp} 1 "    vbe                = 0.77"
+catch {xschem raw clear}
+catch {xschem raw read $X15RAW op}
+set x15rc [catch {::op_annot::opdump_read $XDUMP}]
+check {W15 a hand-driven `opdump_read <dump>` merges THAT dump and does not additionally pull in the current raw's own sidecar behind the caller's back} \
+  [list $x15rc [w_hascol {@m.x1.xm1.mnfet[id]}] \
+        [w_hascol {@q.other.qpnp[vbe]}]] \
+  {0 1 0}
+
+catch {xschem raw clear}
+
+# ============================================================================
 # Y — THE MISSING-NUMBERS REPORT KNOWS ABOUT SHAPE D (issue 1335)
 # ============================================================================
 # ⚠ THE GUARD BUILT TO STOP SILENT BLANK ROWS WAS DEFEATED BY THIS SHAPE, and

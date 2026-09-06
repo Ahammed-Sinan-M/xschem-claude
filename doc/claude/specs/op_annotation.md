@@ -3428,6 +3428,20 @@ database this window is painting from still the file it was read from?"*
 | `op_annot::db_current {cand}` | 1 iff what is attached is publishable AND still the file it was read from. `cand` is the path this surface would attach, `{}` when it has none. O(1): no vector is touched, only `raw loaded` / `raw annot` / `raw rawfile` plus a `file mtime` + `file size` stamp |
 | `op_annot::db_attach {path ?level?}` | issue **0685**'s TARGETED drop (same path, `op`/`dc` only — **never** `tran`, **never** the bare `xschem raw clear`), then attach, then **verify by re-asking** — `xschem annotate_op /nonexistent` returns the path with `TCL_OK` and nothing attached — then stamp |
 | `op_annot::db_detach {}` | the "or BLANK" half; the named-file spelling, the `raw is_digital` question first (RULING **D5-3**). `cadence::_annot_db_release` is now a one-line delegate to it |
+| `op_annot::opdump_autofill {}` | issue **1364**'s door. Merges the blanket `show all >` sidecar that belongs to the CURRENT database, **op/dc and one point only**, stale refused (issue **0838**), silent on absence (issue **0975**), idempotent, latched against re-entry. Called from `update_op()` (`src/save.c`) below its three refusals and above its publish — **not** from `db_attach`, which is the placement mistake 1364 undoes |
+
+⚠ **THE MERGE IS NOT `db_attach`'s ANY MORE, AND THE REASON IS THE HEADLINE OF
+ISSUE 1364.** Issue 1333 put it there on the premise that `db_attach` is "the one
+place that puts an operating point onto a window". It is not: `xschem
+annotate_op` is the general-purpose verb, and 61 committed schematics' launcher
+buttons, both `Annotate Operating Point into schematic` menu items, `Waves > Op
+Annotate`, the raw carried into a new window by `open_sub_schematic` /
+`hi_descend`, `results::select` and the cadence Alt-6 rungs all reach it without
+passing through `db_attach`. On shape `d` every one of those rendered `id` and
+left `gm gds vgs vth vds` blank — issue **0617** restored. `update_op()` is the
+choke point (its own RULING D5-3 comment says so), so one call there covers all
+five of its C callers: the `annotate_op` arm, `raw switch`, `raw select`,
+`raw switch_back` and the bare `update_op` verb.
 
 **Guard order inside `db_current` IS the contract**, and it is written down in that
 proc's header: nothing publishable → 0; the attached file cannot be named → 0

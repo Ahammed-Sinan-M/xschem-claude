@@ -1991,4 +1991,30 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   expectation. Neither suite is in `tests/run_regression.tcl`, so **T1 stays at
   zero while both are red**; both are in `full_audit.sh`. **FILED, NOT FIXED.**
 
-**The next free number is 1364.**
+- **1364** — the blanket operating-point dump reached ONE door, and the door the
+  user's own annotation path uses was the other one. Issue 1333 wired
+  `op_annot::opdump_merge` into `op_annot::db_attach` under a comment claiming
+  "db_attach is the ONE place that puts an operating point onto a window";
+  **that sentence was false and its falseness was the defect**. `xschem
+  annotate_op` — the general-purpose verb behind 61 committed schematics'
+  `tclcommand=` launcher buttons, both `Annotate Operating Point into schematic`
+  menu items, `Waves > Op Annotate`, the raw carried into a new window by
+  `open_sub_schematic` / `hi_descend`, `results::select` and the cadence Alt-6
+  rungs — never merged. MEASURED on the user's own registry (`tier d reason
+  dump`): `xschem annotate_op <raw> 0 op` then `op_annot::text M1` rendered `id`
+  and left `gm gds vgs vth vds` BLANK, i.e. **issue 0617 restored**; the one row
+  that appeared is `.options savecurrents` putting `i(@dev[id])` in the raw with
+  no card present. **FIXED** by one call in the tree's own choke point: a static
+  `op_annot_autofill()` in `src/save.c` calls `op_annot::opdump_autofill` from
+  inside `update_op()`, below its three refusals and above its publish, so every
+  one of the five C callers is covered; `db_attach`'s own now-redundant call is
+  removed. The new door refuses a transient and a multi-point sweep by name
+  (RULING D5-1, issue 0862), keeps issue 0838's stale rule and issue 0975's
+  silence, and is latched against re-entry twice. Fenced by **W8..W15** of
+  `test_op_dump_altshow.tcl` (three RED on the unmodified source, five proved by
+  a sabotage that reds exactly them). `test_ase_final.tcl` is now **shape-aware**
+  (`F11`/`F12`/`F14`/`F21` ask `ase::op_save_tier`; `F16`/`F17` unchanged), so it
+  reads **ALL PASS (81)** under the user's real registry AND under a HOME with
+  none, where before it read 6 FAILED (74) / ALL PASS (80) on the same commit.
+
+**The next free number is 1365.**

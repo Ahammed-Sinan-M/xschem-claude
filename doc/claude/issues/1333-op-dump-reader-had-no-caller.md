@@ -1,6 +1,16 @@
 # 1333 — the blanket operating-point dump shipped with no caller, and shape d annotated nothing
 
-**Status:** FIXED (this branch)
+**Status:** FIXED (this branch) — **but its PLACEMENT was wrong and is superseded by issue 1364.**
+
+> **2026-09-05.** The sentence below — *"`db_attach` is the one place that puts
+> an operating point onto a window"* — is FALSE, and it was load-bearing. It is
+> why the merge never reached `xschem annotate_op`, and therefore never reached
+> the 61 committed schematics' launcher buttons, either `Annotate Operating
+> Point into schematic` menu item, `Waves > Op Annotate`, the raw carried into a
+> new window, `results::select`, or the cadence Alt-6 rungs. Issue **1364**
+> moves the merge into `update_op()`, the tree's own choke point, and deletes
+> the `db_attach` call this issue added. Everything else here — the stale rule,
+> the "merge, do not replace" shape, the measurement table — stands.
 **Files:** `src/op_annot.tcl`, `src/ase.tcl`
 **Found by:** review of the `op-wcard` sibling branch before cherry-pick, 2026-09-05
 
