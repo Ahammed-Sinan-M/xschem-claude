@@ -2455,4 +2455,14 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   FIXED** — the fix is a ruling (rule debt 1375). Until then that suite is a
   `--nogui` suite.
 
-**The next free number is 1376.**
+- **1376** — the user reports middle-button press-drag pan dead on BOTH their
+  VcXsrv display and WSLg `:0`, with `cadence_style_rc`. **NOT REPRODUCED**
+  here: the C arm, the Tk bindings, the cadence rc, the lock-modifier strip, the
+  three servers' modifier maps, the graph-rect route and a loaded raw were each
+  measured innocent. The file also records the METHOD error that produced a
+  wrong first answer — `xschem callback` is the C entry point and proves nothing
+  about a gesture, and `event generate` fires a `<Button>` binding only at state
+  0, which manufactured and then destroyed an intermediate "lock modifier"
+  finding. `tests/headless/probe_mmb_pan.tcl` is the outstanding measurement.
+
+**The next free number is 1377.**
