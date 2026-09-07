@@ -673,16 +673,24 @@ ase::session_close $f19g_key
 # `grep -rn "card(s) added" tests/` returned nothing. These two rows are that
 # coverage. They are GREEN BEFORE THE CHANGE; SAB-F (op_cards_count returns 0)
 # is what they exist to catch.
+#
+# ⚠ THE WORD IS `prepared`, NOT `added`, SINCE ISSUE 1354, AND THE CHANGE IS NOT
+# COSMETIC. This line is printed at NETLIST time, before any deck exists; on
+# shape d the deck it used to promise carries no `.save @dev[param]` card at
+# all, and the user's own log said "468 device OP save card(s) added to the
+# deck" over a rendered deck with zero `@` characters in it. Both rows below
+# match the new word, so F19l stays the non-vacuity control it was written to
+# be rather than passing because the string it looks for no longer exists.
 cx {ase::op_cards_nudge_reset}
 set f19k_dir [file normalize [file join $scratch runon_k]]
 set st19k [ase::state_load $statefile]
 dict set st19k rundir $f19k_dir
 dict set st19k save_op_params 1
 set f19k_msgs  [f_echo_run $st19k]
-set f19k_hits  [f_matches $f19k_msgs {*device OP save card(s) added*}]
+set f19k_hits  [f_matches $f19k_msgs {*device OP save card(s) prepared*}]
 set f19k_n {}
 if {[llength $f19k_hits] == 1} {
-  regexp {(\d+) device OP save card\(s\) added} [lindex $f19k_hits 0] -> f19k_n
+  regexp {(\d+) device OP save card\(s\) prepared} [lindex $f19k_hits 0] -> f19k_n
 }
 set f19k_text {}
 catch {
@@ -690,7 +698,7 @@ catch {
   set f19k_text [read $fh]; close $fh
 }
 set f19k_cards [llength [f_cards [cx {ase::op_cards_for $f19k_text}]]]
-check "F19k 0648 a gate-ON netlist SAYS how many device OP save cards it added,\
+check "F19k 0648 a gate-ON netlist SAYS how many device OP save cards it built,\
  exactly once, with the TRUE count" \
   [list [llength $f19k_hits] $f19k_n [expr {$f19k_cards > 0}]] \
   [list 1 $f19k_cards 1]
@@ -702,8 +710,8 @@ dict set st19l rundir $f19l_dir
 dict set st19l save_op_params 0  ;# 0927: the gate defaults ON now -- OFF must be spelled out
 set f19l_msgs [f_echo_run $st19l]
 check "F19l 0648 NON-VACUITY CONTROL: a gate-OFF netlist says nothing about\
- cards added" \
-  [llength [f_matches $f19l_msgs {*card(s) added*}]] 0
+ cards prepared" \
+  [llength [f_matches $f19l_msgs {*card(s) prepared*}]] 0
 cx {ase::op_cards_nudge_reset}
 
 # ============================================================================
@@ -1192,6 +1200,28 @@ if {[auto_execok ngspice] eq {}} {
   set nlon [ase::netlist $ston]
   set f [open $nlon r]; set nlontext [read $f]; close $f
   set blk [cx {ase::op_cards_for $nlontext}]
+  ## ⚠ THE SHAPE OF THE ASK IS THE USER'S SIMULATOR'S ANSWER, NOT A CONSTANT
+  ## (issues 1363 / 1364). `ase::op_save_tier` reads the backend's capability
+  ## probe: an ngspice whose `show` printer is sound answers `altshow_op_dump 1`
+  ## and the deck takes SHAPE d -- two lines inside `.control`, naming no device
+  ## anywhere, with the numbers arriving in a `.opinfo` sidecar. An ngspice
+  ## without it takes shape c, one `.save @dev[param]` card per parameter per
+  ## device. F11/F12/F14/F21 are about the MECHANISM and therefore have to ask
+  ## which one ran; F16/F17 are about the END STATE -- six real numbers on the
+  ## sheet -- and are asserted the same way on both, which is the whole point of
+  ## having the shapes at all.
+  ##
+  ## MEASURED 2026-09-05: with the user's own registry (ngspice-ver50) this
+  ## suite read `6 FAILED (74 passed)` and with a HOME carrying no
+  ## `ase_simulators` it read `ALL PASS (80)` -- the same tree, the same commit,
+  ## the same binary. A suite that reds because the user's simulator got better
+  ## is a defect in the suite; a suite that pins only one shape cannot see the
+  ## other one break.
+  set f_tier [cx {dict get [ase::op_save_tier $ston] tier}]
+  set f_rawhook [ase::backend_hook ngspice raw_file]
+  set f_dumpon [::op_annot::opdump_path [$f_rawhook $ston]]
+  check_true "F11 the run's deck shape is one this suite knows how to check" \
+    [expr {[lsearch -exact {a b c d} $f_tier] >= 0}]
   set blines [split [string trimright $blk "\n"] "\n"]
   check "F11 the cache holds a block whose leader is the `.save all` dot-card" \
     [lindex $blines 0] {.save all}
@@ -1202,9 +1232,23 @@ if {[auto_execok ngspice] eq {}} {
   set deckon [$render $ston $nlontext]
   # the card count rides along so the row cannot pass vacuously with BOTH sides
   # empty (which is exactly the pre-S4 state)
-  check "F12 the deck's device cards are EXACTLY the block's device cards" \
-    [list [f_cards $deckon] [llength [f_cards $blk]]] \
-    [list [f_cards $blk] [llength $f_expect_vecs_bare]]
+  ## ⚠ THE SECOND TERM IS THE NON-VACUITY HALF ON BOTH ARMS: the CACHE always
+  ## holds the six cards, whichever shape the deck then takes, so a row whose
+  ## both sides went empty (the pre-S4 state) cannot pass.
+  if {$f_tier eq {d}} {
+    check "F12 shape d: the deck names NO device and asks the blanket question\
+ instead -- `set altshow` plus one redirect to the sidecar the reader derives\
+ from the same one proc" \
+      [list [f_cards $deckon] \
+            [regexp -all -line {^set altshow$} $deckon] \
+            [expr {[string first "show all > $f_dumpon" $deckon] >= 0 ? 1 : 0}] \
+            [llength [f_cards $blk]]] \
+      [list {} 1 1 [llength $f_expect_vecs_bare]]
+  } else {
+    check "F12 the deck's device cards are EXACTLY the block's device cards" \
+      [list [f_cards $deckon] [llength [f_cards $blk]]] \
+      [list [f_cards $blk] [llength $f_expect_vecs_bare]]
+  }
   check "F12 the deck carries the block's `.save all` leader too (I2/R2)" \
     [regexp -all -line {^\.save all$} $deckon] 1
 
@@ -1216,11 +1260,36 @@ if {[auto_execok ngspice] eq {}} {
   set nameson [f_rawnames $rawon]
   set f [open [file join $f_ondir test_nfet_final_ase.spice] r]
   set deckfile [read $f]; close $f
-  check "F14 every emitted card materialised: the raw's device vectors are\
+  if {$f_tier eq {d}} {
+    ## Shape d emits no card, so "did every card materialise" is the wrong
+    ## question; the right one is whether the SIDECAR arrived and covers this
+    ## device. The first term is F18's trap said as an assertion: the raw's ONLY
+    ## device vector is savecurrents' card-less `i(@dev[id])`, which is exactly
+    ## why "device vectors > 0" is not an acceptance anywhere in this file.
+    set f14_dev {}
+    catch {set f14_dev [string range [op_annot::devpath M1] 1 end]}
+    set f14_covered 0
+    if {$f14_dev ne {} && [file isfile $f_dumpon]} {
+      if {[lsearch -exact [op_annot::opdump_devices $f_dumpon] $f14_dev] >= 0} {
+        set f14_covered 1
+      }
+    }
+    check "F14 shape d: the raw carries only savecurrents' card-less id, and\
+ the run's device numbers arrive in the sidecar the deck redirected `show` into" \
+      [list [f_devvecs $nameson] \
+            [expr {[file isfile $f_dumpon] ? 1 : 0}] $f14_covered] \
+      [list [list [op_annot::vector M1 id 0]] 1 1]
+    check "F14 shape d: and the deck ngspice actually ran names no device\
+ either -- row D1 of test_op_dump_altshow asserts that deliberately" \
+      [list [f_cards $deckfile] [regexp -all -line {^set altshow$} $deckfile]] \
+      [list {} 1]
+  } else {
+    check "F14 every emitted card materialised: the raw's device vectors are\
  EXACTLY op_annot::vector of the emitted cards" \
-    [f_devvecs $nameson] $f_expect_vecs
-  check "F14 the deck ngspice actually ran carries those cards" \
-    [f_cards $deckfile] $f_expect_vecs_bare
+      [f_devvecs $nameson] $f_expect_vecs
+    check "F14 the deck ngspice actually ran carries those cards" \
+      [f_cards $deckfile] $f_expect_vecs_bare
+  }
   # I2: the node voltages the pinexpr/annotation rows already had must SURVIVE.
   # They do only because the block carries its own `.save all` leader --
   # measured on this exact committed state (save_all_v 0): block WITH the leader
@@ -1228,6 +1297,15 @@ if {[auto_execok ngspice] eq {}} {
   check_true "F15 node voltages survive in the same raw (invariant I2)" \
     [expr {[lsearch -exact [f_nodevecs $nameson] {v(d)}] >= 0 &&
            [lsearch -exact [f_nodevecs $nameson] {v(g)}] >= 0}]
+  ## ⚠ `xschem annotate_op` AND NOTHING ELSE, DELIBERATELY (issue 1364). This
+  ## is the general-purpose verb -- the one 61 committed schematics' launcher
+  ## buttons, both `Annotate Operating Point into schematic` menu items and
+  ## every carried-across raw go through -- and it is NOT `op_annot::db_attach`.
+  ## Until 1364 the blanket dump had exactly one caller, inside db_attach, so on
+  ## shape d this line rendered `id` and left `gm gds vgs vth vds` BLANK: issue
+  ## 0617 restored, on a run that exited 0 with a perfect raw and a clean log.
+  ## Do not "fix" a future red here by routing this line through db_attach --
+  ## that would hide the very door the user's own workflow uses.
   xschem annotate_op $rawon 0 op
   set rowson [f_rows [op_annot::text M1]]
   set f16_missing {}
@@ -1321,12 +1399,24 @@ if {[auto_execok ngspice] eq {}} {
   ## carry the device numbers, and the transient must no longer carry them.
   set f21_devs   [llength [f_opdevvecs [f_plotvars $f21_raw {Operating Point}]]]
   set f21_trdevs [llength [f_opdevvecs [f_plotvars $f21_raw {Transient Analysis}]]]
+  ## ⚠ TIER-AWARE ON ONE TERM ONLY, AND THE SIDECAR TERM IS ITS MIRROR. Shape c
+  ## puts the device numbers in the operating-point PLOT; shape d puts them in
+  ## the `.opinfo` sidecar and the plot carries none. Both are correct runs, and
+  ## the thing this row exists for -- the operating point survives beside the
+  ## transient in ONE file, and the device numbers are not repeated at every
+  ## timepoint -- is asserted identically on both. The sidecar term is what
+  ## stops shape d's arm passing on a run that produced nothing at all.
+  set f21_tier [cx {dict get [ase::op_save_tier $f21_st] tier}]
+  set f21_side [expr {[file isfile [::op_annot::opdump_path $f21_raw]] ? 1 : 0}]
   check "F21 0929/0964 op+tran in ONE deck: the raw carries BOTH plots, `6`'s\
- reader finds the operating-point one, the device OP vectors are in it, and\
- they are NOT repeated at every timepoint of the transient" \
+ reader finds the operating-point one, the device OP numbers are where this\
+ deck shape puts them, and they are NOT repeated at every timepoint of the\
+ transient" \
     [list $f21_rc $f21_pl $f21_opst $f21_oppt $f21_trst \
-          [expr {$f21_devs > 0 ? 1 : 0}] $f21_trdevs] \
-    [list 0 {{Transient Analysis} {Operating Point}} op 1 tran 1 0]
+          [expr {$f21_devs > 0 ? 1 : 0}] $f21_trdevs $f21_side] \
+    [list 0 {{Transient Analysis} {Operating Point}} op 1 tran \
+          [expr {$f21_tier eq {d} ? 0 : 1}] 0 \
+          [expr {$f21_tier eq {d} ? 1 : 0}]]
   if {$f21_pl ne {{Transient Analysis} {Operating Point}}} {
     puts "  F21 plots in $f21_raw: $f21_pl"
   }

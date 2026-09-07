@@ -199,6 +199,23 @@ foreach tc $tcases {
   # restored arm that nothing notices the removal of is the trap 0891 already
   # sprang once.
   set dd [file join headless devdisplay.sh]
+  ## ⚠ AND EVERY CHILD GETS ITS OWN --logdir (issue 1359).  A GUI xschem
+  ## launched WITHOUT one writes its action log to /tmp/Xschem.log.N, taking the
+  ## lowest free N -- which is exactly where the USER'S OWN interactive sessions
+  ## put theirs.  There are ~20 display-arm cases, so one T1 run claimed the
+  ## first ~20 slots and overwrote whatever was in them.  MEASURED: a single
+  ## solo run destroyed five of the nine /tmp/Xschem.log.* files on this
+  ## machine, and a later one destroyed the log the whole RDW batch had been
+  ## diagnosed from.  The --nogui arms are safe -- a headless run with no
+  ## --logdir creates no log at all (test_action_log.sh case 4) -- so it is
+  ## ONLY this arm, and this is the only line that has to change.
+  ##
+  ## Under the results directory rather than a temp dir, because a display-arm
+  ## case that WANTS its action log (there are such cases) can then read it,
+  ## and because a stray log left behind is a test artifact where a reader
+  ## expects test artifacts.
+  set dlogdir [file join [pwd] results .actionlogs]
+  file mkdir $dlogdir
   catch {exec $dd start 2>@1}
   set dd_st {}
   catch {exec $dd status 2>@1} dd_st
@@ -214,7 +231,7 @@ foreach tc $tcases {
       continue
     }
     set childcode 0
-    if {[catch {exec $dd exec $xschem_cmd --pipe -q --script ${dc}.tcl > ${dc}.disp.log 2>@1} msg opt]} {
+    if {[catch {exec $dd exec $xschem_cmd --pipe -q --logdir $dlogdir --script ${dc}.tcl > ${dc}.disp.log 2>@1} msg opt]} {
       set ec [dict get $opt -errorcode]
       set childcode [expr {[lindex $ec 0] eq "CHILDSTATUS" ? [lindex $ec 2] : 1}]
     }

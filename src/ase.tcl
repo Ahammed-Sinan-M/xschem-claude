@@ -120,6 +120,29 @@ namespace eval ase {
   # session_update/save/load/revert. Default {} (headless: nothing runs);
   # ase::ui (ase_window.tcl) points it at its title-refresh handler.
   variable session_notify {}
+  # THE SECOND NOTIFY SEAM, AND IT IS ABOUT THE REGISTRY, NOT A SESSION (issue
+  # 1370, found by that item's adversary). Command prefix invoked with NO
+  # arguments after every gesture that changes which program a run would start
+  # -- register, unregister, select, clear. Default {} (headless: nothing
+  # runs); ase::ui points it at ase::ui::refresh_status_all.
+  #
+  # WHY IT EXISTS. The bottom bar's `Simulator:` segment names what will run,
+  # and 1370 hung its refresh off ase::ui::simdlg_fill alone. That covers all
+  # five gestures of the Simulators DIALOG and nothing else -- and the registry
+  # is reachable without the dialog: `ase::sim_register <name> <path>` followed
+  # by `ase::sim_select <name>` typed into the CIW is the pre-0937 path, and is
+  # how this user's own ngspice-ver50 entry was first created. Measured live
+  # with a window open on `Simulator: ngspice-ver50`: registering and selecting
+  # a second entry left the bar reading `ngspice-ver50` while ase::sim_label
+  # already answered the new name, so the bar was naming a simulator that would
+  # NOT run -- the exact class the user's rule forbids -- until the next
+  # session update healed it, or until the run itself did, which is the moment
+  # the bar was supposed to PREDICT.
+  #
+  # KEYED ON NOTHING, deliberately: the registry is process-global while a
+  # session key is per-window, so the one thing this can say is "it changed",
+  # and every open window has to be told.
+  variable sim_notify {}
 }
 
 # --- the user-visible-message seam (issue 0207) ------------------------------
@@ -524,6 +547,13 @@ proc ase::state_save {path state} {
 # backend to write a probe before it could register at all. A caller that
 # wants the answer asks ase::sim_capabilities, which says "not known" rather
 # than guessing when a backend declares no probe.
+#
+# THE SAME IS TRUE OF THE RESULTS DISPLAY WINDOW'S PAIR (issue 1245):
+# `op_param_set` and `op_param_enumerable` ride in the dict and are reached
+# through ase::backend_hook like everything else, but they are NOT in this loop
+# either. A backend with no operating-point reader of its own must still be
+# able to register, and a caller that asks for a hook nobody declared gets the
+# dispatch's own clean "unknown hook" error rather than a silent guess.
 proc ase::register_backend {name hooks} {
   variable backends
   foreach h {render_deck run_cmd log_file result_probe raw_file} {
@@ -692,6 +722,49 @@ proc ase::sim_plural {n one many} {
   return $many
 }
 
+# `run_using` (issue 1370) IS THE ONLY KIND HERE THAT IS NOT ABOUT A PROBLEM,
+# and it exists because the user could not answer "which version of ngspice did
+# the most recent run use?" from anything they read. Measured on their own
+# /tmp/Xschem.log.8: 16 `ase:` lines, six completed runs, fourteen occurrences
+# of the word "simulator" -- and ZERO occurrences of `ngspice-ver50` or of the
+# build directory it points at. It names BOTH halves on purpose, the entry the
+# user typed and the program it resolves to, because the entry alone is what
+# they already know and the program alone is what the ASE run log's `command :`
+# line already carried, one line under a `simulator : ngspice` that contradicted
+# it. Said once per run, from ase::run_using_report.
+# THE `casemode_` KINDS (issue 1371) ARE ABOUT A PROGRAM, so they name
+# the file and never the entry -- the same location-first rule the 0948 kinds
+# follow, and for the same reason: a user with three builds registered needs to
+# know which file was tried, and the entry's name is already in the field above
+# the sentence. They exist because the row editor's Case chooser must say what
+# it knows and how the user changes it, and a dialog that composed its own
+# wording for that would be ruling D5-4's defect. `casemode_measured` has two
+# arms because an empty measured set is a REAL answer -- a probe that completed
+# and recognised nothing (see the two-empties note on
+# ase::sim_casemode_selectable) -- and "can hand net names back these ways: ."
+# is not a sentence.
+#
+# THE SIX EXTRA KINDS ARE THE ITEM'S OWN REFUTATION, and each one is a state
+# that was MEASURED reaching the user as `casemode_unmeasured` -- "has not been
+# tried yet ... press Detect to try it" -- immediately after they pressed
+# Detect. Measured through the real button on 2026-09-06:
+#
+#   a program that exists, is executable and ANSWERED the probe but published
+#     no casemode key (`known 1 usable 0 ...`, i.e. every executable that is
+#     not an ngspice)                                       -> casemode_nokey
+#   a program whose file has gone, while the SAME dialog's Problem column two
+#     widgets away carried the correct sentence           -> casemode_noprogram
+#   a backend with no probe hook at all                     -> casemode_noprobe
+#   a program that was still running when the budget ran out (the user has just
+#     waited up to 31.2 s for this)                          -> casemode_slow
+#   a simulation folder nothing can be written into (issue 0949's category
+#     error, which is about the FOLDER)                    -> casemode_noplace
+#   Detect pressed with the Program field empty, which printed two sentences
+#     with no subject and a leading space                   -> casemode_nopath
+#
+# A false claim plus an instruction to press the button that was just pressed
+# is worse than silence, and `casemode_unmeasured` now means only what it says:
+# nobody has asked yet. ase::casemode_status is the proc that may still say it.
 proc ase::sim_why {kind name path {extra {}}} {
   switch -- $kind {
     empty_path {
@@ -748,6 +821,9 @@ proc ase::sim_why {kind name path {extra {}}} {
     path_in_force {
       return "You have not picked a simulator of your own, so xschem will start the program named $name that your system finds on your PATH. Add one to the list, or pick one that is already on it, if you would rather run a build of your own."
     }
+    run_using {
+      return "This run is starting the simulator you named $name, and the program it is running is $path."
+    }
     cap_no_append {
       return "$path, which is the program that will run your simulation, keeps only the last analysis of a run and throws the earlier ones away as it goes. Your run has more than one analysis in it, so everything but the last one would be lost. Run one analysis at a time, or use a build that adds each analysis to the results file."
     }
@@ -757,8 +833,67 @@ proc ase::sim_why {kind name path {extra {}}} {
     cap_no_answer {
       return "$path, which is the program the simulator you picked will start, was given a tiny test circuit to try and had still not finished with it after $extra seconds, so there was no way to find out what it can do. It may simply be slow to start. Your run is going ahead anyway, and this will be tried again the next time you press Run."
     }
+    casemode_measuring {
+      return "Trying $path now, to find out which spellings of a net name it can hand back."
+    }
+    casemode_measured {
+      if {[llength $extra]} {
+        return "$path can hand net names back these ways: [join $extra {, }]."
+      }
+      return "$path was tried, and it handed net names back in none of the ways this window can offer."
+    }
+    casemode_unmeasured {
+      return "$path has not been tried yet, so fold is all that can be offered; press Detect to try it."
+    }
+    casemode_nokey {
+      return "$path was tried, but it did not say which spellings of a net name it can hand back, so fold is all that can be offered."
+    }
+    casemode_noprogram {
+      switch -- $extra {
+        notfile { set what "$path is a folder, not a program" }
+        notexec { set what "$path is not marked as a program you can run" }
+        default { set what "there is no file at $path" }
+      }
+      return "Nothing was tried: $what."
+    }
+    casemode_noprobe {
+      return "xschem has no way to try $path, so fold is all that can be offered."
+    }
+    casemode_slow {
+      return "$path was still not finished with a tiny test circuit after $extra seconds, so there was no way to find out which spellings of a net name it can hand back."
+    }
+    casemode_noplace {
+      return "$path could not be tried, because there was nowhere to write a test result. Check that the simulation folder can be written to."
+    }
+    casemode_nopath {
+      return "Type the location of a program in the Program field, then press Detect."
+    }
     op_tier_blanket {
       return "Your simulator can hand back all of one device's operating-point numbers in a single request, so this run asked once per device instead of once per number. The requests are made just before the operating point and nowhere else, so nothing is recorded at every step of a transient that happens to be in the same run."
+    }
+    op_tier_dump {
+      ## ISSUE 1354 -- THE SHAPE THAT HAD NO SENTENCE. Shape d fell through
+      ## ase::op_tier_report's switch to op_tier_perdevice, so the run that
+      ## asked in the SHORTEST way told the user it had asked in the longest
+      ## one, and the catch-all tail added "Your simulator cannot do either of
+      ## the shorter ways" about the very build that was given this shape
+      ## BECAUSE it can. That is verbatim what the user's own /tmp/Xschem.log.5
+      ## carries, printed beside "468 device OP save card(s) added to the deck"
+      ## over a rendered deck holding not one `@` character.
+      ##
+      ## THE THIRD CLAUSE IS MEASURED, NOT REASSURANCE: render_deck's own shape-d
+      ## arm records 468 of 468 pairs recovered on the user's tb_bandgap, worst
+      ## relative error 4.70e-06, and 212 devices dumped against the 78 the
+      ## per-device cards named -- the extra ones include the two PNPs that ARE
+      ## the bandgap reference and that no `.save @q` card in that deck asked
+      ## for. So "more, not fewer" is a count taken on their own bench.
+      ##
+      ## ONE SENTENCE, NO REASON TAILS, DELIBERATELY. Only two reasons reach
+      ## this shape -- `dump` (measured) and `forced` (chosen by hand) -- and
+      ## the forced case already gets op_tier_forced said after it by
+      ## op_tier_report's own second say. A tail would be a second spelling of
+      ## a fact that already has one.
+      return "Your simulator can print out every device's operating-point numbers in one go, so this run asked for the whole set at once instead of making a separate request for each number. That is the shortest way there is: the deck names no device at all, and the numbers come back in a small file of their own beside the results. It covers more of your devices than asking one at a time does, not fewer. If that file does not appear, this run will tell you so."
     }
     op_numbers_missing {
       set n [lindex $extra 0]
@@ -814,9 +949,19 @@ proc ase::sim_why {kind name path {extra {}}} {
     op_numbers_no_file {
       return "Your simulator finished without reporting any problem, but it produced no results file at all -- no [file tail $extra] was written into the run folder. So there are no numbers to put on your schematic and the waveform window has nothing to show either. One thing that causes this: when a run is asked for device numbers on one short line, a single device name the simulator cannot match is enough to make it throw the whole result away and still finish quietly. Open this run's log to see what it printed, then ask for the numbers one device at a time."
     }
+    op_dump_missing {
+      return "Your simulator finished without reporting any problem, but the file holding this run's device numbers -- [file tail $extra] -- was never written, so every device number on your schematic will be blank. The simulator does not treat this as an error, which is why its log looks clean. The usual cause is the name of the run folder: this way of collecting the numbers writes them through a path the simulator converts to lower case and cuts at the first space, so a folder with a capital letter or a space in its name silently gets nothing. Rename the run folder in lower case with no spaces, or run again and xschem will ask for the numbers one device at a time instead."
+    }
+    op_dump_partial {
+      lassign $extra ntot ngot fname
+      return "This run collected device numbers into $fname, but only $ngot of the $ntot devices your schematic asks about are in it, so the rest of the rows will be blank. That usually means those devices are spelled differently in the deck than on the sheet. Open the file to see which devices it did report, or ask for the numbers one device at a time instead."
+    }
     op_tier_perdevice {
       set head "This run asked your simulator for each device's operating-point numbers one request at a time. That is the way that always works, and it is where the numbers on your schematic come from."
       switch -- $extra {
+        dumppath {
+          return "$head There is a much faster way that collects every device at once, and your simulator can do it -- but it writes the numbers through a path it converts to lower case and cuts at the first space, and this run folder's name has a capital letter or a space in it, so that way would have produced nothing at all and said nothing about it. Rename the run folder in lower case with no spaces to get the faster way."
+        }
         unknown {
           return "$head xschem was not able to find out anything about what $path can do, so it did not try a shorter way. Nothing is wrong; the deck is just longer than it has to be."
         }
@@ -987,6 +1132,24 @@ proc ase::sim_entry_why {name} {
   return [ase::sim_why $kind $name $p]
 }
 
+# Fire the registry notify seam (issue 1370's repair). Called by every gesture
+# that changes which program a run would start, AFTER the change has landed and
+# after anything that gesture had to say, so a hook that reads the registry
+# back sees the new answer and a hook that reads ase::sim_said sees the words.
+#
+# ⚠ GUARDED, for ase::session_notify_fire's reason, and here the reason is
+# sharper: these mutators are called from ase::sim_conf_load at startup, once
+# per line of the user's ~/.xschem/ase_simulators, and from every suite's reset.
+# A broken GUI hook must never cost a user their simulator list at startup or
+# abort a registration that has already happened.
+proc ase::sim_notify_fire {} {
+  variable sim_notify
+  if {$sim_notify ne {}} {
+    catch {uplevel #0 $sim_notify}
+  }
+  return {}
+}
+
 # Register simulator `name` at `path`. Options: -args <extra argv list>,
 # -backend <backend name, or empty for any>.
 #
@@ -1131,6 +1294,10 @@ proc ase::sim_register {name path args} {
   # re-implemented there. Row D12 of tests/headless/test_ase_simcaps_0948.tcl
   # reddens on that placement, which no behavioural row can see.
   ase::sim_caps_clear
+  ## 1370's repair: and every open bottom bar follows, because this proc is the
+  ## OTHER door onto the registry -- the Command window one, which the dialog's
+  ## own refresh cannot see.
+  ase::sim_notify_fire
   return [expr {$kind eq {} ? 1 : 0}]
 }
 
@@ -1188,6 +1355,7 @@ proc ase::sim_unregister {name} {
   # the list can change which program will start, so what was remembered about
   # the old one must not be served about the new one.
   ase::sim_caps_clear
+  ase::sim_notify_fire
   # NOT the sentence. Every caller here tests this as a boolean, and row E13
   # pins it at 1 for a removal that also had two things to say.
   return 1
@@ -1207,16 +1375,36 @@ proc ase::sim_list {{backend {}}} {
   return $out
 }
 
+# ONE REGISTERED ENTRY BY NAME, or {} when nothing is registered under that
+# name (issue 1371).
+#
+# ase::sim_status answers about the entry IN FORCE. That is the wrong question
+# for a dialog, which is editing whichever row the user clicked -- measured on
+# this tree: with two entries registered and the second one selected, every
+# accessor keyed on the resolver answered about the second while the row editor
+# was showing the first. Before this proc both ase::ui::simdlg_editor and
+# ase::ui::simdlg_ok hand-rolled the same `foreach e [ase::sim_list]` walk, so
+# the window file carried two copies of a lookup that belongs here.
+#
+# {} IS A REAL ANSWER and every caller must test for it: the Add flavour of the
+# row editor is exactly a name nobody has registered.
+proc ase::sim_entry {name} {
+  variable simulators
+  if {$name eq {} || ![dict exists $simulators $name]} { return {} }
+  return [dict get $simulators $name]
+}
+
 # Put one registered simulator in force. An empty name clears the choice,
 # which puts the program on the PATH back in charge.
 proc ase::sim_select {name} {
   variable simulators
   variable sim_use
-  if {$name eq {}} { set sim_use {} ; return {} }
+  if {$name eq {}} { set sim_use {} ; ase::sim_notify_fire ; return {} }
   if {![dict exists $simulators $name]} {
     return -code error "ase: [ase::sim_why noentry $name {} [dict keys $simulators]]"
   }
   set sim_use $name
+  ase::sim_notify_fire
   return $name
 }
 
@@ -1240,6 +1428,7 @@ proc ase::sim_clear {} {
   # and then reads back what one later gesture said would otherwise get every
   # sentence from before the clear glued in front of it.
   set sim_said {}
+  ase::sim_notify_fire
   return 1
 }
 
@@ -1330,6 +1519,99 @@ proc ase::sim_exe {backend} {
   return [dict get $s exe]
 }
 
+# WHAT TO CALL THE SIMULATOR ON A ONE-LINE SURFACE (issue 1370). The ASE-L
+# bottom bar's `Simulator:` segment used to render `[ase::state_get $st
+# simulator]` -- the state's BACKEND word, which is the schema default
+# `ngspice` written once in ase::state_default and never touched by the
+# registry. Measured on a live .ase4 window with a registered `ngspice-ver50`
+# in force: the bar read `Simulator: ngspice` with the entry selected, with the
+# choice cleared, and with it re-selected -- three different registry states,
+# one byte-identical bar. The user's words: "If user has designated
+# (registered) a new instance of ngspice named ngspice-ver50, and the 'use this
+# one:' field shows that, then the status bar in ASE-L should show that."
+#
+# THE NAME IS THE REGISTRY ENTRY'S, NOT ase::sim_use's. `entry` is what the
+# resolver says ANSWERED, and it is deliberately empty in the ghost arm (a
+# choice naming an entry nobody registered, pinned by row D2 of
+# tests/headless/test_ase_simreg_0931.tcl), where the run falls to the PATH
+# program. Printing the ghost's name there would put a name on the bar for a
+# simulator that does not exist -- the one thing this segment must never do.
+#
+# ⚠ THE "WILL IT RUN" TEST IS FOUR TERMS AND EVERY ONE OF THEM IS
+# LOAD-BEARING. `ok` alone is NOT the discriminator, because the PATH arm never
+# validates anything: measured with an empty PATH and nothing registered,
+# ase::sim_status answers `ok 1` with `resolved` EMPTY, and ase::run_profile
+# packages that as `status ok`. So:
+#   ok        the user's own choice can be honoured
+#   resolved  something was actually located -- the resolver's own header says
+#             this "is the field a caller asking 'is a simulator available'
+#             wants"
+#   backend   the state's simulator word is one ase::backend_hook can serve.
+#             Catches a state whose `simulator` is `spectre` (no hooks, and
+#             ase::run_deck raises on it), a generic entry answering for such a
+#             backend, and the empty-`simulator` state -- where sim_status
+#             cheerfully answers `entry ngspice-ver50` about a state
+#             ase::run_deck refuses with "state has no simulator".
+#   composes  and the backend's own `run_cmd` really BUILDS its command from
+#             this registry. THE FOURTH TERM WAS ADDED BY 1370'S ADVERSARY and
+#             it closes a latent FALSE NAME, not a live one: today
+#             ase::backend_names answers `{ngspice}` and ngspice is the one
+#             backend that composes from the registry, so `known` and
+#             `composes` coincide and no arm moves. Register a SECOND backend
+#             with its own hardcoded run_cmd (the shape
+#             ase::run_composes_registry exists to detect -- test_ase_core E2
+#             is one) and a GENERIC entry beside it (`-backend {}`, which is
+#             exactly how this user's own ngspice-ver50 is registered), and the
+#             first three terms all answer yes about a run that starts the
+#             OTHER backend's hardcoded binary. The bar would then print the
+#             entry's name for a program that is not going to start, which is
+#             the one thing the user's rule forbids. The nine-row state table
+#             in doc/claude/issues/1370-*.md gets its sibling case right only
+#             because `spectre` has no hooks at all, which hid this rather
+#             than closed it.
+#
+# ⚠ AND A NAME IS ALWAYS PRINTED. `who` falls back to the backend word, and the
+# backend word can itself be empty -- a state whose `simulator` key is missing,
+# which ase::sim_label is called with directly (row L6). Before this fallback
+# the bar rendered `Simulator:  — will not run`: a marker with no name and a
+# double space where the name should be, which is byte for byte the shape row
+# Z8 of tests/headless/test_ase_optier_0963.tcl exists to forbid of a sentence.
+# `(none)` is the same spelling ase::ui::simdlg_none_label already uses in the
+# dialog's own combobox, so the two surfaces name an absence the same way.
+#
+# NEVER RAISES, for ase::sim_named_path's reason: this feeds a label that is
+# redrawn on every session update, and a status bar is no place to discover a
+# stack trace.
+#
+# THE MARKER IS A LABEL, NOT A SENTENCE, so it is not in ase::sim_why's mint.
+# The mint holds the SENTENCES a user is meant to read and act on; each of the
+# arms marked here already has one, and the Simulators dialog's own status line
+# shows it verbatim. What the bar owes the user is the shortest true thing that
+# fits beside four other segments. It is still written HERE, in ase.tcl and in
+# exactly one place, so ruling D5-4 holds and row R9's "none of them is written
+# in the window file" stays true of it too.
+#
+# ⚠ THE WORDING OF THE MARKER IS THE USER'S RULING and is on their queue as
+# issue 1370 (`owed.sh` kind `rule`, --eyes: it is a pixel decision on a
+# five-segment bar). Change it here and the suites follow -- they read the
+# marker from one place.
+proc ase::sim_label {backend} {
+  set s {}
+  if {[catch {ase::sim_status $backend} s]} { return $backend }
+  set who {}
+  catch {set who [dict get $s entry]}
+  if {[string trim $who] eq {}} { set who $backend }
+  if {[string trim $who] eq {}} { set who {(none)} }
+  set ok 0        ; catch {set ok [dict get $s ok]}
+  set resolved {} ; catch {set resolved [dict get $s resolved]}
+  set known 0
+  catch {set known [expr {[lsearch -exact [ase::backend_names] $backend] >= 0}]}
+  set composes 0
+  catch {set composes [ase::run_composes_registry $backend]}
+  if {$ok && [string trim $resolved] ne {} && $known && $composes} { return $who }
+  return "$who — will not run"
+}
+
 # --- What the registered simulator can actually do (issue 0948) --------------
 #
 # THE PROBLEM THIS SECTION EXISTS FOR, MEASURED, NOT ARGUED. The deck ASE-L
@@ -1400,6 +1682,27 @@ proc ase::cap_stale {stored live} {
   if {[catch {string equal $stored $live} same]} { return 1 }
   return [expr {$same ? 0 : 1}]
 }
+
+# WHAT ONE REMEMBERED ANSWER IS ABOUT: A PROGRAM **AND THE WORDS IT IS STARTED
+# WITH**. Issue 1371's adversary: the key was the resolved path alone, and the
+# probe has always run the program with the entry's own extra arguments
+# (ruling A2 -- probe with the real argv). So two questions about one file with
+# two argument lists shared one answer, and the FIRST one taken won.
+#
+# MEASURED 2026-09-06, and it is an A1 breach at the far end. A stub that
+# reports no casemode feature when it is given `-q` and all three modes when it
+# is not, registered with `-args -q`, in force:
+#
+#   dialog-side Detect on the same file with no arguments -> fold preserve distinguish
+#   ase::sim_casemode_selectable ngspice, immediately     -> fold preserve distinguish
+#   the same, after ase::sim_caps_clear                   -> fold
+#
+# The middle line is the defect: the in-force accessor -- the one the run and
+# the chooser both read -- answered about an argv the user's entry does not
+# use, so `preserve` was offered for a program that folds. The path-only key
+# predates issue 1371 (0948/0950), but before it nothing except the in-force
+# route could write the cache, so no two argument lists could meet.
+proc ase::cap_key {resolved eargs} { return [list $resolved $eargs] }
 
 # Forget every measured answer, so the next ask measures again. The lever for
 # a user who knows something changed that a file stamp cannot see -- a rebuild
@@ -1775,18 +2078,42 @@ proc ase::cap_run {exe exeargs workdir secs} {
 #     yes; ase::register_backend keeps `capabilities` optional for exactly the
 #     backends that reach this line.
 proc ase::sim_capabilities {backend} {
-  variable sim_caps
-  variable backends
   set s [ase::sim_status $backend]
   if {[dict get $s ok] == 0} { return [dict create known 0] }
-  set resolved [dict get $s resolved]
+  return [ase::sim_capabilities_at $backend [dict get $s resolved] \
+            [dict get $s args]]
+}
+
+# THE SAME MEASUREMENT, ASKED ABOUT A NAMED PROGRAM RATHER THAN ABOUT THE ONE
+# IN FORCE (issue 1371). The cache read, the stamp, the private workdir, the
+# probe and the "only a `known 1` answer is remembered" rule are all HERE, so
+# there is exactly one of each however the question arrives.
+#
+# GUARDS 2 AND 3 OF THE THREE ABOVE MOVED IN WITH THE BODY, and they had to:
+# they are preconditions of measuring ANYTHING -- a cache keyed on an empty
+# string fuses two unrunnable backends into one answer about neither (issue
+# 0935), and a backend with no probe must answer "not known" rather than a
+# guessed yes. Guard 1 stays in the wrapper above, because "the resolver
+# refused" is a fact about the IN-FORCE choice and has no meaning for a caller
+# that already knows which file it is asking about.
+#
+# ⚠ THE PATH MUST NEVER COME FROM auto_execok ON THIS ROUTE. That is the whole
+# of issue 0935: a refused resolution still carries a `resolved` naming the
+# file a WRONG choice would have started, and measuring it would attribute the
+# answer to a simulator the user is not running. Every caller of this proc
+# hands it a path the user themselves named -- a registered entry's own
+# `path`, or what they typed in the Program field.
+proc ase::sim_capabilities_at {backend resolved eargs} {
+  variable sim_caps
+  variable backends
   if {$resolved eq {}} { return [dict create known 0] }
   if {![dict exists $backends $backend capabilities]} {
     return [dict create known 0]
   }
+  set ckey [ase::cap_key $resolved $eargs]
   set live [ase::cap_stamp $resolved]
-  if {[dict exists $sim_caps $resolved]} {
-    set stored [dict get $sim_caps $resolved]
+  if {[dict exists $sim_caps $ckey]} {
+    set stored [dict get $sim_caps $ckey]
     if {![ase::cap_stale [dict get $stored stamp] $live]} {
       return [dict get $stored caps]
     }
@@ -1803,7 +2130,7 @@ proc ase::sim_capabilities {backend} {
   # BLEW UP -- and the failure is then RE-RAISED, so a defect in a probe stays
   # as loud as it was. Tidying up must not swallow it.
   set rc [catch {[ase::backend_hook $backend capabilities] $resolved \
-                   [dict get $s args] $wd} caps]
+                   $eargs $wd} caps]
   set einfo $::errorInfo
   set ecode $::errorCode
   ase::cap_workdir_done $wd
@@ -1818,9 +2145,119 @@ proc ase::sim_capabilities {backend} {
   # be written into, the program that did not answer in time, and every reason
   # anyone adds later, because all of them say `known 0`.
   if {[dict exists $caps known] && [dict get $caps known] == 1} {
-    dict set sim_caps $resolved [list stamp $live caps $caps]
+    dict set sim_caps $ckey [list stamp $live caps $caps]
   }
   return $caps
+}
+
+# WHAT THE PROGRAM AT `path` CAN DO. The filesystem guards are ase::sim_check's
+# own four -- the same ones registration uses -- so a location with nothing at
+# it, a folder, or a file without its executable bit answers "not measured"
+# instead of being handed to `exec`. A location written the portable way
+# ($::PDK_ROOT/bin/ngspice) is expanded first, exactly as ase::sim_register
+# expands it, and a literal that already names a real file is left alone
+# (issues 0938 and 0945).
+#
+# NEVER RAISES: its callers are a dialog being built and a button being
+# pressed, and both would turn a stack trace into a dead window.
+proc ase::sim_capabilities_path {backend path {eargs {}}} {
+  if {$path eq {}} { return [dict create known 0] }
+  set p $path
+  if {![catch {ase::expand_path $p} out]} { set p $out }
+  if {[ase::sim_check $p] ne {}} { return [dict create known 0] }
+  set caps [dict create known 0]
+  # ⚠ THE CATCH IS FOR THE WINDOW, NOT FOR THE DEFECT. ase::sim_capabilities_at
+  # deliberately RE-RAISES a probe that blew up, so "a defect in a probe stays
+  # as loud as it was" (issue 0950); swallowing it here silently would make
+  # this the one route where a broken probe looks like an unmeasured program.
+  # The dialog still survives -- a stack trace out of a proc that builds a
+  # combobox is a dead window -- but the failure goes to the CIW, where every
+  # other ASE failure goes. Not a mint kind: it carries a Tcl error message, so
+  # it is a defect report to a developer, not a sentence for the user (ruling
+  # D5-4 is about the second kind).
+  if {[catch {set caps [ase::sim_capabilities_at $backend \
+                          [file normalize $p] $eargs]} zerr]} {
+    ase::echo "ase: measuring $p raised: $zerr" error
+    set caps [dict create known 0]
+  }
+  return $caps
+}
+
+# WHAT THE PROGRAM OF THE ENTRY NAMED `name` CAN DO -- the question a dialog
+# editing one row is actually asking. An entry nobody registered, and one the
+# registry already recorded as unrunnable, both answer "not measured": nothing
+# is started for either.
+#
+# THE ENTRY'S OWN BACKEND WINS when it has one. An entry registered for a
+# backend with no probe hook then answers `known 0` through the core's guard 3
+# rather than being measured with another backend's probe.
+#
+# ⚠ NO PRODUCTION CALLER, AND THAT IS ON PURPOSE -- say it out loud rather than
+# let the next reader believe the dialog uses it (issue 1371's adversary read
+# the write-up and believed exactly that). This proc, ase::sim_casemode_selectable_for
+# and ase::sim_caps_have are the ENTRY-KEYED question; the row editor asks the
+# PATH-KEYED one, because the Program field can name a program no entry has and
+# because that field is what OK is about to register. What the entry-keyed three
+# are for is the suite's INDEPENDENT ORACLE: rows S24-S27 and S36 compare what
+# the chooser offers against what the registry says about the row the user
+# clicked, and an oracle that re-derived the dialog's own key would stop
+# proving that the offer describes THAT row. Deleting them would cost the rows
+# their independence, which is why they stay.
+proc ase::sim_capabilities_for {name {backend ngspice}} {
+  set e [ase::sim_entry $name]
+  if {$e eq {}} { return [dict create known 0] }
+  if {![ase::state_get $e ok 0]} { return [dict create known 0] }
+  set eb [ase::state_get $e backend {}]
+  if {$eb ne {}} { set backend $eb }
+  return [ase::sim_capabilities_path $backend [ase::state_get $e path {}] \
+            [ase::state_get $e args {}]]
+}
+
+# IS A FRESH ANSWER ALREADY IN HAND FOR THE PROGRAM AT `path`? A PEEK, and the
+# word is exact: it reads the cache and the file's stamp and starts NOTHING.
+#
+# WHY IT EXISTS (issue 1371). ase::sim_casemode_selectable and its relatives
+# LAUNCH the program when the answer is not cached. Measured on the user's own
+# build: 447 ms cold, 0 ms warm -- and 31.2 seconds for a program that exists,
+# is executable and never answers, because ase::cap_budget_ms is 30000 and Tk
+# is frozen for every one of them. A dialog that asked on the way up would
+# inherit that, so the row editor asks THIS first and offers the measured set
+# only when asking is free. The Detect button is the door to the other case.
+proc ase::sim_caps_have_path {backend path {eargs {}}} {
+  variable sim_caps
+  variable backends
+  if {$path eq {}} { return 0 }
+  set p $path
+  if {![catch {ase::expand_path $p} out]} { set p $out }
+  if {[ase::sim_check $p] ne {}} { return 0 }
+  if {![dict exists $backends $backend capabilities]} { return 0 }
+  set p [file normalize $p]
+  set ckey [ase::cap_key $p $eargs]
+  if {![dict exists $sim_caps $ckey]} { return 0 }
+  set stored {}
+  catch {set stored [dict get $sim_caps $ckey stamp]}
+  return [expr {[ase::cap_stale $stored [ase::cap_stamp $p]] ? 0 : 1}]
+}
+
+# The same peek, asked about a registered entry.
+proc ase::sim_caps_have {name {backend ngspice}} {
+  set e [ase::sim_entry $name]
+  if {$e eq {}} { return 0 }
+  if {![ase::state_get $e ok 0]} { return 0 }
+  set eb [ase::state_get $e backend {}]
+  if {$eb ne {}} { set backend $eb }
+  return [ase::sim_caps_have_path $backend [ase::state_get $e path {}] \
+            [ase::state_get $e args {}]]
+}
+
+# Does this backend have any way to measure a program at all? The one thing
+# ase::casemode_report and ase::casemode_status cannot tell from a capability
+# dict: guard 3 of ase::sim_capabilities_at answers `known 0` for a backend
+# with no probe hook, which is indistinguishable from every other `known 0`
+# once the dict is in hand.
+proc ase::sim_has_probe {backend} {
+  variable backends
+  return [expr {[dict exists $backends $backend capabilities] ? 1 : 0}]
 }
 
 # --- CASE MODE, AS A PROPERTY OF THE REGISTERED SIMULATOR --------------------
@@ -1854,15 +2291,117 @@ proc ase::sim_capabilities {backend} {
 # and a capability answer with no casemode key both mean -- see the ⚠ on
 # ase::sim_capabilities: absent is never a no.
 proc ase::sim_casemode_detected {backend} {
-  set c [ase::sim_capabilities $backend]
-  if {![dict exists $c known] || [dict get $c known] == 0} { return {} }
-  if {![dict exists $c casemode_detected]} { return {} }
-  set d [dict get $c casemode_detected]
+  return [ase::casemode_detected_in [ase::sim_capabilities $backend]]
+}
+
+# THE TWO RULES ABOVE AND BELOW, WRITTEN ONCE, AGAINST A CAPABILITY DICT
+# (issue 1371). There are three ways to ask the question now -- about the
+# simulator in force, about a registered entry, and about a program the user
+# has only typed the location of -- and A1 is a rule about the ANSWER, not
+# about which door it came through. Keeping the rule beside the dict means a
+# second door cannot arrive carrying a second copy of it, which is exactly how
+# `fluid-editing`'s eleven `sim_profile_*` procs got out of step.
+proc ase::casemode_detected_in {caps} {
+  if {![dict exists $caps known] || [dict get $caps known] == 0} { return {} }
+  if {![dict exists $caps casemode_detected]} { return {} }
+  set d [dict get $caps casemode_detected]
   set r {}
   foreach m {fold preserve distinguish} {
     if {[lsearch -exact $d $m] >= 0} { lappend r $m }
   }
   return $r
+}
+
+proc ase::casemode_selectable_in {caps} {
+  if {[dict exists $caps known] && [dict get $caps known] == 1 \
+      && [dict exists $caps casemode_detected]} {
+    return [ase::casemode_detected_in $caps]
+  }
+  return fold
+}
+
+# WHAT TO SAY ABOUT A MEASUREMENT THAT WAS JUST TAKEN. The third reader of the
+# two-empties rule, and it is here rather than in the dialog for the reason the
+# other two are: a window file that asked the dict this question itself would
+# hold a second copy of A1's precondition, and row S31 of
+# tests/headless/test_ase_simdlg_0937.tcl reddens on exactly that.
+#
+# ⚠ IT USED TO COLLAPSE EVERY UNHAPPY STATE ONTO "has not been tried yet ...
+# press Detect to try it", AND THAT WAS ISSUE 1371's REFUTATION. Measured
+# through the real Detect button in three reachable states -- a program that
+# answered the probe and published no casemode key, a program whose file has
+# gone, and a backend with no probe hook -- the user pressed Detect, waited,
+# and was told the thing had not been tried and that they should press Detect.
+# A false statement plus an instruction to repeat the gesture that produced it.
+# Every arm below is a state that was measured arriving here; the mint holds
+# the words (ruling D5-4) and rows S35 and S36 read them back out of it.
+#
+# THE ONE STATE THIS PROC MAY NOT REPORT is "nobody has asked yet", because
+# every caller has just asked. It survives only as the fall-through, which
+# after a real Detect means the probe itself raised -- and that already went to
+# the CIW from ase::sim_capabilities_path. ase::casemode_status is the proc
+# that says it honestly, before anything is tried.
+proc ase::casemode_report {backend path caps} {
+  if {$path eq {}} { return [ase::sim_why casemode_nopath {} {}] }
+  if {[dict exists $caps known] && [dict get $caps known] == 1} {
+    if {[dict exists $caps casemode_detected]} {
+      return [ase::sim_why casemode_measured {} $path \
+                [ase::casemode_detected_in $caps]]
+    }
+    return [ase::sim_why casemode_nokey {} $path]
+  }
+  set kind {}
+  set p $path
+  if {![catch {ase::expand_path $p} out]} { set p $out }
+  catch {set kind [ase::sim_check $p]}
+  if {$kind ne {}} { return [ase::sim_why casemode_noprogram {} $p $kind] }
+  if {![ase::sim_has_probe $backend]} {
+    return [ase::sim_why casemode_noprobe {} $p]
+  }
+  if {[dict exists $caps unmeasured]} {
+    switch -- [dict get $caps unmeasured] {
+      timeout {
+        set secs {}
+        catch {set secs [dict get $caps secs]}
+        return [ase::sim_why casemode_slow {} $p $secs]
+      }
+      noplace { return [ase::sim_why casemode_noplace {} $p] }
+    }
+  }
+  return [ase::sim_why casemode_unmeasured {} $p]
+}
+
+# WHAT IS KNOWN RIGHT NOW, MEASURING NOTHING. The row editor's status line at
+# the moment it opens, and after the Program field changes: the same rule as
+# ase::casemode_report, minus the launch, so the sentence a user reads before
+# they press anything is about the state the chooser is actually in.
+#
+# WHY IT EXISTS (issue 1371's third refutation). The item's own answer to the
+# user told them to open Edit… and pick `preserve` from the chooser. On a COLD
+# session the chooser offers `fold` alone -- correctly, because nothing has
+# been measured and A1 forbids the rest -- and NOTHING SAID SO, so the gesture
+# the issue file described looks exactly like the bug it was filed about.
+# Detect is one click away and the editor now says so, in the mint's words.
+#
+# ⚠ IT MUST NEVER LAUNCH. ase::sim_caps_have_path is the peek that guarantees
+# it: ase::sim_capabilities_path is reached only when a fresh answer is already
+# in hand, where it is a pure cache read. Row S27 measures that opening the
+# editor starts nothing, and it still does.
+proc ase::casemode_status {backend path {eargs {}}} {
+  if {$path eq {}} { return [ase::sim_why casemode_nopath {} {}] }
+  set p $path
+  if {![catch {ase::expand_path $p} out]} { set p $out }
+  set kind {}
+  catch {set kind [ase::sim_check $p]}
+  if {$kind ne {}} { return [ase::sim_why casemode_noprogram {} $p $kind] }
+  if {![ase::sim_has_probe $backend]} {
+    return [ase::sim_why casemode_noprobe {} $p]
+  }
+  if {[ase::sim_caps_have_path $backend $path $eargs]} {
+    return [ase::casemode_report $backend $path \
+              [ase::sim_capabilities_path $backend $path $eargs]]
+  }
+  return [ase::sim_why casemode_unmeasured {} $p]
 }
 
 # THE MODES A USER MAY SELECT (A1). Measured => exactly what was measured, the
@@ -1876,17 +2415,42 @@ proc ase::sim_casemode_detected {backend} {
 # a probe that never ran publishes no key at all. ase::sim_casemode_detected
 # collapses both to `{}`, so this proc must ask the dict itself.
 proc ase::sim_casemode_selectable {backend} {
-  set c [ase::sim_capabilities $backend]
-  if {[dict exists $c known] && [dict get $c known] == 1 \
-      && [dict exists $c casemode_detected]} {
-    return [ase::sim_casemode_detected $backend]
-  }
-  return fold
+  return [ase::casemode_selectable_in [ase::sim_capabilities $backend]]
+}
+
+# THE SAME RULE, KEYED ON A REGISTERED ENTRY AND ON A BARE LOCATION (issue
+# 1371). The row editor's Case chooser is built from these, never from the
+# in-force accessor above: measured on this tree with two entries registered,
+# `ase::sim_casemode_selectable ngspice` answered `fold preserve distinguish`
+# or `fold` depending only on WHICH ROW WAS SELECTED, so a chooser built from
+# it would offer one program's modes while the user edited another's -- an A1
+# breach introduced by the door meant to enforce A1.
+#
+# ⚠ THESE LAUNCH THE PROGRAM when nothing is cached, exactly as the in-force
+# one does. ase::sim_caps_have_path is the free question; ask it first.
+proc ase::sim_casemode_selectable_path {backend path {eargs {}}} {
+  return [ase::casemode_selectable_in \
+            [ase::sim_capabilities_path $backend $path $eargs]]
+}
+
+proc ase::sim_casemode_selectable_for {name {backend ngspice}} {
+  return [ase::casemode_selectable_in [ase::sim_capabilities_for $name $backend]]
 }
 
 # THE MODE THIS SIMULATOR REQUESTS: its own field, else the global floor, else
 # `fold` (B1). The floor is validated here too -- a `set sim_case_mode sideways`
 # in an rc must not become a request.
+# THE GLOBAL FLOOR, VALIDATED, IN ONE PLACE. A `set sim_case_mode sideways` in
+# an rc must never become a request, and the row editor's "global default"
+# line has to name the same mode this proc would fall to or the chooser would
+# be describing a floor nobody stands on.
+proc ase::sim_casemode_floor {} {
+  if {[info exists ::sim_case_mode] && [sim_casemode_valid $::sim_case_mode]} {
+    return $::sim_case_mode
+  }
+  return fold
+}
+
 proc ase::sim_casemode_requested {backend} {
   set s [ase::sim_status $backend]
   # ⚠ A REFUSED RESOLUTION YIELDS NO MODE OF ITS OWN. `ok 0` still carries an
@@ -1895,12 +2459,7 @@ proc ase::sim_casemode_requested {backend} {
   # request to a simulator that is not going to run. The floor answers instead,
   # which is what a backend with nothing registered gets, and is the same answer
   # this proc gave before anybody registered anything.
-  if {![dict get $s ok]} {
-    if {[info exists ::sim_case_mode] && [sim_casemode_valid $::sim_case_mode]} {
-      return $::sim_case_mode
-    }
-    return fold
-  }
+  if {![dict get $s ok]} { return [ase::sim_casemode_floor] }
   set e [dict get $s entry]
   if {$e ne {}} {
     variable simulators
@@ -1909,10 +2468,7 @@ proc ase::sim_casemode_requested {backend} {
       if {$m ne {} && [sim_casemode_valid $m]} { return $m }
     }
   }
-  if {[info exists ::sim_case_mode] && [sim_casemode_valid $::sim_case_mode]} {
-    return $::sim_case_mode
-  }
-  return fold
+  return [ase::sim_casemode_floor]
 }
 
 # Does this simulator want ngspice's `--no-spiceinit`? A field of the registry
@@ -3640,8 +4196,8 @@ proc ase::op_save_max_names {} { return 999 }
 # failure that produced issues 0928 and 0929.
 proc ase::op_tier_force_set {t} {
   variable op_tier_force
-  if {$t ne {} && [lsearch -exact {a b c} $t] < 0} {
-    return -code error "ase: op_tier_force_set: expected a, b, c or {}, got '$t'"
+  if {$t ne {} && [lsearch -exact {a b c d} $t] < 0} {
+    return -code error "ase: op_tier_force_set: expected a, b, c, d or {}, got '$t'"
   }
   set op_tier_force $t
   return $t
@@ -3716,6 +4272,182 @@ proc ase::op_dev_of {nm} {
   return [string range $nm 0 [expr {$i - 1}]]
 }
 
+# THE OTHER HALF OF THE SAME CUT — issue 1245 item B1, the Results Display
+# Window's backend seam.
+#
+# ase::op_dev_of above answers "which device is this name about". These four
+# answer the reverse question the RDW asks: given a variable name a RESULTS FILE
+# published, which device and which PARAMETER is it, and does it belong to the
+# instance the user pointed at.
+#
+# ⚠ ONE STRIPPER, NOT TWO (invariant I1). ase::op_param_split is the reverse of
+# op_annot::_wrap (src/op_annot.tcl:427), which is the ONE forward builder, and
+# it delegates BOTH halves — the device half to op_dev_of, the parameter half to
+# op_param_of — so the two halves of one name are cut in the same two places
+# every other caller cuts them. A seam that re-cut a bracket of its own would
+# drift from the builder the moment token.c's kind table moved, and that failure
+# is SILENT: the numbers keep coming, they are just the wrong device's.
+
+# The PARAMETER half of a device-parameter variable name: what sits between the
+# LAST `[` and the LAST `]`.
+#
+# The last bracket, for op_dev_of's own reason (issue 0972): a bussed instance
+# netlists as `@m.xm1[9:0].msky130_fd_pr__nfet_01v8[id]`, so the FIRST bracket
+# belongs to the bus index and only the last one is the parameter's. A name with
+# no bracket, or with an empty `[]`, answers {} rather than guessing.
+proc ase::op_param_of {nm} {
+  set i [string last {[} $nm]
+  if {$i < 0} { return {} }
+  set j [string last {]} $nm]
+  if {$j <= $i + 1} { return {} }
+  return [string range $nm [expr {$i + 1}] [expr {$j - 1}]]
+}
+
+# ase::op_param_split <results-file variable name> -> {device parameter}, or {}
+# when the name is not a device parameter at all.
+#
+# THREE SPELLINGS, ONE ANSWER. Issue 0963 measured that one run can spell the
+# same parameter three different ways depending on how the file was written:
+#
+#     i(@m.x1.m1[id])      kind 0, the current wrapper
+#     v(@m.x1.m1[vth])     kind 2, the voltage wrapper
+#     @m.x1.m1[gm]         kind 1, bare
+#
+# so the reverse map takes the name from its `@` to its end and drops one
+# trailing `)` if a wrapper put one there. It strips whatever wrapper is
+# present rather than re-encoding token.c's 0/1/2 kind table, which is
+# op_annot::_wrap's job and must stay spelled once.
+#
+# A node voltage (`v(in)`), a source current (`i(v1)`) and the sweep column
+# (`time`) carry no `@` and answer {} — they are in the same raw, in the same
+# slot, and are none of this seam's business.
+proc ase::op_param_split {nm} {
+  set a [string first {@} $nm]
+  if {$a < 0} { return {} }
+  set core [string range $nm $a end]
+  if {[string index $core end] eq {)}} { set core [string range $core 0 end-1] }
+  set dev [ase::op_dev_of $core]
+  set p   [ase::op_param_of $core]
+  if {$dev eq {} || $p eq {}} { return {} }
+  return [list $dev $p]
+}
+
+# A device path reduced to the part two spellings of the same device can be
+# compared on: no leading `@`, no leading single-character ELEMENT segment
+# (ngspice's `m.` / `r.` / `c.` / `b.` prefix), lower case.
+#
+# THE ELEMENT LETTER IS DROPPED ON PURPOSE, AND IT IS RULING D-3. One XR1
+# resolves to primitives that do not share it:
+#
+#     @r.xr1.x0.rend1   @r.xr1.x0.rend2   @c.xr1.x0.xc0.c0
+#     @c.xr1.x0.xc1.c0  @b.xr1.x0.brbody
+#
+# — three element letters, two depths, and their only common token is the
+# segment `xr1.`. A comparison that kept the letter would answer with two of
+# the five and call that the device's operating point.
+#
+# LOWER CASE because op_annot::devpath mints every request through
+# op_annot::_lower while a raw preserves whatever the simulator wrote, and
+# `xschem raw case` exists precisely because a database can be case-preserving.
+# An exact-case compare would answer "this device is not in this run" about a
+# device that is — a plausible wrong answer in the empty direction.
+#
+# ⚠ THE STRIP IS GATED ON THE LEADING `@`, AND THAT GATE IS THE WHOLE OF THE
+# 2026-09-03 REPAIR. The first version stripped ANY leading one-character
+# segment from either side, which is right for a raw device name and wrong for
+# a hierarchical path the user typed. Measured on the refuted tree:
+#
+#     norm(a.b.c)  -> b.c
+#     req @m.a.b.c -> devices {@m.a.b.c {{id 7} {gm 8}}}   state ok
+#     req a.b.c    -> devices {}                            state ok
+#
+# `a` is a perfectly ordinary one-character subcircuit instance name, and the
+# device silently vanished -- reported as `state ok, devices {}`, which is
+# BYTE-IDENTICAL to "no such device". A wrong answer wearing a healthy state is
+# worse than an error.
+#
+# The gate works because the element letter only ever reaches this proc in
+# ngspice's own spelling, which is ALWAYS `@`-prefixed: ase::op_param_split
+# takes the device from its `@` to the end (:3776-3778), so every DEVICE side
+# strips; and every real REQUEST producer is `@`-prefixed too -- gf180's
+# descriptor is the literal {\@m.@path@spiceprefix@name\.m0}, sky130's devproc
+# builds the same shape. A bare `a.b.c` with no `@` is therefore not raw
+# spelling, is not carrying an element letter, and keeps every segment.
+#
+# ⚠ COST, STATED: a caller that writes raw spelling WITHOUT the `@`
+# (`m.x1.m1`) no longer matches `@m.x1.m1`. No producer in this tree does that,
+# and the alternative -- trying both readings -- silently over-collects, since
+# request `a.b` would then also gather every device under `b`.
+proc ase::op_dev_norm {d} {
+  set at [expr {[string index $d 0] eq {@}}]
+  if {$at} { set d [string range $d 1 end] }
+  if {$at && [string first {.} $d] == 1} { set d [string range $d 2 end] }
+  return [string tolower $d]
+}
+
+# Does the device the raw named belong to the device path that was asked for?
+#
+# ⚠ NOT A SUBSTRING TEST, AND THAT IS THE WHOLE OF THE RULE. Row Q7 of
+# tests/headless/test_ase_optier_0963.tcl exists because `@m.x1.m1` is a PREFIX
+# of `@m.x1.m1foo`, so a substring test hands one transistor another
+# transistor's numbers. The two answers here are whole-string equality and a
+# descent across a `.` SEGMENT BOUNDARY — `xr1.` matches `xr1.x0.rend1` and does
+# not match `xr10.x0.rend1`.
+#
+# NAMED PROPERTY, NOT A DEFECT: a partial path such as `@m.x1` therefore
+# collects every device under x1. That is the same rule D-3 needs, asked one
+# level higher, and it is what makes "the whole of this subcircuit" expressible.
+proc ase::op_dev_covers {req dev} {
+  set r [ase::op_dev_norm $req]
+  set d [ase::op_dev_norm $dev]
+  if {$r eq {}} { return 0 }
+  if {$r eq $d} { return 1 }
+  if {[string length $d] > [string length $r] &&
+      [string range $d 0 [string length $r]] eq "$r."} { return 1 }
+  return 0
+}
+
+# WHAT DID THIS RUN CALL <devpath>'s <param> COLUMN?  The whole name, in the
+# results file's own spelling, or {} when the run published none (issue 1372).
+#
+# ⚠ IT ANSWERS THE NAME AND NOT THE KIND, AND THAT LINE IS INVARIANT I1's.
+# ase::op_param_split's own comment already says why: it "strips whatever
+# wrapper is present rather than re-encoding token.c's 0/1/2 kind table, which
+# is op_annot::_wrap's job and must stay spelled once". So does this. The
+# caller that wants a kind hands the name to op_annot::_kind_of_vector, which
+# is that table's one inverse.
+#
+# ⚠ IT EXISTS BECAUSE op_param_set THROWS THE NAME AWAY. The backend's
+# op_param_set walks this same raw and hands back {device param value}, which
+# is everything the RDW needs to DRAW a row and nothing it needs to ADD one:
+# the spelling is the only measured evidence of the shape, and it is discarded
+# one line after it is read. A caller re-cutting the bracket of its own is the
+# drift ase::op_param_split was written to prevent, so the walk lives here,
+# beside the two verbs it is made of.
+#
+# ⚠ FIRST MATCH IN RAW ORDER, AND THAT IS A STATED PROPERTY. Two things can
+# make a device+param pair appear twice: a request that is a PARTIAL path
+# (op_dev_covers descends, deliberately -- ruling D-3), and one run whose deck
+# carried per-device cards while its sidecar dump was merged in on top, which
+# puts `i(@dev[id])` and `@dev[id]` in one database. Raw order answers the
+# first spelling the run wrote, which in the second case is the DECK's -- the
+# wrapped one, which op_annot::_wrap_alts then reads with the bare one as its
+# documented fallback. Choosing the other way round is the lossy direction:
+# _wrap_alts for kind 1 tries the bare spelling ALONE.
+proc ase::op_vector_for {devpath param} {
+  if {$devpath eq {} || $param eq {}} { return {} }
+  set rl {}
+  if {[catch {xschem raw list} rl]} { return {} }
+  foreach v [split [string trimright $rl "\n"] "\n"] {
+    set sp [ase::op_param_split $v]
+    if {$sp eq {}} { continue }
+    if {[lindex $sp 1] ne $param} { continue }
+    if {![ase::op_dev_covers $devpath [lindex $sp 0]]} { continue }
+    return $v
+  }
+  return {}
+}
+
 # The distinct devices a captured block names, in block order, with the
 # `[param]` suffix cut off — one entry per device however many parameters it
 # carries. This is what shape b puts on the write line.
@@ -3760,6 +4492,97 @@ proc ase::op_cards_devices {block} {
 # decoration: an unescaped `[...]` in a Tcl word is a command to run. The proc
 # RETURNS the three characters; the file CONTAINS the escaped five.
 proc ase::cap_param_wildcard {} { return \[*\] }
+
+# ===========================================================================
+# THE ALTSHOW VERDICT — is THIS binary's `show` printer sound enough to read?
+# ===========================================================================
+#
+# ⚠ THE OBVIOUS QUESTION IS THE WRONG ONE. "Does this ngspice have altshow?"
+# is answered YES by every release since ng-37 / ngspice-22 (upstream
+# 0a8a56c65, 2007-10-09), the distro package included, so it separates nothing.
+# The question that decides whether the dump can be READ is whether this build
+# carries the printer fix 10276f993 (2026-07-07) -- and NO VERSION STRING CAN
+# ANSWER IT, because `git tag --contains` on that commit returns nothing: it is
+# in no release at all. 45.2 says no, 46 says no, a future 47 will say yes, a
+# master build says yes. Parsing a version here would be guessing.
+#
+# So the probe asks the DEFECT, not the feature, and it needs exactly one
+# source to do it. Given a source declared `pwl`, an unfixed printer replays
+# that source's coefficient list under EIGHT parameter names because `IFvalue
+# val` is uninitialised and the element loop reads past the end; a fixed one
+# prints the real parameter and a `-` placeholder for the other seven.
+#
+# MEASURED on the same two-component deck, same flags:
+#   /usr/bin/ngspice 45.2   -> `sin` appears 6 times carrying the PWL numbers
+#   local build with the fix -> `sin` appears once, reading `sin = -`
+#   dump size 1864 bytes against 919
+#
+# ONE RUN ANSWERS TWO QUESTIONS, and both must hold:
+#   (a) block headers `<name>:` exist at all -> `set altshow` was honoured.
+#       Their absence means the legacy column format, whose device names are
+#       truncated to 21 characters and are unusable.
+#   (b) no NON-`pwl` waveform keyword carries a number -> the printer is sound.
+#
+# Takes the dump TEXT, not a path, so every test row can drive it with no
+# simulator anywhere on the box.
+proc ase::cap_altshow_verdict {text} {
+  ## (a) the block format, or nothing.
+  if {![regexp -line {^[^ ][^:]*:$} $text]} { return 0 }
+  ## (b) the source is declared `pwl`; any OTHER waveform keyword carrying a
+  ## number is the uninitialised-value replay.
+  foreach kw {pulse sin exp sffm am trnoise trrandom} {
+    foreach line [split $text "\n"] {
+      if {[regexp "^ +$kw +=  *(.*)\$" $line -> v]} {
+        if {[string is double -strict [string trim $v]]} { return 0 }
+      }
+    }
+  }
+  return 1
+}
+
+# ===========================================================================
+# CAN SHAPE D'S DUMP ACTUALLY LAND? (issue 1334)
+# ===========================================================================
+#
+# ⚠ A STRING QUESTION, ON PURPOSE, AND PURE. ngspice case-folds the WHOLE
+# `show >` target -- directory component included -- and splits it on
+# whitespace, and it does both at exit 0 with nothing written. So whether the
+# dump can land is decided by the SPELLING of the run directory and by nothing
+# on disk, which is what lets this guard run before that directory exists.
+#
+# ⚠ AND THE PROBE CANNOT ANSWER IT. Deck C asks with a RELATIVE target
+# (`show all > probe_c.txt`) which has no directory to fold, so a probe that
+# watched the printer work says nothing whatever about the path the real deck
+# will use. MEASURED on the build carrying the printer fix, same cell, only the
+# run directory changed: `lower_ok` wrote the dump, `MixedCase` wrote nothing
+# and annotated five blank rows, while the per-device shape in that same
+# directory annotated all five. The fold is this shape's own regression, not a
+# hazard the older shape shares, so it is refused here rather than survived
+# later.
+proc ase::op_dump_reachable_dir {dir} {
+  if {$dir eq {}} { return 0 }
+  if {[string tolower $dir] ne $dir} { return 0 }
+  if {[regexp {[ \t\n]} $dir]} { return 0 }
+  return 1
+}
+
+# The directory shape d would write its dump into, WITHOUT CREATING IT.
+# `set_netlist_dir 2` is the read-only spelling (`what == 2` returns the
+# directory and makes nothing); `ase::rundir`'s own fallback is `0`, which
+# mkdirs, and a proc that only decides how to save operating points must not
+# have that side effect -- ase::op_tier_report calls it just to describe a run.
+proc ase::op_dump_dir {state} {
+  set rd [ase::state_get $state rundir]
+  if {$rd eq {}} { catch {set rd [set_netlist_dir 2]} }
+  if {$rd eq {}} { return {} }
+  set n {}
+  if {[catch {file normalize $rd} n]} { return {} }
+  return $n
+}
+
+proc ase::op_dump_reachable {state} {
+  return [ase::op_dump_reachable_dir [ase::op_dump_dir $state]]
+}
 
 # The wildcard request for each DISTINCT device a captured block names — the
 # shape the probe measured, one entry per device, covering every parameter that
@@ -3819,6 +4642,7 @@ proc ase::op_ctl_saves {names} {
 #
 #   G1 forced   the override is set                       -> that shape
 #   G2 unknown  nothing was measured about the program    -> c
+#   G3a dump     its `show` printer is sound (measured)     -> d
 #   G3 blanket  it can save every device in one request   -> a
 #   G4 unsafe   it could take the short form              -> c   (the demotion)
 #   G5 nocap    it can take neither shorter form          -> c
@@ -3861,6 +4685,27 @@ proc ase::op_save_tier {state} {
     if {![dict exists $caps known] || [dict get $caps known] != 1} {
       set tier c
       set reason unknown
+    } elseif {[dict exists $caps altshow_op_dump] &&
+              [dict get $caps altshow_op_dump] == 1 &&
+              ![ase::op_dump_reachable $state]} {
+      # G3b -- THE PRINTER IS SOUND BUT THE PATH IS NOT (issue 1334). Its own
+      # reason token, because `c unsafe` would say the shorter way is risky
+      # when what is actually true is that this run folder's NAME defeats the
+      # redirect. Falling through to the blanket guard instead would be worse
+      # still: it would answer a question about the path with a shape chosen
+      # for a different reason entirely.
+      set tier c
+      set reason dumppath
+    } elseif {[dict exists $caps altshow_op_dump] &&
+              [dict get $caps altshow_op_dump] == 1} {
+      # G3a -- THE DUMP SHAPE, AND IT IS ABOVE THE BLANKET GUARD ON PURPOSE.
+      # Shape a is gated on `blanket_op_save`, which NO RELEASED NGSPICE
+      # answers 1 to -- its own probe comment says so. Shape d is gated on a
+      # printer this probe just watched work. Below the blanket guard, a build
+      # that somehow answered both would take the dead path; above it, the
+      # measured-working shape wins. Do not reorder these two.
+      set tier d
+      set reason dump
     } elseif {[dict exists $caps blanket_op_save] &&
               [dict get $caps blanket_op_save] == 1} {
       set tier a
@@ -3881,6 +4726,122 @@ proc ase::op_save_tier {state} {
   return [dict create tier $tier reason $reason ndev $ndev ncards $ncards]
 }
 
+# ============================================================================
+# ISSUE 1366 -- ONE RUN, ONE ANSWER ABOUT THE SHAPE
+# ============================================================================
+# ase::run_deck asks the shape question THREE times and used to pin the three
+# answers to nothing: once for the SENTENCE (ase::op_tier_report), once for the
+# DECK (render_deck), once for the RUN RECORD (`meta optier`).
+#
+# ⚠ AND ase::op_save_tier IS NOT A CONSTANT FUNCTION, DELIBERATELY. It goes
+# through ase::sim_capabilities, which never remembers a `known 0` answer --
+# "an answer nobody worked out is never remembered", issue 0950 -- and
+# ase::cap_stale re-measures the moment the resolved binary's stamp moves. ONE
+# probe timeout, or ONE mtime change, between two of those three calls is
+# enough to make them differ, and MEASURED it drove both directions: a report
+# saying shape d over a deck carrying 468 `@` cards, and a report saying shape
+# c over a shape-d deck.
+#
+# ⚠ AND A THIRD SENTENCE WENT FALSE IN THE SAME RUN, WHICH IS THE WORST FACE OF
+# IT. With `meta optier` on `d` over a deck that was rendered `c`,
+# ase::op_report_missing takes its shape-d branch, finds no sidecar -- correctly,
+# because a shape-c deck writes none -- and tells the user "Rename the run
+# folder in lower case with no spaces" about a folder that was already all lower
+# case with no spaces, over a 69.6 MB raw that held the numbers perfectly. That
+# is issue 0975's rule, "a run that worked must not be told it failed", broken
+# by a different route. Row Z4 fences that face by name.
+#
+# THE FIX IS AN ORDERING AND THREADING CHANGE, NOT A NEW POLICY. The run arms a
+# pin; the first of the three consumers to ask decides; every later consumer in
+# that run is handed the same answer.
+#
+# ⚠ THE RENDERER IS BOUND, NOT ASKED FIRST, AND THAT IS THE POINT. The renderer
+# is the one whose answer becomes physical -- the deck on disk is the ground
+# truth about what ran -- but it runs SECOND, after the sentence is already out,
+# so letting it measure would only move the disagreement rather than delete it.
+# What makes the deck the ground truth is that it now OBEYS the run's one
+# answer: the deck, the sentence and the record are the same letter by
+# construction, and a reader who checks the deck is checking all three.
+#
+# ⚠ WHERE THE PIN'S LIFETIME BEGINS AND ENDS, because a pin that outlived its
+# run would be a worse defect than the one it deletes. It begins at
+# ase::op_tier_arm, called by ase::run_deck immediately above the first
+# consumer, and ends at ase::op_tier_disarm, called as soon as the record is
+# taken -- and on the one statement between them that can raise, the render,
+# whose error is re-raised unchanged. NOTHING OUTSIDE A RUN IS EVER HANDED A
+# REMEMBERED ANSWER: with nothing armed, ase::op_tier_now IS ase::op_save_tier,
+# call for call, which is what every suite that asks the decision directly
+# depends on. So a re-run in the same session after the user registers a
+# different simulator re-measures: the previous run released its arm before it
+# returned, and this run's arm starts empty. Rows Z1, Z2, Z5 and Z6.
+namespace eval ase { variable op_tier_pin {} }
+
+# Arm the pin for one run. Always CLEARS first, so a run can never inherit an
+# answer -- not from a previous run, not from a run that died between the two
+# calls below.
+proc ase::op_tier_arm {} {
+  variable op_tier_pin
+  set op_tier_pin [dict create armed 1]
+  return {}
+}
+
+# Release it. Idempotent: disarming when nothing is armed is not an error.
+proc ase::op_tier_disarm {} {
+  variable op_tier_pin
+  set op_tier_pin {}
+  return {}
+}
+
+# What the pin holds, for a row that wants to assert the LIFETIME rather than
+# infer it from behaviour: {} = nothing armed, `armed` = a run holds it and
+# nobody has asked yet, otherwise the letter this run decided on.
+proc ase::op_tier_pin_state {} {
+  variable op_tier_pin
+  if {$op_tier_pin eq {}} { return {} }
+  if {![dict exists $op_tier_pin tier]} { return armed }
+  return [dict get [dict get $op_tier_pin tier] tier]
+}
+
+# THE SHAPE FOR THIS CALLER, and the only door the three consumers use.
+#
+# ⚠ LAZY, NOT EAGER, AND FOR A MEASURED REASON. ase::op_save_tier is not
+# side-effect free: on a capability cache MISS it makes a scratch folder and
+# STARTS THE USER'S SIMULATOR (see its own header). Deciding at the arm would
+# start it for every run, including the many runs whose three gates refuse
+# device numbers and which ask the question exactly zero times today. So the arm
+# costs nothing and the first consumer that genuinely needs an answer pays for
+# it -- and, because the answer is then kept, the run as a whole pays once
+# instead of three times.
+proc ase::op_tier_now {state} {
+  variable op_tier_pin
+  if {$op_tier_pin eq {}} { return [ase::op_save_tier $state] }
+  if {[dict exists $op_tier_pin tier]} { return [dict get $op_tier_pin tier] }
+  set d [ase::op_save_tier $state]
+  dict set op_tier_pin tier $d
+  return $d
+}
+
+# THE PROGRAM TO NAME IN A SENTENCE, AND NEVER AN EMPTY ONE (issue 1366).
+# ase::sim_status's `resolved` field is EMPTY BY DESIGN whenever the user's own
+# entry cannot be honoured -- a registered simulator whose file was deleted, or
+# which lost its executable bit -- and a sentence that interpolated it then read
+#
+#     xschem was not able to find out anything about what  can do
+#
+# with no name and a double space, about a simulator the user can name in one
+# word. `exe` still carries the path the entry points at, which is the thing
+# they would recognise; the backend name is the last resort and is never empty.
+proc ase::sim_named_path {backend} {
+  set st {}
+  if {[catch {ase::sim_status $backend} st]} { return $backend }
+  foreach k {resolved exe} {
+    if {[dict exists $st $k] && [string trim [dict get $st $k]] ne {}} {
+      return [dict get $st $k]
+    }
+  }
+  return $backend
+}
+
 # SAY WHICH SHAPE THE RUN USED, ONCE, IN THE USER'S OWN WORDS. Called from
 # ase::run_deck; returns the kind that was said, or {} when there was nothing
 # to say — a real answer, not an absence.
@@ -3899,19 +4860,70 @@ proc ase::op_tier_report {sim state netlist_text} {
   if {![ase::op_gate_on [ase::state_get $state save_op_params {}]]} { return {} }
   if {![ase::op_analysis_enabled $state]} { return {} }
   if {[ase::op_cards_for $netlist_text] eq {}} { return {} }
-  set d [ase::op_save_tier $state]
-  set path {}
-  catch {set path [dict get [ase::sim_status $sim] resolved]}
+  ## THE RUN'S ONE ANSWER, NOT A SECOND MEASUREMENT (issue 1366). Inside a run
+  ## this is the same letter the deck was rendered with and the same letter the
+  ## record keeps; called directly, as the suites call it, it is
+  ## ase::op_save_tier and nothing else.
+  set d [ase::op_tier_now $state]
+  set path [ase::sim_named_path $sim]
+  ## ⚠ EVERY SHAPE NEEDS AN ARM, AND THE DEFAULT IS NOT A SPARE ONE (issue
+  ## 1354). `d` had none, so it took the per-device kind by falling through --
+  ## and the per-device sentence is a claim about a deck with a `.save` card
+  ## per device per parameter in it, which shape d's deck (row D1 of
+  ## tests/headless/test_op_dump_altshow.tcl) does not have a single one of.
+  ## Reason `forced` reaches `d` too, through ase::op_tier_force_set, so this
+  ## switch is on the TIER and never on the reason.
   set kind op_tier_perdevice
   switch -- [dict get $d tier] {
     a { set kind op_tier_blanket }
     b { set kind op_tier_writeline }
+    d { set kind op_tier_dump }
   }
   ase::sim_say $kind $sim $path [dict get $d reason] note
   if {[dict get $d reason] eq {forced}} {
     ase::sim_say op_tier_forced $sim $path {} note
   }
   return $kind
+}
+
+# SAY WHICH REGISTERED SIMULATOR THIS RUN IS STARTING, ONCE (issue 1370).
+# Called from ase::run_deck; returns the entry that was named, or {} when there
+# was nothing to say -- a real answer, not an absence. The user's question was
+# "which version of ngspice did the MOST RECENT run use?", which is a per-run
+# question, so this fires on every run rather than only when the choice changes.
+#
+# ⚠ SILENT WHEN NO ENTRY IS IN FORCE. A user who has registered nothing runs
+# whatever their PATH finds, and ase::sim_why's `path_in_force` is the sentence
+# for that state; a line naming an entry here would be naming one that does not
+# exist. So an ordinary installation's CIW is byte-identical to before.
+#
+# ⚠ HERE AND NOT IN ase::run_precheck, and that is a correction to this item's
+# own plan. run_precheck is the GATE, and its silence on a healthy resolve is
+# asserted on purpose: row CS187b of tests/headless/test_sim_run_profile.tcl
+# pins `said=<0>` for an `ok` resolve and its own comment calls itself "the only
+# thing asserting the precheck's silence" (CS180b pins the same). A say added
+# there would have traded that control away for a sentence that belongs to the
+# RUN, not to the gate. ase::op_tier_report is the precedent and the neighbour:
+# one sentence per run, said from run_deck, caught there.
+#
+# ⚠ AND NOT AT THE TOP OF ase::run_deck EITHER, which is where 1370 first put
+# the call and where its adversary measured it lying. Called before
+# ase::preflight_gate, this says a run is starting and the pre-flight then
+# REFUSES it, generating no deck, no raw and no log -- so the channel the user
+# reads to answer "which version did the most recent run use?" carried a start
+# for a run that never started. The call now sits immediately after `cmd` is
+# composed and immediately before the launch; see the block there.
+#
+# ⚠ AND NOT IN ase::backend::ngspice::run_cmd either, for op_tier_report's
+# reason: rows D1/D4/D5 of tests/headless/test_ase_simreg_0931.tcl pin that
+# proc's returned command AND its echo behaviour byte for byte.
+proc ase::run_using_report {state} {
+  set p [ase::run_profile $state]
+  if {[dict get $p status] ne {ok}} { return {} }
+  set who [dict get $p entry]
+  if {[string trim $who] eq {}} { return {} }
+  ase::sim_say run_using $who [dict get $p exe] {} note
+  return $who
 }
 
 # ============================================================================
@@ -3971,6 +4983,17 @@ proc ase::op_report_missing {state meta exitcode} {
   if {![file isfile $raw]} {
     ase::sim_say op_numbers_no_file $sim $path $raw error
     return op_numbers_no_file
+  }
+  ## ⚠ SHAPE D KEEPS ITS NUMBERS SOMEWHERE ELSE (issue 1335), so asking the raw
+  ## about them is the wrong question -- and the wrong question got a reassuring
+  ## answer. MEASURED: on a shape-d run with every annotation row blank this
+  ## proc returned SILENCE, because `.options savecurrents` had put
+  ## `i(@m.xm1.m...[id])` in the raw with no card behind it, and the
+  ## device-level comparison below counted the device answered. That is
+  ## test_ase_final's own F18 trap defeating the guard written to stop exactly
+  ## this class of silence.
+  if {[ase::state_get $meta optier {}] eq {d}} {
+    return [ase::op_report_missing_dump $sim $path $raw $devs]
   }
   set vars {}
   catch {
@@ -4038,6 +5061,43 @@ proc ase::op_report_missing {state meta exitcode} {
   ase::sim_say op_numbers_missing $sim $path \
     [list [llength $devs] [expr {[llength $devs] - [llength $miss]}] $miss] error
   return op_numbers_missing
+}
+
+# THE SHAPE-D HALF OF ase::op_report_missing (issue 1335).
+#
+# The same question -- did this run produce the device numbers the sheet is
+# about to ask for -- put to the file that would actually hold them. Two
+# answers are worth a sentence and they are different situations:
+#
+#   * NO DUMP AT ALL. The run exited 0, the raw is perfect and the simulator's
+#     log is clean, because ngspice does not treat a redirect it could not open
+#     as an error. This is the folded-path run (issue 1334) and anything else
+#     that stopped the file being written, and without this sentence it is
+#     completely silent.
+#   * A DUMP THAT DOES NOT COVER THE DEVICES. Something was written, but not
+#     for the devices this sheet names, so the rows would still be blank.
+#
+# A dump that covers them is SILENCE, deliberately: a run that worked must not
+# be told it failed, which is the defect issue 0975 was closed on.
+proc ase::op_report_missing_dump {sim path raw devs} {
+  set dump [::op_annot::opdump_path $raw]
+  if {![file isfile $dump] || [file size $dump] == 0} {
+    ase::sim_say op_dump_missing $sim $path $dump error
+    return op_dump_missing
+  }
+  set have [dict create]
+  set names {}
+  if {[catch {set names [::op_annot::opdump_devices $dump]}]} { set names {} }
+  foreach d $names { dict set have "@$d" 1 }
+  set miss {}
+  foreach d $devs {
+    if {![dict exists $have $d]} { lappend miss $d }
+  }
+  if {![llength $miss]} { return {} }
+  ase::sim_say op_dump_partial $sim $path \
+    [list [llength $devs] [expr {[llength $devs] - [llength $miss]}] \
+          [file tail $dump]] error
+  return op_dump_partial
 }
 
 # Does the design buffer carry unsaved edits? Exactly `xschem get modified`,
@@ -4190,8 +5250,33 @@ proc ase::op_cards_capture {state netlistpath} {
  annotatable. The deck asks for no device parameters." error
     return {}
   }
-  ase::echo "ASE: [ase::op_cards_count $block] device OP save card(s) added to\
- the deck."
+  ## ⚠ THIS LINE MAY NOT SAY WHAT THE DECK CARRIES, AND IT USED TO (issue 1354).
+  ## It is printed at NETLIST time, before any deck exists, and which shape the
+  ## deck will ask in is ase::op_save_tier's answer at RUN time. On shape d it
+  ## is never true at all: that deck carries no `.save @dev[param]` card
+  ## anywhere, and the user's own log said "468 device OP save card(s) added to
+  ## the deck" over a rendered deck with zero `@` characters in it. One wrong
+  ## sentence in a log sent an entire crew at the wrong hypothesis about why
+  ## their results window went wide.
+  ##
+  ## ⚠ AND IT MUST NOT LEARN THE SHAPE HERE. ase::op_save_tier goes through
+  ## ase::sim_capabilities, which on a cache MISS makes a scratch folder and
+  ## STARTS THE USER'S SIMULATOR -- see its own header. `Simulation > Netlist >
+  ## Recreate` (ase::ui::do_netlist_recreate -> ase::netlist -> here) is a
+  ## netlist gesture with no run behind it, and a plain Netlist must not launch
+  ## a simulator to word a sentence. So this line reports what the WALK built,
+  ## the run reports what the DECK did with it (ase::op_tier_report), and the
+  ## two never guess at each other's half.
+  ##
+  ## ⚠ TWO NUMBERS, BECAUSE ON SHAPE D THE FIRST ONE IS A CATEGORY ERROR. A
+  ## count of cards a deck does not carry is not a smaller number; the count
+  ## that still means something there is how many DEVICES the sheet asks about,
+  ## which is what the dump has to cover. Rows N5 and N6 of
+  ## tests/headless/test_op_dump_altshow.tcl hold both halves.
+  ase::echo "ASE: [ase::op_cards_count $block] device OP save card(s) prepared\
+ from this schematic, covering [llength [ase::op_cards_devices $block]]\
+ device(s). How the deck asks for them is decided at Run, and the run says\
+ which way it used."
   return $block
 }
 
@@ -4315,6 +5400,7 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   # half-written can be left behind; a `preserve` mismatch returns the line to
   # put in the run log and has already reached the CIW pane.
   set casenote {}
+  set using {}
   if {[ase::run_composes_registry $sim]} {
     set casenote [ase::run_precheck $state]
   }
@@ -4375,24 +5461,6 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   ## reads its answer. The suite calls ase::cap_report directly, uncaught, so
   ## a defect in it is still loud where it should be.
   catch {ase::cap_report $sim [ase::n_enabled_analyses $state]}
-  ## 0963: AND SAY, IN PLAIN WORDS, HOW THIS RUN ASKED FOR DEVICE
-  ## OPERATING-POINT NUMBERS AND WHY. Until this line the probe's answer had one
-  ## reader (cap_report, one line up) that never touched the deck, and the whole
-  ## of what a user was told about the strategy was a count of cards emitted at
-  ## netlist time. The sentence names no capability, no internal word and no
-  ## letter for the shape -- ase::sim_why mints all four of them.
-  ##
-  ## HERE AND NOT IN run_cmd, for cap_report's reason one line up: run_cmd's
-  ## returned command and its echo behaviour are pinned byte for byte by row D4
-  ## of tests/headless/test_ase_simreg_0931.tcl. The report belongs to the RUN.
-  ##
-  ## CAUGHT, for cap_report's reason too: everything it says is advisory and
-  ## nothing downstream reads it, so a defect in it must never stop a run. The
-  ## suite calls ase::op_tier_report and ase::op_save_tier directly, uncaught.
-  ##
-  ## SILENT when this deck asks for no device numbers at all -- op_tier_report
-  ## re-checks render_deck's own two gates and the captured block.
-  catch {ase::op_tier_report $sim $state $netlist_text}
   if {[llength $cosim]} {
     foreach r [ase::cosim_build $state $cosim] {
       lassign $r cm cstatus cdetail
@@ -4411,7 +5479,91 @@ proc ase::run_deck {state netlistfile {callback {}}} {
     }
   }
 
-  set deck [$render_deck $state $netlist_text]
+  ## --- 1366: ONE SHAPE, ASKED ONCE, OBEYED BY ALL THREE OF ITS READERS -----
+  ## The three readers below -- the sentence, the deck and the record -- used to
+  ## ask ase::op_save_tier separately and pin the three answers to nothing, and
+  ## that function is deliberately not constant (see the pin's own header). The
+  ## arm makes the first ask the run's answer and hands it to the other two.
+  ##
+  ## ⚠ THE ARM IS BELOW THE COSIM BLOCK ON PURPOSE. ase::cosim_build raises out
+  ## of this proc on a failed model build, and everything between the arm and
+  ## the disarm has to be either non-raising or caught, or a dead run would
+  ## leave its answer lying about for the next direct render_deck call to pick
+  ## up. Moving the sentence down here also puts it immediately above the deck
+  ## it describes, which is the only deck it was ever about.
+  ase::op_tier_arm
+
+  ## 0963: SAY, IN PLAIN WORDS, HOW THIS RUN ASKED FOR DEVICE OPERATING-POINT
+  ## NUMBERS AND WHY. Until this line the probe's answer had one reader
+  ## (cap_report, above) that never touched the deck, and the whole of what a
+  ## user was told about the strategy was a count of cards emitted at netlist
+  ## time. The sentence names no capability, no internal word and no letter for
+  ## the shape -- ase::sim_why mints all four of them.
+  ##
+  ## HERE AND NOT IN run_cmd, for cap_report's reason: run_cmd's returned
+  ## command and its echo behaviour are pinned byte for byte by row D4 of
+  ## tests/headless/test_ase_simreg_0931.tcl. The report belongs to the RUN.
+  ##
+  ## CAUGHT, for cap_report's reason too: everything it says is advisory and
+  ## nothing downstream reads it, so a defect in it must never stop a run. The
+  ## suite calls ase::op_tier_report and ase::op_save_tier directly, uncaught.
+  ##
+  ## SILENT when this deck asks for no device numbers at all -- op_tier_report
+  ## re-checks render_deck's own two gates and the captured block, so a run that
+  ## asks for nothing still asks the shape question zero times.
+  catch {ase::op_tier_report $sim $state $netlist_text}
+
+  ## ⚠ CAUGHT ONLY TO RELEASE THE PIN, AND RE-RAISED UNCHANGED -- message,
+  ## stack and error code. This is the one statement between the arm and the
+  ## disarm that can raise, and a run that dies here must not bequeath its
+  ## answer to whatever asks next.
+  if {[catch {$render_deck $state $netlist_text} deck]} {
+    set ei $::errorInfo
+    set ec $::errorCode
+    ase::op_tier_disarm
+    return -code error -errorinfo $ei -errorcode $ec $deck
+  }
+
+  ## 0965: WHAT THIS DECK ASKED FOR, CARRIED TO THE ONLY PLACE THAT CAN SEE
+  ## WHAT CAME BACK. ase::run_done fires from execute_fileevent on EOF and is
+  ## handed the state and this metadata, never the netlist text -- so the
+  ## captured block has to travel with the run. Taken HERE, immediately after
+  ## the deck was rendered from it, so the record is what this run really asked,
+  ## including anything a caller put into the block between netlisting and
+  ## rendering.
+  ##
+  ## The two gates are render_deck's own: without the user's tick and an enabled
+  ## operating point the deck carries no device requests, and a report about
+  ## requests that were never made is a claim about a deck that does not exist.
+  ## Empty means "nothing to compare", which is what every run that asks for no
+  ## device numbers leaves behind.
+  set opblock {}
+  if {[ase::op_gate_on [ase::state_get $state save_op_params {}]] &&
+      [ase::op_analysis_enabled $state]} {
+    catch {set opblock [ase::op_cards_for $netlist_text]}
+  }
+  ## WHICH SHAPE THE DECK ACTUALLY USED (issue 1335). The block above says what
+  ## was ASKED FOR; this says HOW, and they are not the same question. Shape d
+  ## puts its numbers in a sidecar dump rather than in the raw, so a reporter
+  ## that only knows the block looks in the wrong file -- and finds the one free
+  ## `i(@dev[id])` that `.options savecurrents` leaves there, calls the device
+  ## answered, and goes silent while every row on the sheet is blank.
+  ##
+  ## ⚠ THIS IS THE RUN'S PINNED ANSWER, WHICH IS WHAT MAKES IT THE DECK'S
+  ## (issue 1366). The comment that stood here claimed it was "computed under
+  ## render_deck's own two gates so the two cannot disagree", and they could:
+  ## the gates were the same, the MEASUREMENT was not. A record that says `d`
+  ## over a shape-c deck sends ase::op_report_missing down its dump branch and
+  ## tells the user to rename a run folder that is already correctly named,
+  ## about a run that worked.
+  set optier {}
+  if {$opblock ne {}} {
+    catch {set optier [dict get [ase::op_tier_now $state] tier]}
+  }
+  ## THE RUN'S ANSWER IS SPENT. Everything below reads $optier, never the pin,
+  ## and nothing outside a run may be handed a remembered shape.
+  ase::op_tier_disarm
+
   set deckpath [ase::deck_file $state]      ;# ONE owner of this path (issue 0838)
   set f [open $deckpath w]
   puts -nonewline $f $deck
@@ -4419,6 +5571,42 @@ proc ase::run_deck {state netlistfile {callback {}}} {
 
   set logpath [$log_file $state]
   set cmd [$run_cmd $state $deckpath]
+
+  ## 1370: WHICH REGISTERED SIMULATOR THIS RUN IS STARTING, IN BOTH CHANNELS
+  ## AND ONCE IN EACH. `ase::run_using_report` says the sentence to the CIW and
+  ## the action log -- the channel the user was reading when they asked "which
+  ## version of ngspice did the most recent run use?" -- and hands back the
+  ## entry's name, which travels in the run record below as `using` for
+  ## ase::run_log_header's own field. One resolve, so the name in the log and
+  ## the name in the sentence cannot be answers about two different instants.
+  ##
+  ## ⚠ HERE, AND NOT BESIDE ase::run_precheck AT THE TOP OF THIS PROC, AND THAT
+  ## IS 1370'S REPAIR. It stood beside the precheck, ELEVEN LINES ABOVE
+  ## ase::preflight_gate and above the `open $netlistfile` -- so a run the
+  ## pre-flight REFUSED, and a run whose netlist file was not there, both said
+  ## "This run is starting the simulator you named <name>, and the program it
+  ## is running is <path>." and were then refused with "Nothing was generated:
+  ## no deck, no raw, no log." Measured, both of them, by this item's adversary.
+  ## The one channel a user reads to answer "which version did the most recent
+  ## run use?" was claiming starts for runs that never started.
+  ##
+  ## SO IT SITS AT THE LAST INSTANT BEFORE THE LAUNCH: the gate has passed, the
+  ## cosim models are built, the deck is written, and `cmd` -- the very argument
+  ## list `execute` is about to be handed -- is composed one line up. What can
+  ## still go wrong from here is `execute` itself returning -1, and that case
+  ## leaves the run log this proc is about to write, so the sentence and the
+  ## header agree about what was attempted. `ase::op_tier_report` is the
+  ## precedent and it is likewise after the gate.
+  ##
+  ## GATED ON ase::run_composes_registry: a backend with its own run_cmd
+  ## hardcodes its binary and consults no registry, so an entry named for it
+  ## would be a name for a program that is not going to start.
+  ##
+  ## CAUGHT, for ase::op_tier_report's reason -- everything it says is advisory
+  ## and nothing downstream reads it, so a defect in it must never stop a run.
+  if {[ase::run_composes_registry $sim]} {
+    catch {set using [ase::run_using_report $state]}
+  }
 
   ## --- 0618: the log's provenance ------------------------------------------
   ## MEASURED BEFORE THE CHANGE: `string equal $logtext $::execute(data,last)`
@@ -4442,23 +5630,7 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   ## `2>@1` included and argv0 unresolved. auto_execok-resolving it would be a
   ## SECOND source of truth about which binary ran, computed at a different
   ## instant from the exec that ran it.
-  ## 0965: WHAT THIS DECK ASKED FOR, CARRIED TO THE ONLY PLACE THAT CAN SEE
-  ## WHAT CAME BACK. ase::run_done fires from execute_fileevent on EOF and is
-  ## handed the state and this metadata, never the netlist text -- so the
-  ## captured block has to travel with the run. Taken HERE, after the deck was
-  ## rendered from it, so the record is what this run really asked, including
-  ## anything a caller put into the block between netlisting and rendering.
   ##
-  ## The two gates are render_deck's own: without the user's tick and an enabled
-  ## operating point the deck carries no device requests, and a report about
-  ## requests that were never made is a claim about a deck that does not exist.
-  ## Empty means "nothing to compare", which is what every run that asks for no
-  ## device numbers leaves behind.
-  set opblock {}
-  if {[ase::op_gate_on [ase::state_get $state save_op_params {}]] &&
-      [ase::op_analysis_enabled $state]} {
-    catch {set opblock [ase::op_cards_for $netlist_text]}
-  }
   ## `casenote` is `fluid-editing`'s casemode batch item 8, section 3b: "report
   ## in the log AND the CIW". The CIW half already happened in
   ## ase::run_precheck, before the simulator started; the log half can only
@@ -4469,8 +5641,8 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   ## ase::run_log_header renders it; empty writes nothing.
   set meta [dict create cell $cell simulator $sim cmd $cmd dir $rd \
                         deck $deckpath started [clock seconds] \
-                        opblock $opblock casenote $casenote \
-                        t0 [clock milliseconds]]
+                        opblock $opblock casenote $casenote optier $optier \
+                        using $using t0 [clock milliseconds]]
   catch {ase::run_log_write $logpath $meta {} {}}
 
   set ::execute(callback) [list ase::run_done $logpath $state $callback $meta]
@@ -4493,14 +5665,30 @@ proc ase::run_deck {state netlistfile {callback {}}} {
 # chatter. Split into three tiny procs because each is a separate claim a test
 # can pin, and because ase::run_log_body is the one that must never do anything.
 
-# The five facts, as the file's opening block. Ends with the delimiter line, so
-# a caller that has nothing else to write (the pre-launch call) still produces a
-# file that reads as a complete header.
+# The facts, as the file's opening block. Ends with the delimiter line, so a
+# caller that has nothing else to write (the pre-launch call) still produces a
+# file that reads as a complete header. Five of them are 0618's own and always
+# written; `using` (1370) and `notes` (the casemode note) write nothing at all
+# when they are empty, so an ordinary run's log is byte-identical to 0618's.
 proc ase::run_log_header {meta} {
   set when {}
   catch {set when [clock format [ase::state_get $meta started [clock seconds]]]}
   set out "=== ase run [ase::state_get $meta cell] $when ===\n"
   append out "simulator : [ase::state_get $meta simulator]\n"
+  ## 1370: A FIELD IS ADDED, THE EXISTING ONE IS NOT RE-POINTED. `simulator :`
+  ## is the BACKEND word and stays it -- row E1e of tests/headless/test_ase_core
+  ## asserts the literal `ngspice` there and that suite runs under the
+  ## developer's own HOME, so a re-pointed field would make a shipped suite's
+  ## expectation depend on whose ~/.xschem/ase_simulators is live. The user's
+  ## confusion started one line below this, where `command :` carried
+  ## `.../build-ver_50/src/ngspice` under a `simulator : ngspice` that
+  ## contradicted it; `using :` is the word that joins the two.
+  ##
+  ## EMPTY WRITES NOTHING, the `casenote` field's own discipline: a run with no
+  ## registered simulator in force produces a log byte-identical to 0618's
+  ## committed framing.
+  set using [ase::state_get $meta using {}]
+  if {$using ne {}} { append out "using     : $using\n" }
   append out "command   : [ase::state_get $meta cmd]\n"
   append out "directory : [ase::state_get $meta dir]\n"
   append out "deck      : [ase::state_get $meta deck]\n"
@@ -5812,7 +7000,8 @@ proc ase::attach_dbs {rawfile sim_type {vcdfiles {}}} {
 
 # The registry slot indices, and the current one; {} / -1 when nothing is
 # loaded. `xschem raw info` prints "<cur> current" then one "<i> <path> <type>"
-# line per slot (save.c:2379-2388, what == 4) and nothing at all with no raw.
+# line per slot (save.c:2475-2488, what == 4; re-grepped 2026-09-02, item A6)
+# and nothing at all with no raw.
 proc ase::raw_indices {} {
   if {[catch {xschem raw info} txt] || $txt eq {}} { return {} }
   set out {}
@@ -7712,11 +8901,22 @@ namespace eval ase::backend::ngspice {
     ## keeps such a deck byte-identical to what it has always been (row E12).
     set optier_write {}
     set optier_ctl {}
+    ## THE POST-OP CARRIER. optier_ctl's lines are `save` REQUESTS and must
+    ## precede the analysis; shape d's are a DUMP and must follow it, because
+    ## `show` reads live CKT state rather than a stored plot. Emitting them
+    ## through one carrier would dump an unsolved circuit at exit 0 -- silently,
+    ## with a full-looking file. Two carriers, two positions.
+    set optier_post {}
     if {[ase::op_gate_on [ase::state_get $state save_op_params {}]] &&
         [ase::op_analysis_enabled $state]} {
       set opblk [ase::op_cards_for $netlist_text]
       if {$opblk ne {}} {
-        set optier [dict get [ase::op_save_tier $state] tier]
+        ## THE RUN'S ONE ANSWER (issue 1366). Rendering is where the shape
+        ## becomes physical, so this is the reading that has to be obeyed --
+        ## and inside a run it is the one the sentence already said and the one
+        ## the record will keep. Outside a run (every suite that calls this
+        ## hook with a fixture string) it is a fresh ase::op_save_tier.
+        set optier [dict get [ase::op_tier_now $state] tier]
         lappend lines \
           "* op_annot device operating-point save cards (Outputs > Save All)"
         switch -- $optier {
@@ -7749,6 +8949,36 @@ namespace eval ase::backend::ngspice {
             # entries against 468 cards.
             lappend lines ".save all"
             set optier_ctl [ase::op_ctl_saves [ase::op_cards_wildcards $opblk]]
+          }
+          d {
+            # THE DUMP SHAPE (ngspice `set altshow` + `show all`). Two lines
+            # inside `.control`, NO DEVICE NAMED ANYWHERE, and unlike shape a
+            # this one is not cold code: the capability has shipped in every
+            # ngspice release since ng-37 / ngspice-22 (upstream 0a8a56c65,
+            # 2007-10-09). See the long block at the end of src/op_annot.tcl
+            # for the measurements and for the three silent hazards the reader
+            # guards.
+            #
+            # MEASURED on the user's tb_bandgap, same run, against the 468
+            # cards shape c emits: 468 of 468 pairs recovered, worst relative
+            # error 4.70e-06 (`show`'s %.6g rounding, nothing else), and 212
+            # devices dumped against 78 named -- the extra 134 include the two
+            # PNPs that ARE the bandgap reference and that no `.save @q` card
+            # in that deck ever asked for.
+            #
+            # ⚠ THE REQUEST IS BUILT IN op_annot, NOT SPELLED HERE. The reader
+            # has to find the file this line creates, and ngspice case-folds
+            # the redirect target, so the asking side and the reading side must
+            # derive the path from ONE proc or they desynchronise silently.
+            #
+            # ⚠ IT STILL RUNS THE HIERARCHY WALK IT DOES NOT NEED. Reaching
+            # this arm requires a non-empty $opblk, so shape d currently pays
+            # for the per-device walk whose whole point is to be unnecessary --
+            # and inherits its dirty-sheet refusal (issue 0632). Correct, just
+            # wasteful; lifting the gate is a separate change with its own
+            # blast radius, and is NOT done here.
+            lappend lines ".save all"
+            set optier_post [::op_annot::opdump_request [raw_file $state]]
           }
           b {
             # THE ONE-LINE SHAPE (issue 0963 tier b): no cards at all here, and
@@ -7958,7 +9188,7 @@ namespace eval ase::backend::ngspice {
       }
     }
     set printsdone 0
-    if {[llength $optier_ctl]} { set anorder {dc ac tran op} }
+    if {[llength $optier_ctl] || [llength $optier_post]} { set anorder {dc ac tran op} }
     foreach type $anorder {
       set ai -1
       foreach a [ase::state_get $state analyses] {
@@ -7972,7 +9202,15 @@ namespace eval ase::backend::ngspice {
           foreach opsl $optier_ctl { lappend lines $opsl }
         }
         switch -- $type {
-          op   { lappend lines "op" }
+          op   {
+            lappend lines "op"
+            # Immediately after the solve and before any other analysis:
+            # `show` reports whatever CKT state is current, and a later
+            # dc/tran would overwrite it (measured: after `op; dc`, show
+            # reports the sweep end point, and `setplot op1` does NOT
+            # rewind it).
+            foreach opsl $optier_post { lappend lines $opsl }
+          }
           dc   { lappend lines "dc [dict get $a source] [dict get $a start]\
  [dict get $a stop] [dict get $a step]" }
           ac   { lappend lines "ac dec [dict get $a points] [dict get $a start]\
@@ -8384,6 +9622,23 @@ write probe_b.raw
 .end
 "
     close $f
+    # DECK C -- THE ALTSHOW PRINTER. One PWL source is the whole probe; see
+    # ase::cap_altshow_verdict for why the defect and not the feature is what
+    # gets asked. It writes a TEXT file, not a raw, so it needs none of the
+    # cap_claim/cap_result machinery the two decks above use.
+    set deckc [file join $workdir probe_c.sp]
+    set dumpc [file join $workdir probe_c.txt]
+    set f [open $deckc w]
+    puts -nonewline $f "${ckt}vpw pw 0 pwl 0 0 1u 1 2u 0
+rpw pw 0 1k
+.control
+op
+set altshow
+show all > probe_c.txt
+.endc
+.end
+"
+    close $f
     # ONE BUDGET FOR THE WHOLE MEASUREMENT, NOT ONE PER RUN (issue 0953). The
     # measured 20.0 s freeze of the user's Run gesture was two runs each paying
     # a ten-second cap that nothing could ask to be smaller. And once one run
@@ -8466,6 +9721,25 @@ write probe_b.raw
         if {[string first {@m.xo1.xi1.m1[} $nm] >= 0} { set blanket 1 }
       }
     }
+    # ---- ALTSHOW_OP_DUMP -----------------------------------------------
+    #
+    # ⚠ ITS KEY IS PUBLISHED ONLY FOR A COMPLETE MEASUREMENT, and it does NOT
+    # make the whole answer `known 0` when it alone runs out of budget. Same
+    # contract as the casemode leg below: a missing key means "not measured",
+    # never "no", and ase::op_save_tier reads absence as "do not take shape d"
+    # -- which lands on the per-device form, the one that always works.
+    set altshow_ok 0
+    set altshow_measured 0
+    if {[ase::cap_left $t0] > 0} {
+      set rc [ase::cap_run $exe [concat $exeargs [list -b $deckc]] $workdir \
+                [ase::cap_left $t0]]
+      if {![lindex $rc 2] && [file exists $dumpc]} {
+        set fh [open $dumpc r]
+        set altshow_ok [ase::cap_altshow_verdict [read $fh]]
+        close $fh
+        set altshow_measured 1
+      }
+    }
     # ---- CASE MODE: THE THIRD MEASUREMENT, from `fluid-editing` --------------
     #
     # WHICH CASE MODES THIS BUILD CAN ACTUALLY DELIVER. It is the same kind of
@@ -8511,7 +9785,201 @@ write probe_b.raw
     set out [dict create known 1 usable $usable appendwrite $appendwrite \
                          blanket_op_save $blanket hier_op_names $hier]
     if {$cmok} { dict set out casemode_detected $cmdet }
+    if {$altshow_measured} { dict set out altshow_op_dump $altshow_ok }
     return $out
+  }
+
+  # ==========================================================================
+  # THE RESULTS DISPLAY WINDOW'S BACKEND SEAM — issue 1245, item B1.
+  # Spec: doc/claude/specs/op_param_lists.md §4.2. Rulings:
+  # doc/claude/op_param_batch/DECISIONS.md D-3, D-4, D-5 and DRIVER DECISION
+  # DD-1, which is this seam's central ruling.
+  # ==========================================================================
+  #
+  # THE ONE SENTENCE EACH, because a measurement taken at a seam inherits the
+  # seam's position and this is a seam other items will measure through:
+  #   WHAT op_param_set ANSWERS — which parameter columns THIS RUN'S CURRENTLY
+  #     SELECTED RAW SLOT actually holds and actually computed for exactly this
+  #     device path, in the order the file lists them.
+  #   WHAT IT DOES NOT ANSWER — which parameters this device HAS. It cannot see
+  #     a parameter nobody saved, it cannot see a device the raw does not name,
+  #     it is blind to absence on any raw written by `ngspice -b -r`
+  #     (doc/claude/issues/1263-*.md), and it says nothing about a slot that is
+  #     not the current one.
+  #
+  # ⚠ IT READS THE CURRENT SLOT AND SELECTS NOTHING. Every `xschem raw` verb
+  # reads xctx->raw (scheduler.c:10694). A user who was looking at waveforms
+  # has a TRANSIENT slot current; the sim_type gate below is what stops this
+  # seam publishing interpolated transient numbers as operating-point
+  # parameters. Choosing a slot is a caller's decision and mutates global
+  # state; this seam does not make it.
+
+  # DD-1 — CAN THIS BACKEND ENUMERATE A DEVICE'S PARAMETERS?  A DECLARATION.
+  #
+  # Today's ngspice answers NO: it has no wildcard operating-point save, so it
+  # says so, and key 3 falls back to "what this run's raw actually holds",
+  # which is the dumb approach D-5 names. A backend that answers YES is
+  # promising completeness, and only a build that really has the wildcard save
+  # is entitled to.
+  #
+  # ⚠ NEVER MEASURED, AND THAT IS THE RULING, NOT A PREFERENCE. D-4 forbids
+  # guessing what the simulator publishes, and any scheme that measures this
+  # answer — a probe, a `show` parse, a save tried to see what came back — is a
+  # guess dressed as data. The only honest YES is a declaration.
+  #
+  # ⚠ THIS IS DELIBERATELY NOT THE EXISTING `blanket_op_save` KEY, and a later
+  # reader must not "remove the duplication" by reaching for it. That key
+  # (this file, in ::capabilities above) asks THIS proc's question — can one
+  # card save every parameter of a device at once — the forbidden way, by
+  # probe. Reading it is also operationally poisonous: ase::sim_capabilities is
+  # lazy, and on a cache miss it builds a workdir and STARTS THE USER'S
+  # SIMULATOR, which the comment on ase::op_run_report already forbids putting
+  # on a path with no Run behind it. A key-3 press is exactly such a path.
+  # Rows C3 and C4 of tests/headless/test_rdw_seam_1245.tcl red if either
+  # happens.
+  proc op_param_enumerable {} {
+    return 0
+  }
+
+  # ase::backend::ngspice::op_param_set <devpath> -> the ANSWER DICT
+  #
+  #   devices   ordered {<rawdev> {{<param> <value>} ...}}, raw-file order
+  #             throughout, one entry per PRIMITIVE the request covers
+  #   absent    ordered {<rawdev> <param>} pairs — columns the raw NAMES but
+  #             the simulator did not compute
+  #   nonfinite ordered {<rawdev> <param> <text>} triples — columns the raw
+  #             DOES carry, holding Inf/NaN: a device that did not converge
+  #   complete  the honesty flag, AS DATA — the value op_param_enumerable
+  #             declares
+  #   state     no_devpath | no_raw | not_op | not_annotated | ok
+  #
+  # ⚠ WHY `nonfinite` IS ITS OWN BUCKET AND NOT PART OF `absent` — ISSUE 1272,
+  # AND IT IS WHY THIS ITEM CAME BACK [F] ON ITS FIRST RUN. Both render blank
+  # today, so collapsing them is tempting and was rejected: "the raw does not
+  # carry id" and "the raw carries id and the simulator produced NaN" are
+  # different facts about the run, and the second is the one a designer most
+  # wants to be told about — it is a non-converged operating point, which is a
+  # result, not a gap. A seam that reports it as absence throws that away
+  # exactly where it matters.
+  #
+  # ⚠ AND `nonfinite` IS RELIABLE ONLY FOR A BINARY RAW. The same NaN written
+  # to an ASCII raw comes back as a confident `0` and lands in `devices` as a
+  # measurement, because src/save.c's fast my_atof() continuation path has
+  # never parsed the words. Binary is what a real ngspice `write` produces, so
+  # this is the case that matters — but an EMPTY `nonfinite` is not proof the
+  # run converged. The asymmetry is src/save.c's, is deliberate there, and is
+  # recorded as still-open at the end of issue 1272.
+  #
+  # WHY THE FLAG IS DATA AND NOT A COMMENT — DD-1's corollary. Because the
+  # capability is NO, this answer is INCOMPLETE BY CONSTRUCTION, and a caller
+  # that renders it silently reads as a complete list, which is exactly the
+  # failure D-4 exists to prevent. The flag rides in the same answer so no
+  # consumer can render the pairs without having been handed the incompleteness
+  # alongside them.
+  #
+  # WHY FOUR NON-ok STATES. A caller has to be able to tell four different
+  # silences apart: you gave me nothing, there is no raw at all, the current
+  # slot is not an operating point, and nothing has been published from it yet.
+  # All four otherwise arrive as the same empty list.
+  #
+  # ⚠ ABSENCE IS REPORTED ONLY IN STATE `ok`, AND THIS IS THE ITEM'S CENTRAL
+  # CONSTRAINT. Measured on this tree 2026-09-03: op_annot::raw_or_blank reads
+  # at point -1, which is the ONLY reader carrying the absent/zero distinction
+  # — a `dims=0` column answers the empty string there and `0` at point 0,
+  # while a genuinely computed 0.0 answers `0` at both. But before update_op()
+  # has published, point -1 is empty FOR EVERY VECTOR, good ones included. A
+  # reader that filled `absent` there would report "the simulator did not
+  # compute id" about a run nobody had annotated yet. So outside `ok` both
+  # lists are empty and no vector is read at all.
+  #
+  # ⚠ THE sim_type GATE IS ASKED BEFORE THE PUBLISHED-YET GATE, and the order
+  # is load-bearing. backannotate_at_cursor_b_pos() (callback.c:1531) sets
+  # annot_p on ANY swept database, so a transient with cursor B placed has a
+  # published point and answers interpolated transient numbers at point -1.
+  # Publishing those as operating-point parameters is the plausible-wrong-
+  # number failure invariant I3 exists to prevent. The allow-list {op dc} is
+  # COPIED from update_op()'s own guard (src/save.c) and row G3b of
+  # tests/headless/test_rdw_seam_1245.tcl reds if the C list moves and leaves
+  # this copy behind.
+  #
+  # A GENUINELY COMPUTED 0.0 IS RETURNED AS 0 AND IS NOT AN ABSENCE. A
+  # transistor that is off has id = 0 and that is a measurement; blanking every
+  # zero would hide a cut-off device (issue 1259's other half).
+  #
+  # TWO SPELLINGS OF ONE PARAMETER IN ONE FILE ARE REPORTED TWICE, NOT DEDUPED.
+  # This seam's whole job is "what does this run's raw actually hold"; dropping
+  # a column the file holds is the kind of tidying that makes a seam lie, and
+  # each row carries its own device so a caller can see what happened.
+  proc op_param_set {devpath} {
+    set complete [::ase::backend::ngspice::op_param_enumerable]
+    set devices   [dict create]
+    set absent    {}
+    set nonfinite {}
+    set state     ok
+
+    if {[string trim $devpath] eq {}} { set state no_devpath }
+
+    if {$state eq {ok}} {
+      set l {}
+      if {[catch {xschem raw loaded} l]} {
+        set state no_raw
+      } elseif {![string is integer -strict $l] || $l < 0} {
+        set state no_raw
+      }
+    }
+
+    if {$state eq {ok}} {
+      set stp {}
+      if {[catch {xschem raw sim_type} stp]} {
+        set state not_op
+      } elseif {[lsearch -exact {op dc} $stp] < 0} {
+        set state not_op
+      }
+    }
+
+    if {$state eq {ok}} {
+      if {![::op_annot::_annotated]} { set state not_annotated }
+    }
+
+    if {$state eq {ok}} {
+      set names {}
+      catch {set names [split [xschem raw list] "\n"]}
+      foreach v $names {
+        set sp [::ase::op_param_split $v]
+        if {$sp eq {}} { continue }
+        set dev [lindex $sp 0]
+        set p   [lindex $sp 1]
+        if {![::ase::op_dev_covers $devpath $dev]} { continue }
+        ## ⚠ raw_class, NOT raw_or_blank -- ISSUE 1272, AND IT IS WHY THIS ITEM
+        ## CAME BACK [F] THE FIRST TIME. raw_or_blank answers a two-outcome
+        ## question (a number, or nothing) and this seam asks a three-outcome
+        ## one. The first version took the two-outcome answer and put `nan`
+        ## straight into the VALUE bucket, which item B3 would have painted on
+        ## a schematic as `id = nan` -- exactly what invariant I3 forbids. It
+        ## was green at 37/37, because the suite had no non-finite row.
+        ##
+        ## The three buckets are three different facts and a caller renders
+        ## each differently: `devices` is a measurement, `absent` is a column
+        ## the raw does not carry, `nonfinite` is a column it DOES carry for a
+        ## device that did not converge. Collapsing the last two -- which was
+        ## tempting, both render blank today -- would throw away the one of the
+        ## two that a designer most wants to be told about.
+        set cls [::op_annot::raw_class $v]
+        set val [lindex $cls 1]
+        switch -exact -- [lindex $cls 0] {
+          absent    { lappend absent    [list $dev $p] ; continue }
+          nonfinite { lappend nonfinite [list $dev $p $val] ; continue }
+        }
+        set cur {}
+        if {[dict exists $devices $dev]} { set cur [dict get $devices $dev] }
+        lappend cur [list $p $val]
+        dict set devices $dev $cur
+      }
+    }
+
+    return [dict create devices $devices absent $absent \
+                        nonfinite $nonfinite \
+                        complete $complete state $state]
   }
 
   # Register at source time. Kept inside this namespace eval so the only
@@ -8523,5 +9991,7 @@ write probe_b.raw
     log_file     ::ase::backend::ngspice::log_file \
     result_probe ::ase::backend::ngspice::result_probe \
     raw_file     ::ase::backend::ngspice::raw_file \
-    capabilities ::ase::backend::ngspice::capabilities]
+    capabilities ::ase::backend::ngspice::capabilities \
+    op_param_set        ::ase::backend::ngspice::op_param_set \
+    op_param_enumerable ::ase::backend::ngspice::op_param_enumerable]
 }

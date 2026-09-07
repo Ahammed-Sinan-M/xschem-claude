@@ -392,8 +392,59 @@ if {[info commands ::op_annot::register] ne {}} {
   #     set d [op_annot::descriptor nmos]
   #     dict set d params [concat [dict get $d params] {{vdsat vdsat 2} {cgg cgg 1}}]
   #     dict set d derived {{ft {$gm/(2*3.141592654*$cgg)}} {gm/id {$gm/$id}}}
+  #     dict unset d declared        ;# ⚠ SAY "this is my new declaration"
   #     op_annot::register nmos $d
-  # A first-class means for a user to choose her own set is OWED and TBD.
+  # ⚠ THE `dict unset d declared` LINE IS PART OF THE RECIPE, NOT AN OPTIONAL
+  # EXTRA -- ruling DD-14, issue 1315. `register` PRESERVES an existing
+  # declaration, which is what stops the parameter-list editor's Save from
+  # destroying the PDK's own list (issue 1312). The consequence for THIS
+  # round-trip is that without the unset it changes what the run computes and
+  # what the sheet draws, and leaves `seed` still answering the list shipped
+  # above -- so a later Reset restores OUR set, not yours, with nothing said.
+  # Unsetting the key first is how a user says "forget the old declaration,
+  # this one is mine". Registering a fresh dict does the same thing.
+  # A first-class means for a user to choose her own set now EXISTS, and this
+  # is it: the OP parameter list store, src/op_param_lists.tcl. It SEEDS from
+  # the descriptor registered just below (ruling D-7 -- seed from the PDK, the
+  # user's file wins per class) and keeps the user's own choice in
+  # <project>/.xschem/op_param_lists.conf, with ~/.xschem/op_param_lists.conf as
+  # the user-global fallback. That settings file is DATA and is never sourced
+  # (ruling DD-3): a strict parser reads it and runs nothing in it, so it can be
+  # shared with a teammate. See doc/claude/specs/op_param_lists.md section 4.4.
+  # The RECOVERY round-trip above is untouched and is still the quickest way to
+  # change one list from an rc (invariant I5, live on the next redraw).
+  #
+  # ⚠ TWO LISTS NOW, AND THEY ARE NOT THE SAME LIST (ruling DD-6, issue 1285).
+  # A descriptor may carry `params` and, optionally, `shown`, and they have
+  # different jobs: params is what the run computes — op_annot::_cards_for
+  # builds the `.save` cards out of it, so a parameter must stay in that list
+  # for its value to exist in the raw at all, even when nobody wants it drawn —
+  # while shown is what the sheet draws, and op_annot::text is its only reader.
+  # A descriptor that omits `shown`, which every register site in this tree
+  # does, draws every `params` row exactly as it always has (invariant I7).
+  # op_param_lists::apply writes both: the UNION of the annotation and summary
+  # lists into `params`, and the annotation half of that union into `shown`.
+  # ⚠ SINCE RULING DD-13 THAT UNION HAS A THIRD INPUT — this type's own
+  # `declared` list, appended LAST (see the next paragraph) — so no edit to the
+  # two lists above can ever remove a `.save` card the PDK asked for. DD-4
+  # states the price out loud: a user who deletes a row to make the deck
+  # smaller does not get a smaller deck.
+  # Getting the two the wrong way round is how a wider `params` un-declutters
+  # the schematic, and a `derived` row is why they must stay separate at all —
+  # it reads the RUN, so it keeps its value when its operand is merely hidden
+  # (ruling DD-9, issue 1289).
+  #
+  # ⚠ AND A THIRD LIST, WHICH YOU DO NOT WRITE BY HAND (ruling DD-13, issue
+  # 1312): declared is what the PDK declared. op_annot::register alone writes it
+  # -- it is stamped from this descriptor's own `params` the first time the
+  # descriptor is registered, and PRESERVED verbatim ever after, so
+  # op_param_lists::seed keeps answering the PDK's list no matter what the user
+  # deletes from the two lists above. That preserve rule has one consequence
+  # worth knowing: the RECOVERY round-trip above carries the key with it, so it
+  # changes what the run computes and what the sheet draws but NOT what the
+  # seed answers. To redeclare as well, add one line before re-registering --
+  # dict unset d declared -- or register a fresh dict, which is what the
+  # register call below already does.
   foreach _sky130_op_type {nmos pmos} {
     op_annot::register $_sky130_op_type {
       devproc sky130_op_devpath

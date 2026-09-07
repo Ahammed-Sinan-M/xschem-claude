@@ -1,0 +1,317 @@
+# 1314 — the wired Delete button changes what the simulator is asked to save, and destroys the PDK seed doing it
+
+**Filed by item B5 (2026-09-04), whose implementation this refutes. The
+implementation was REVERTED; this file is what survives it.**
+
+**Status: PARTLY CLOSED, 2026-09-04 — the BLOCKER is gone from the tree, the
+two scope defects are NOT.**
+
+* **The A5 blocker — CLOSED, and closed in the tree.** It was removed
+  *underneath* this issue rather than inside it: ruling **DD-13** (item B2e,
+  `0abba4cb`) split the descriptor into THREE lists, so `op_param_lists::seed`
+  reads the **declaration** — which nothing but `op_annot::register` can write —
+  instead of `params`, the field `apply` overwrites. Re-measured independently at
+  `c940a5df` on a loaded schematic with a real `M1`: after two broad Deletes of
+  `gm`, `declared` is byte-identical to the PDK's registration on both `nmos` and
+  `pmos`, `seed mos` is unchanged, `_cards_for M1 {}` **still** emits
+  `.save m1[gm]`, and a following Add is accepted. Store section **N** (N0–N4)
+  fences that sequence through the store and is green in the tree.
+* **A6 and A7 — STILL OPEN.** Both were fixed by item B5-2 and **reverted with
+  it** (blocker: issue **1322**). The fixes are measured and sabotage-proved but
+  live only in `doc/claude/op_param_batch/B5-2_working_tree_REFUTED.patch` (md5
+  `42890cf163dd9ba1e85e312e1801c6ed`). They are latent meanwhile — `apply` again
+  has no functional caller — and they are the first thing the re-do must re-land.
+* **The three stub-shadow findings — STILL OPEN**, same reason. SD3's
+  single-class fixture and the BT10/BT12/BT17 rename-shadow are both back.
+  `SAB-DIALOGBUILD` confirmed the asymmetry exactly as this issue described it:
+  with `scope_dialog_build` stubbed, SD1 and SD3b red while BT10/BT12/BT17 stay
+  green.
+
+⚠ **Its "give M2 a parameter M1 lacks" suggestion for SD3 is refuted**: the
+parameter is read from `rdw::_locate`'s pane line and never from the subject, so
+a differing parameter set leaves the store write byte-identical under both rules.
+Only a differing **class** makes "newest block" and "the row the cursor is in"
+disagree.
+
+⚠ **AND ITS SUCCESSOR ROW `BE3b` DOES NOT FENCE WHAT IT CLAIMS — MEASURED.**
+This issue asked for a row that deletes the same parameter from **both** lists in
+one fixture and asserts `_cards_for` and `seed`. B5-2 wrote it. Verify-B then
+stubbed `rdw::_apply_now` to `{}` so the descriptor is never rewritten at all,
+**and BE3b still passed.** Its fields are satisfied by the registration list,
+which is positionally identical to what `_merge_declared` would rebuild, so
+`_cards_for` still emits three cards and the `lsearch` still succeeds — it cannot
+distinguish *"apply ran and the declaration re-entered last"* from *"apply never
+ran"*, which is the precise mechanism DD-13 was ruled about. **The re-do must
+assert `shown` on BOTH type tokens (as BE2 and BE7 do), or assert that `params`
+differs from the pre-edit descriptor** — one assertion only a real apply can
+satisfy. Asserting `_cards_for` and `seed`, as this issue originally asked, is
+not enough.
+
+Preserved patch: `doc/claude/op_param_batch/B5_working_tree_REFUTED.patch`
+(2224 lines, md5 `2bcc19ee49737ee0fbe187defb995f33`, applies clean to
+`79f163cb`). **Do not apply it as-is.** Read "What the next crew must do first"
+at the bottom.
+
+---
+
+## What was measured BEFORE (the Measure agent, verbatim)
+
+```
+BEFORE inert_say(Save) = <Save: the button column is built but not wired yet (item B5 wires it).>
+BEFORE rdw_dialog_procs = <>
+BEFORE rdw_op_procs = <>
+BEFOREX blocks_before_after = 2 -> 2
+BEFOREX conf_written_by_save = 0
+```
+
+The five buttons existed and were inert; nothing in `src/` called
+`op_param_lists::` at all. Item B5 wired them, went green on every tier — window
+76→96 (`--nogui`) and 86→107 (`:99`), store 86→93, keys 35→39, T1 at zero, T2
+`HARNESS: PASS`, full audit 369/11/0/2 with the fail-name set byte-identical —
+and was then refuted by its own adversary on three attacks. All three were
+re-measured independently by the write-up agent on `./src/xschem` at `79f163cb`
+before the revert.
+
+---
+
+## A5 — THE REFUTATION. Two Deletes remove the `.save` card. Ruling DD-4/DD-6 says they never can.
+
+Ruling **DD-4**, as corrected by **DD-6**, is binding and unqualified:
+
+> **Delete removes a parameter from what is DRAWN. It never changes what the
+> simulator is asked to save.**
+
+Measured, `--nogui`, two type tokens in one class, both registered
+`{{id ids 0} {gm gm 1} {gds gds 1}}`, driving `rdw::_edit` + `rdw::_apply_now`
+exactly as `rdw::button` does, broad scope (**the dialog's own default**):
+
+```
+SEED0        = {id ids 0} {gm gm 1} {gds gds 1}
+PARAMS0      = {id ids 0} {gm gm 1} {gds gds 1}
+DEL1(annot)  = ok {removed gm from the annotation list for class b5cls.}
+PARAMS1      = {id ids 0} {gds gds 1} {gm gm 1}        <-- already REORDERED (1312)
+SEED1        = {id ids 0} {gds gds 1} {gm gm 1}
+DEL2(summ)   = ok {removed gm from the summary list for class b5cls.}
+PARAMS2      = {id ids 0} {gds gds 1}                  <-- gm IS GONE
+SHOWN2       = {id ids 0} {gds gds 1}
+SEED2        = {id ids 0} {gds gds 1}                  <-- the PDK's row, gone
+SIBPARAMS2   = {id ids 0} {gds gds 1}                  <-- the SIBLING type too
+ADDBACK      = refused {gm is published by this run, but no list and no PDK
+                        descriptor declares it - ... A PDK declares it with
+                        op_annot::register.}
+```
+
+`op_annot::_cards_for` (`src/op_annot.tcl:2936`) emits one `.save` card per row
+of `params`. After the second Delete there is no `gm` row, so there is no
+`.save m1[gm]` card, so **the simulator is no longer asked to compute it** —
+which is precisely the outcome DD-4 was written to forbid, and precisely the
+outcome DD-6 re-derived after catching the driver's own one-field error.
+
+Three things make it worse than a plain rule violation:
+
+1. **It is irreversible inside the session.** `rdw::_find_triple` falls through
+   annotation → summary → seed, and all three have lost the row, so **Add cannot
+   put it back** through the only UI door there is.
+2. **The refusal blames the PDK for a row xschem itself deleted.** *"no list and
+   no PDK descriptor declares it … A PDK declares it with `op_annot::register`"*
+   is false, and it sends the user to edit a PDK file that is correct. That is
+   invariant **I3**'s family one layer up: a plausible wrong *sentence*.
+3. **It reaches the whole class.** The sibling `type=` token lost the row too,
+   because `apply` re-registers every mapped type of the class.
+
+### Why it is not B5's bug to fix, and is B5's bug to have shipped
+
+The mechanism is **issue 1312**, in `src/op_param_lists.tcl`, which item B5 may
+not edit: `apply` writes `_save_set` (the union) into `params`, and `seed` reads
+the PDK's list back out of **that same field** through `_params`
+(`op_param_lists.tcl:700`). `_save_set`'s own in-code comment states the safety
+argument:
+
+> *"Taken over `effective`, NEVER `get_list`: an UNOWNED list answers the PDK
+> seed, so the union can only ever be a SUPERSET of what `params` already held
+> and no PDK row is ever lost."*
+
+**That argument holds only while at least one of the two lists is unowned.**
+The first Delete owns the annotation list; the second owns the summary list; the
+union then consults no seed at all and the superset property is gone. B5 is the
+first caller that can own both, so B5 is where a true comment becomes false.
+
+**B5's error was to apply anyway.** The item's own decision D7 ("every mutation
+applies immediately") was taken to keep Delete from looking like a broken
+button, and it traded a binding ruling for a responsiveness preference. The
+brief's own instruction covers this exactly: *"If your item seems to need
+something a ruling forbids, STOP and say so in your write-up — do not implement
+around it."*
+
+---
+
+## A6 — the broad arm edits a list the device on screen does not use, and reports success
+
+`rdw::_scope_for` asks `owns flavor {<class> <exact cell name>}`. `effective`
+narrows by **glob in file order** (ruling DD-8). Any flavor entry whose glob is
+not literally the cell name — which is the only kind DD-8's file-order
+precedence exists **for** — makes the two disagree. Measured:
+
+```
+A6 GOVERNING(before) = {id ids 0} {gm gm 1}      # flavor {b5cls *b5n*} governs M1
+A6 SCOPE_FOR         = broad                     # owns flavor {b5cls devices/b5n} = 0
+A6 EDIT              = ok {moved gds up in the annotation list for class b5cls.}
+A6 GOVERNING(after)  = {id ids 0} {gm gm 1}      # byte-identical
+```
+
+The button reported moving a row that **is not in the list this device uses**,
+in a list this device does not read. The DD-8 shadow warning exists in
+`rdw::_edit` but is coded on the **narrow write path only**, so the broad path
+is silent. The honest shape is for the broad base to be
+`effective $cls $listname $cell` with the scope decided from what actually
+matched, not from an exact-key `owns`.
+
+## A7 — a `set_list` that silently reduced the list is reported as a plain success
+
+`rdw::_index_of` looks a row up by **param**; `op_param_lists::set_list` dedupes
+by **label** and returns 1 with a report (issue 1288's ruling: *"the user is
+told once"*). `rdw::_edit` reads `_store_tail` only on the `set_list → 0` arm.
+Measured:
+
+```
+A7 ANNOT(before) = {id ids 0} {gds gds 1}
+A7 EDIT          = ok {added vgs to the annotation list for class b5cls.}
+A7 ANNOT(after)  = {id vgs 2} {gds gds 1}        <-- the untouched `ids` row is GONE
+```
+
+IHP's own triples are exactly this shape (`{id ids 0}`, label ≠ param), so this
+is the shipped PDK's case, not a contrived one. The brief named B5 as *"the
+door"* for 1288; the door was built and the report was dropped on the floor of
+the success arm.
+
+---
+
+## The two suite blind spots that let all three through 52 green checks
+
+Recorded because the count was never the problem — the fence was.
+
+* **BE3 fences ONE delete.** It asserts the card is still emitted after removing
+  the row from the annotation list, which is true. The defect is one press
+  later, and both per-row resets (`b5_lists_reset`, `be_reset`) re-`register`
+  the descriptor, so the fixture **erases the state the defect needs** before
+  the next row can reach it.
+* **SD3 cannot fail.** It is the only row claiming the cursor rule end to end,
+  but its fixture pushes M1 with `{ids gm gds}` and M2 with `{ids}` and maps
+  **both** types to the same class, so "the newest block's first row" and "the
+  row the cursor is in" produce a byte-identical store. Verify-B measured it
+  green under both `SB-TARGET-PINNED` and `SB-SUBJECT-FROM-NEWEST`. It is the
+  brief's row-V8 shape exactly: *a row written for a race, passing while the
+  race is live, because the fixture already reached the state that hides it.*
+* **Three more rows are stub-shadowed.** `BT10`, `BT12` and `BT17` install their
+  answer by **replacing** `::rdw::scope_dialog`, so they stayed green under
+  `SB-SCOPE-NEVER-ASKED`. Nothing on the `--nogui` arm proves a dialog is ever
+  constructed.
+
+---
+
+## What the next crew must do first — and in this order
+
+1. **Fix 1312 option (a) in `src/op_param_lists.tcl`: a separate descriptor key
+   for the PDK's own declaration, written only by `op_annot::register`, read by
+   `_params`.** Until `seed` means what its name says, no caller of `apply` can
+   honour DD-4/DD-6, and *that is a B2-tier change, not a B5 one.* B5's Files
+   cell forbids the file, so **B5 was mis-scoped**: it cannot be delivered
+   without it. This needs its own item.
+2. Then re-land the button column. Most of the reverted patch is sound and
+   should be reused rather than retyped: the pure-function layer
+   (`_locate` / `_row_param` / `_hdr_instname` / `_subject` / `_find_triple` /
+   `_last_row_why`), the build/done/wrapper dialog split, and the headless
+   drive. **Change before re-landing:** the broad base (A6), the success-arm
+   `_store_tail` read (A7), the SD3 fixture (give M2 a parameter M1 lacks, or a
+   second class), and a BE3 successor that deletes the same row from **both**
+   lists and then asserts `_cards_for` and `seed`.
+3. `rdw::_apply_now` must not run until step 1 lands, or must refuse any edit
+   that would shrink the union below the seed.
+
+## Still open (the adversary's residual risks, none of them fixed)
+
+* The scope dialog's three state variables are namespace singletons with no
+  re-entrancy guard: a dialog opened inside another's `tkwait` makes **both**
+  calls return the inner answer. Script-reachable only while the grab holds.
+* `_edit`'s narrow key is the literal cell name used as a `string match` glob. A
+  cell path containing `[`, `*` or `?` would not match itself, and the DD-8
+  shadow branch would then fire blaming a non-existent earlier entry.
+* Decision **D11**: Up/Down on list 3 are enabled and refuse with a sentence,
+  because `set_list` refuses to store the live list at all (ruling D-4). Spec
+  §4.2 B7's table says *reorder* for all three columns. **That cell is not
+  deliverable as written and the spec is wrong**, not the code.
+* The dialog's narrow label reads *"this device flavor only (\<cell\>)"*, which
+  a user may read as *"this device only"*. It is per-**cell**, and per issue
+  **1310** it does not reach the drawn sheet at all.
+* Issue **1313** stands: nothing calls `op_param_lists::load`, so *"reorder
+  persists through Save and reload"* is provable inside one process only. The
+  feature is not usable across a restart even once B5 lands.
+* Issue **1278** goes live with the first working button: `effective`'s
+  unbounded `string match` becomes reachable from a keypress. Inherited, not
+  caused.
+
+---
+
+# ⛔ THE A5 BLOCKER IS GONE — item B2e landed the mechanism, 2026-09-04
+
+**Attack A5 is fixed. B5 can be re-landed from the preserved patch.** A6 and A7
+are untouched by B2e and still block; read them again before starting.
+
+## What changed under B5's feet
+
+Item **B2e** implemented ruling **DD-13** in `src/op_param_lists.tcl` and
+`src/op_annot.tcl` — the file B5's Files cell forbade, which is why B5 was
+**mis-scoped** rather than wrong. Issues **1312**, **1292** and **1287** are all
+marked FIXED; read 1312's "What B2e landed" section for the transcript.
+
+Re-measured on the landed tree, driving B5's own `rdw::_edit` / `rdw::_find_triple`
+shapes reduced to the store — this is A5's exact scenario:
+
+```
+   two broad-scope Deletes, annotation then summary
+declared(nmos) = declared(pmos) = seed mos = {id ids 0} {gm gm 1} {gds gds 1}
+_cards_for M1 {}                          still emits  .save m1[gm]
+ol_dkey nmos params                       still holds  {gm gm 1}
+ol_dkey nmos shown                        does NOT     (the sheet IS decluttered)
+Add                                       has a source again: seed mos declares gm
+```
+
+So the three halves of A5 are each dead: the `.save` card survives, the PDK row
+survives in the descriptor **and** in the sibling type, and Add no longer blames
+the PDK for a row xschem deleted.
+
+## ⚠ What the re-land must still honour
+
+1. **`git apply --check doc/claude/op_param_batch/B5_working_tree_REFUTED.patch`
+   is rc=0 on the landed tree** — measured before and after every B2e edit,
+   including the suite edit. B2e's new suite rows all sit above line 2788 so the
+   `@@ -2850,6 +2850,353 @@` hunk still lands.
+2. **A6 still blocks.** The broad arm decides scope by exact-key `owns` while
+   `effective` narrows by glob, so it edits a list the device does not use and
+   reports success.
+3. **A7 still blocks.** A `set_list` that silently reduced the list by label is
+   reported as a plain success, breaking **1288**'s ruled promise through the
+   only UI door there is.
+4. **Issue 1318 is new and it is B5-2's.** `op_param_lists::apply` now returns
+   one list holding two opposite meanings — the types it NARROWED and the types
+   the issue-1292 undo put BACK. The preserved patch's `rdw::_apply_now` ignores
+   the return, which is why nothing breaks today. **B5-2 must not start reading
+   it** without fixing 1318 first: a status line saying *"updated N device
+   types"* is wrong for exactly the press — Reset/Defaults — whose accuracy
+   matters most.
+5. **Reset/Defaults is now buildable on `reset` + `apply`**, which is what issue
+   1292 blocked. It un-narrows the sheet and bumps `::op_annot::gen`, so the
+   redraw is live with no restart (invariant **I5**).
+6. **The B5 look debt stays moot until B5 re-lands.** The pixels it names are
+   still out of the tree; B2e added none of its own.
+
+## What is still on the user's queue from this file
+
+Rule debt **1314** — the DD-13 question — is **answered** by the driver's ruling
+and now implemented; the ledger entry can be cleared. Rule debt **1312** is
+**moot** for the same reason (it asked *containment or option (a)?*; option (a)
+shipped). The live one is rule debt **1315**, which nothing answers yet.
+
+Also still inside this file and untouched by B2e: spec §4.2's B7 Up/Down cell for
+list 3 is undeliverable (ruling D-4 forbids persisting the live list) and the
+table needs correcting.

@@ -146,9 +146,62 @@ was: the bare backend name, `auto_execok`'s file, and a byte-identical command.
   `ase::sim_why`'s, read back through `ase::sim_said` when it is reporting what
   a gesture just did. Feedback lands IN the dialog (`.status`) and in the row
   editor (`.simrow.status`), not only in the CIW, because silence is this
-  area's failure mode. Edit shows Name and Program only and carries the extra
-  arguments and the backend through untouched; the Name field is read-only,
-  so a rename is a Remove plus an Add.
+  area's failure mode. The Name field is read-only in Edit, so a rename is a
+  Remove plus an Add.
+* **The row editor shows four fields (issue 1371): Name, Program, Case and
+  `-n`.** It carries the extra arguments and the backend through untouched;
+  every field it *does* show is written on OK, and that is not a detail — until
+  1371 the editor rebuilt the entry from `args` and `backend` alone, so opening
+  Edit… on an entry carrying `casemode preserve` and pressing OK without typing
+  anything ERASED the case mode and the `-n` flag and saved the erasure.
+  `Case:` is a read-only chooser whose values are **the global-default line plus
+  exactly `ase::sim_casemode_selectable_*` for the program named in the Program
+  field, and nothing else** — rule A1, never offer a mode the binary was not
+  measured to deliver. It is keyed on the program in the FIELD, not on the
+  simulator in force and not on the entry's stored path, **and it is rebuilt
+  every time that field changes** — through the entry's own validation, so
+  typing and `Browse…` are covered by one mechanism. The rebuild is the half
+  1371 shipped without: the chooser was keyed on the field but BUILT only at
+  editor-open and by Detect, so retyping the Program field left the previous
+  program's modes on offer and OK saved one of them (measured: `-D
+  casemode=preserve` emitted for a build measured to deliver `fold` alone).
+  A mode outside the offer is shown MARKED rather than dropped — `preserve
+  (not tried yet)` when nothing has measured that program, `preserve (NOT
+  supported)` when it WAS measured and does not deliver it, which are two
+  different statements and used to share one wording. Hand-editing the saved
+  list was the only way to ask for a mode before this item existed, and opening
+  the dialog must not silently rewrite what the user wrote; a marked mode the
+  user leaves selected is still saved, exactly as a hand-written one is.
+* **Opening the row editor never starts the user's simulator.** The chooser is
+  built from CACHED measurements only (`ase::sim_caps_have_path`, a peek), and
+  `Detect` is the one control in the dialog that may launch anything. Measured:
+  447 ms cold on the user's own build, 0 ms warm, and **31.2 s** for a program
+  that exists, is executable and never answers (`ase::cap_budget_ms` is 30 s),
+  with Tk frozen throughout — and a licensed tool would check out a licence.
+  Detect paints its sentence and flushes the display *before* it blocks. Which
+  of cached-first-plus-Detect, probe-on-open, and probe-on-open-when-in-force is
+  wanted is the user's ruling, filed on the owed ledger under 1371; the code
+  implements the first and the other two are one line in
+  `ase::ui::simdlg_case_values`.
+* **The editor says what is known about the program it is showing, before
+  anything is tried** (`ase::casemode_status`, painted at open, when the Program
+  field is left, and after `Browse…`; silent on an empty Add form). Without it
+  a cold session shows `fold` alone with no explanation, which is
+  indistinguishable from the bug this door was built to fix. `Detect` then
+  reports what actually happened (`ase::casemode_report`), and it has an arm per
+  measured state — answered but said nothing about spellings, tried and delivers
+  none of them, no file there, not a program, no probe for that backend, still
+  running when the budget ran out, nowhere to write a test result, no location
+  given. Every one of those used to print "has not been tried yet … press Detect
+  to try it", after Detect.
+* **What was measured is remembered about a program AND the argv it was started
+  with** (`ase::cap_key`). The probe has always run the program with the entry's
+  own extra arguments; the cache was keyed on the resolved path alone, so the
+  row editor's Detect — a second writer, asking about a location the user typed
+  — could answer for the run. Measured on a stub that reports no case-mode
+  feature under `-q` and all three without it: one dialog-side measurement made
+  `ase::sim_casemode_selectable` answer `fold preserve distinguish` for an
+  in-force entry that really delivers `fold`.
 * **Removing the simulator in force says what happens next.** Either the one
   survivor is named as the one that will start now, or the user is told nothing
   of theirs is picked and the program on the `PATH` takes over. Both sentences
@@ -185,7 +238,11 @@ not be written into at all).
   ngspice and one patched to ignore the add-each-analysis line print the
   byte-identical `** ngspice-46+ : Circuit level simulation program`. The probe
   is two tiny PDK-free decks (a level-1 MOS two subcircuits deep, op + tran),
-  and it runs **lazily on first use** — measured at ~10 ms, never at startup.
+  and it runs **lazily on first use** — never at startup. Cost measured
+  2026-09-06 on the user's own `build-ver_50`: **447 ms** cold for the whole
+  answer including the three case-mode legs (an older note here said ~10 ms,
+  which predates those legs), 0 ms warm, and 31.2 s for a program that never
+  answers.
 * **The verdict is the RESULT, never the exit code and never the log.**
   Measured: a blanket device save exits 0, writes a results file, and logs no
   warning and no error, while holding a `constants` plot and no operating point
@@ -542,7 +599,52 @@ Design Window does not raise/open the schematic — fix in this rework.
   temperature** (default 27) followed by label `°C`. Temperature emits
   `.temp <T>` in the deck (state key `temperature`, default 27).
 - Bottom status bar: simulator name + state name (e.g.
-  `Simulator: ngspice | State: ngspice_state1`) + status (Ready/Running/…).
+  `Simulator: ngspice-ver50 | State: ngspice_state1`) + status
+  (Ready/Running/…).
+  - **The simulator segment names WHAT WILL RUN, not the kind of simulator**
+    (issue **1370**, the user's own request). It is `ase::sim_label` and
+    nothing else: the **registered name** in force — the very name "Use this
+    one:" shows — falling back to the backend word when the user has
+    registered nothing. It never names an entry nobody registered: a choice
+    naming a missing entry shows the backend word, and the Simulators dialog's
+    status line is what names the typo.
+  - When that simulator **cannot start** — the program was deleted or lost its
+    executable bit, the entry was registered for another kind of run, the
+    choice names nothing, the state asks for a kind of simulator this program
+    has no machinery for, **the entry answers for a backend that starts its own
+    binary and reads no registry**, or nothing at all can be located — the name
+    carries a marker (`Simulator: ngspice-ver50 — will not run`). A false name
+    is worse than the backend word. *The marker's wording is a USER RULING
+    still on the queue (issue 1370); the arms it applies to are not.*
+  - The test is **four** terms, all four required: `ok`, a non-empty
+    `resolved`, the backend being one `ase::backend_names` knows, and
+    `ase::run_composes_registry` answering yes for it. The fourth was added by
+    1370's repair and closes a latent false name — a generic entry
+    (`-backend {}`) plus a second backend with its own hardcoded `run_cmd`
+    passes the first three about a run that starts the other binary.
+  - **A name is always printed.** With nothing registered and no backend word
+    either, the segment says `(none) — will not run` — the spelling
+    `ase::ui::simdlg_none_label` already uses — never the marker with a blank
+    and a double space in front of it.
+  - It follows the Simulators dialog **immediately**, in **every** open session
+    window, because the registry is process-global while the dialog is
+    per-session — `ase::ui::refresh_status_all`, called from the last line of
+    `ase::ui::simdlg_fill`.
+  - **And it follows the registry's other door too.** `ase::sim_register` /
+    `ase::sim_select` / `ase::sim_unregister` / `ase::sim_clear` are reachable
+    from the Command window (the pre-0937 path, and how this user's own entry
+    was first created) and each fires `ase::sim_notify` — a single-slot,
+    argument-less, `catch`-guarded seam that `ase_window.tcl` points at
+    `ase::ui::refresh_status_all`, exactly as it points `ase::session_notify`
+    at `ase::ui::session_changed`. Without it the bar went stale on that path
+    until the run it was supposed to predict actually started (1370's repair).
+- **The run says which registered simulator it is starting**, once, in the CIW
+  and the action log (`ase::run_using_report`, mint kind `run_using`), and the
+  run log carries it as a `using :` field beside `simulator :` and above
+  `command :`. The say sits in `ase::run_deck` **below `ase::preflight_gate`
+  and below the line that composes the command** — a run that is refused must
+  never say it is starting (1370's repair; it first sat above both and said so
+  for refusals that generated no deck, no raw and no log).
 - **Brighter palette than stock Tk** (stock = #d9d9d9 grey). USER-LOCKED
   2026-07-21: ADE-like light grey/white — panels #f2f2f2, tables/entries
   white, header strips #e8e8e8, dark-red accent for pane titles.

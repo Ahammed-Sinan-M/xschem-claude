@@ -237,7 +237,11 @@ turns anything off and is not a toggle; `Ctrl-6` is the only off switch.
 
 ### 2.5 Command mode already exists, and so does the read-only pick
 
-* **`xschem instance_at <x> <y>`** (`scheduler.c:6919`) returns the instance name
+* **`xschem instance_at <x> <y>`** (`scheduler.c:6972`; the doc comment opens at
+  `:6964` — ⚠ **re-verified by item B4-3 on 2026-09-04**, because BOTH earlier
+  anchors this spec carried, `:6919` and then `:6935`, were stale. `0ce85dda`'s
+  unsnapped-mouse work moved the dispatch again. **Grep, do not trust an anchor
+  in this file**) returns the instance name
   under a point. Its own comment: *"READ-ONLY: it selects nothing and changes
   nothing — this is the probe half of the verb-noun descend pick, and the
   deliberate opposite of `select_at`, which is the mutating coordinate pick."*
@@ -248,6 +252,64 @@ turns anything off and is not a toggle; `Ctrl-6` is the only off switch.
   click queues a trace."* `cmdmode::register <key> <suspend_cb> <resume_cb>` is
   the participation contract, so a descend mid-command can pause and resume the
   mode. Feature B's 1/2/3 mode is the same shape and must register too.
+* ⚠ **BUT THE SHIPPED SEIZE IS NOT SAFE TO COPY VERBATIM, MEASURED BY ITEM B4,
+  2026-09-04.** `select_on_design` seizes `<ButtonPress-1>`,
+  `<ButtonRelease-1>` and `<Key-Escape>` and **not `<B1-Motion>`**, so C keeps
+  receiving Button1Mask motion and starts a rubber band that the swallowed
+  release can never terminate: 1 px of drift inside a live mode left
+  `ui_state 16` alive **after `ESC`**, and an eight-step drag **selected 13
+  objects** — with the no-mode control terminating cleanly at `ui_state 8`.
+  Issue **1304**. And `sod_click` defaults its coordinates to
+  `mousex_snap`/`mousey_snap`, while every C click path reads the **unsnapped**
+  pair — issue **1303**, measured at one pixel on `cmos_inv.sch` as `M1` versus
+  `R1`. **A mode copied from this precedent inherits both.** Feature B's
+  verb-noun requirement is that clicking changes nothing; these two are how it
+  silently does.
+* ⚠ **AND ITEM B4-2 MEASURED TWO MORE WAYS A SEIZE ENDS UP PERMANENT, 2026-09-04.**
+  Both end with a canvas on which every click runs the mode's handler, nothing
+  can ever be selected again, and `ESC` restores nothing:
+  **(a) issue 1305** — a mode re-armed while `cmdmode` has it **suspended** and
+  which does not clear its own suspended flag is seized *twice*; the resume then
+  latches **the seize's own scripts** as the predecessors. `select_on_design` is
+  immune only because it **ends the previous mode first**, which is the one part
+  of the precedent worth copying;
+  **(b) issue 1307, TRUE OF THE TREE TODAY** — `clone_canvas_bindings` copies
+  `.drw`'s bindings onto every new window and tab, and a mode's end cleans only
+  the canvas it seized. `cmdmode.tcl:44-50` documents this and its invariant
+  covers **only the descend chain**; `File > New Window` has no suspend site.
+  Measured against shipped ASE with no other mode loaded.
+  ⚠ **Fixing 1304 WIDENS both**: `<B1-Motion> {break}` joins the leaked set, so
+  the leaked canvas also loses its rubber band. **Land 1305's fix with 1304's.**
+* ✅ **1305 IS FIXED (item B4-3, 2026-09-04) AND THE FIX IS NOT THE PRECEDENT'S.**
+  The spec sentence above — *"`select_on_design` is immune only because it ends
+  the previous mode first, which is the one part of the precedent worth
+  copying"* — **was not taken, and should not be.** Copying it reintroduces the
+  release-and-retake on every list-key press, for nothing. What shipped is one
+  line: `unset -nocomplain pick(suspended)` immediately before the re-seize, so
+  the later `resume_all` finds nothing suspended — which is precisely what
+  `cmdmode` ruling **D6**'s *"exactly the first one to arrive wins"* latch is
+  for. **Clearing the flag as part of taking the canvas back is the house
+  style**, not an invention: `ase::ui::sod_resume` ends the same way
+  (`ase_window.tcl:2047`).
+  ⚠ **Its stated cost, and it is real:** the re-seize takes the canvas
+  **current at key-press time**, so a descend landing on a *different* canvas
+  never rehomes the mode. Recorded on issue **1307**.
+  ⚠ **AND 1305's FILED TRANSCRIPT IS NOT USER-REACHABLE AS FILED** — the double
+  seize needs `cmdmode::resume_all` to run while the mode is live, and the seize
+  itself `break`s every real terminal. The *user-reachable* consequence of that
+  key press is different and worse: **the DESCEND becomes unterminable**, C's
+  arm stays live, and `cmdmode::suspend_all` returns 0 from then on, so **no
+  later descend suspends any command mode**. Issue **1309**, filed not fixed,
+  measured identical before and after 1305's fix.
+* ⚠ **A COMMAND MODE'S KEYS LIVE ON THE CANVAS, SO ANY WINDOW THAT TAKES THE
+  KEYBOARD ENDS THE USER'S ABILITY TO LEAVE THE MODE** (item B4-3, 2026-09-04,
+  issue **1308**). Once the Results window's text pane holds focus — which is
+  the whole point of feature B's copy-into-a-review-document requirement — a
+  real `ESC` and a bare `2` are both dead, because `<Key-Escape>` and
+  `1`/`2`/`3`/`4` are bound on `.drw` and `.rdw` carries neither. **This binds
+  item B5:** Tk buttons do not take focus on X, which is the only reason the
+  button column currently hands the keyboard back; an entry, a listbox, or a
+  `-takefocus 1` widget changes that.
 
 ### 2.6 Namespace already taken
 
@@ -430,7 +492,10 @@ stale, and the variable is an integer so `true`/`on` `atoi` to 0, silently off).
 >   {on gated}`, three sentences, written to the **held status line only** and
 >   never to the CIW (the declutter publishes nothing; `annot_tran` uses both
 >   sinks *because* it does). ⚠ **The wording is UNRATIFIED** — `rule` debt 1244,
->   §5.1 below.
+>   §5.1 below. ⚠ **Item A4 added a SECOND pure minter to this family**,
+>   `cadence::_annot_declutter_clause {mask}` — the clause the *other* four
+>   annotation chords carry afterwards (issue **1251**). It composes with these
+>   three and reworded none of them; its own wording is `rule` debt **1251**.
 > * **D-8's "`Ctrl-6` clears it with the rest" cost no code at all**:
 >   `cadence::_annot_mask none` returns a hard 0. The rows asserting it were
 >   green before the writer existed.
@@ -580,10 +645,11 @@ which do know the instance — most cheaply as a new context value
 > n)` is the instance entry. Ladder **L2** — smallest blast radius — reinforced by
 > **I1**.
 
-**A3b. What the gate actually tests — and where it departs from D-6's words.**
-Shipped as `annot_instance_annotated(n)` = `get_annot_overlay()`'s own
-precondition chain (factored out as `annot_overlay_gate(n)` so the two readers
-cannot drift, **I1**) **plus** a non-blank `annot_overlay_cached_text(n)`. It must
+**A3b. What the gate actually tests.** Shipped as `annot_instance_annotated(n)` =
+`get_annot_overlay()`'s own precondition chain (factored out as
+`annot_overlay_gate(n)` so the two readers cannot drift, **I1**) **plus** — since
+item **A5-a**, 2026-09-02 — a block carrying **at least one actual VALUE**
+(`annot_block_has_value()`, a pure scan of the same cached string). It must
 **not** call `get_annot_overlay()` itself: that function does
 `++annot_overlay_count` and row **O13** of `test_op_annot.tcl` golds the delta
 exactly, so one call per text per instance per frame would both red O13 and
@@ -592,17 +658,51 @@ destroy the only seam an automated check has on the overlay.
 ⚠ **`op_annot::text` emits blank-VALUED rows when the raw publishes nothing for a
 registered device.** Measured, twice, first-hand: with a descriptor registered and
 a raw loaded whose vectors do not resolve, `op_annot::text M1` returns
-`"zid =\nzgm =\n"` — non-blank — while a descriptor-less `R1` returns `{}`. So the
-gate reads *"this device has a descriptor whose `match`/`devpath` resolve and which
-declares at least one row"*, **not** *"numbers arrived"*. D-6's words are "only
-instances that got OP numbers". Subcircuits and descriptor-less devices are
-untouched, which is what D-6 asks for; a **registered device over a dead or partial
-raw is decluttered while showing empty rows**, which D-6's words do not cover — and
-per measured rule **R1** (`gm`/`gds`/`vth` exist only if the deck saved them
-explicitly) that is common rather than exotic. The gate follows the **pixels** — it
-is exactly what the overlay already paints, and the alternative needs a second
-parser of the block's format (two builders, against **I1**). `rule` debt
-**`1244_A3_blank_valued_block`**; **it is item A3's status-E question.**
+`"zid =\nzgm =\n"` — non-blank — while a descriptor-less `R1` returns `{}`.
+
+**Item A3 therefore shipped a gate that read *"this device has a descriptor whose
+`match`/`devpath` resolve and which declares at least one row"*, not *"numbers
+arrived"* — and that was wrong.** It followed the *pixels* (what the overlay
+paints) where D-6's words are "only instances that got **OP numbers**". Item A4
+then measured the consequence with **no raw loaded at all**, i.e. before any
+simulation has been run:
+
+```
+raw loaded = -1
+mask 1  ->  MC1 CW=1u {cid =}
+mask 9  ->  MC1 {cid =}
+```
+
+The user presses `6`, presses `Ctrl-Alt-6`, and trades `W/L` for an empty label:
+the whole feature inverted, in the first thirty seconds of using it.
+
+**CORRECTED by item A5-a, 2026-09-02 (driver ruling).** The gate now requires
+`annot_block_has_value()` — per line of the cached block, after the first `=`, any
+character that is not a space or a tab. It is a **pure function of the string
+`annot_overlay_cached_text()` already returns**: no `tcleval`, no `tclgetvar`, no
+`xschem raw value`. That is deliberate and is the whole answer to issue **0466**
+(thirteen epoch fields and not one moved on `xschem reload`, so the overlay painted
+the previous file's numbers): value-ness acquires **zero** invalidation inputs of
+its own and rides the one wholesale flush `annot_overlay_sync()` already performs,
+so it cannot be staler than the block the overlay paints. Answering from a *second*
+source would be 0466 re-opened. `rule` debt **`1244_A3_blank_valued_block`** stays
+on the user's queue as confirmation of the gate itself.
+
+⚠ **SO THE GATE AND `get_annot_overlay()`'s D1 TERM NOW DELIBERATELY DISAGREE, AND
+D1 IS UNCHANGED.** The overlay keeps **painting** a label-only block, because a
+user is entitled to see *which* parameters this device would show once the raw
+carries them (invariant **I3**'s spirit — a missing vector renders blank, never a
+stale or invented number). The declutter is the stronger half because it removes
+the **user's own text**, so it may fire only where numbers actually replaced it.
+An earlier draft of the C comment asserted the two "answer to ONE fact and cannot
+disagree"; that sentence was **false** and has been rewritten in place.
+
+⚠ **Two ways a valueless device still slips through, both measured after the fix
+and both filed:** a descriptor **label containing `=`** parses as valued (issue
+**1258** — the mint writes the separator as `` ` = ` ``, so requiring that, or
+taking the last `=`, closes it), and a raw that publishes **0.0** renders `zid = 0`
+and opens the gate (issue **1259** — absent-vs-zero is a distinction the block
+string does not carry, and belongs with item B1's backend seam).
 
 ⚠ **Feature A shrinks the target feature B clicks.** `select.c:709` calls
 `text_hidden` inside `symbol_bbox`'s text loop, so a hidden text shrinks the
@@ -690,21 +790,33 @@ recorded here so it is not "corrected" later.
 >   `update_all_sym_bboxes` arm — because the D-6 gate reads the overlay cache and
 >   that cache was synced at three draw/export entry points only. Without it the
 >   shipped `annotate_op; update_all_sym_bboxes; redraw` computes the click target
->   from the pre-annotate cache. The other **38** `symbol_bbox()` callers still run
->   outside any overlay sync: issue **1252**.
+>   from the pre-annotate cache. The other **38** `symbol_bbox()` callers still ran
+>   outside any overlay sync: issue **1252**, **fixed at the second Tcl-reachable
+>   door by item A5-c** (`annot_overlay_sync()` in the `recompute_inst_bbox` arm).
+>   1252's own recommended repair — *"call `annot_overlay_sync()` wherever
+>   `annot_show_sync_cache()` is already called"* — is **refuted**: the stale door
+>   calls neither sync, so that repair leaves the defect where it was found.
+>   Residue in issue **1260**: `xschem setprop instance` and `xschem move_instance
+>   … nodraw` still write the click box from a stale gate (and A5-a *widened* the
+>   first — a rename over a dead raw now flips the gate where before it did not),
+>   and the **mask** half is still unsynced at `recompute_inst_bbox`.
 > * ⚠ **The PDK symbols' OWN operating-point texts carry `hide=true`** (3 in
 >   sky130 `nfet_01v8`, 2 in gf180 `nfet_03v3`, 0 in IHP `sg13_lv_nmos`), so they
 >   are **not** annotation-classed, and once *View > Show hidden texts* is on —
 >   the state both menu bodies create — **the rung hides them**, replaced by the
 >   overlay block. Intended trade, unstated anywhere until now. `rule` debt
 >   `1244_A3_hide_true_op_texts`.
-> * ⚠ **P6 pin-owned pin names are NOT reached** (issue **1253**): they are drawn
+> * ⚠ **P6 pin-owned pin names were NOT reached** (issue **1253**): they are drawn
 >   by a **fourth** pass gated by `pin_name_visible()`, not by `text_hidden()`, so
->   a pin spelling `show_pinname=true` keeps its name on a fully decluttered
+>   a pin spelling `show_pinname=true` kept its name on a fully decluttered
 >   device — measured first-hand. Inert on all three PDK acceptance devices (four
 >   pins each, all `false`); live for the 2,968 shipped `true` records. D-1 says
->   pin labels are in scope, so this is a gap in the *implementation*, not in the
->   ruling.
+>   pin labels are in scope, so this was a gap in the *implementation*, not in the
+>   ruling. **FIXED by item A5-b**: one shared `if(text_hidden_inst(0, n)) continue;`
+>   immediately after the `pin_name_visible()` anchor in each of `draw.c`,
+>   `svgdraw.c` and `psprint.c`. The **click target does not move** — `symbol_bbox()`
+>   walks only `symptr->text[]` and has no P6 pass, so this is purely a render
+>   change.
 > * **The 42 one-record `name+parameter` symbols are spared on this tree by the
 >   gate**, not by luck: every shipped PDK descriptor is `match`-narrowed and
 >   registers only `nmos`/`pmos` (+ IHP `vertical_npn`), so none of the 42 resolves
@@ -714,6 +826,96 @@ recorded here so it is not "corrected" later.
 >   Censused over 44,177 `T` records in five libraries: **exactly 69 symbols**
 >   render differently, all of them the `@spiceprefix@name` spelling, and zero
 >   because of the whitespace trim. The repair is **ungated by `annot_show`**.
+
+> **LANDED — item A4, 2026-09-02** (`utils/annot_mode.tcl`,
+> `tests/headless/test_annot_stale_0684.tcl` **52 → 54**,
+> `tests/headless/test_annot_declutter_1244.tcl` **82 → 93**). Issues **1250**
+> and **1251** closed; **1255** and **1256** filed and not fixed. **Status E** —
+> the clause's wording is `rule` debt **1251**. Three things this section did not
+> say, and one it implied wrongly:
+>
+> * ⚠ **THE DECLUTTER FIRES ON DESCRIPTOR RESOLUTION, NOT ON NUMBERS ARRIVING,
+>   AND THE SENTENCE HAD TO FOLLOW IT.** §4.1's D-6 gate is a **non-blank**
+>   `op_annot::text` block, so a registered device over a dead raw — or over *no
+>   raw at all* — is decluttered while its block shows `zid =` with no value
+>   (already recorded at §4.1 and as `rule` debt `1244_A3_blank_valued_block`).
+>   Item A4 first gated the 1251 clause on `$state eq {live} || $state eq
+>   {loaded}`, reasoning from issue 0909's `canask` term, and **that was measured
+>   wrong the same day**:
+>
+>   ```
+>   raw loaded = -1
+>   mask 1 texts = MC1 CW=1u {cid =}
+>   mask 9 texts = MC1 {cid =}
+>   ```
+>
+>   `noraw` is the most common press there is (`6` before the simulation is run),
+>   so the silence was the inaccuracy. **The gate is bit 3 AND bit 0 and nothing
+>   else.** Whatever item A5 decides about the blank-block gate moves this
+>   clause's truth condition with it; row **E6** is the row that notices.
+> * ⚠ **THE 255-BYTE STATUS BUDGET NOW HAS A BIT-3 CONSUMER AND IT IS NEARLY
+>   FULL.** Row A11-10 of `test_op_annot.tcl` and row V21 sweep masks **0..7
+>   only**, so `test_annot_declutter_1244.tcl` row **B1** is the only place in the
+>   tree that budgets a bit-3 sentence. Measured at an ordinary 55-byte results
+>   path: with issue 0909's cause clause also present the declutter clause is
+>   amputated by `cadence::_annot_fit` at masks **11, 13 and 15** in every state,
+>   and never at mask 9 — A11-12b's ordering (the answer outranks the rest) doing
+>   its job. The cap itself was **not** widened: 0639 rejects both that and
+>   shortening the path, and `char statusmsg_text[256]` is a C array no `.tcl`
+>   edit can move.
+> * ⚠ **`Alt-Shift-6` composes at the CALL SITE.** `cadence::_annot_tran_msg` is a
+>   pure four-argument minter that takes **no mask**, raises on unknown states, and
+>   is golded in `tests/headless/test_op_annot.tcl` — a file item A4 does not own.
+>   `cadence::annot_tran` therefore names the mask it writes
+>   (`set newmask [expr {$mask | 4}]`) and appends the clause itself, on the
+>   success path only.
+> * **The bit still has two doors, and only one of them speaks.** The stock
+>   `Waves > Op Annotate` menu (`src/xschem.tcl:17311`, `:17749`) preserves bit 3
+>   — deliberately, since item A3's 1246 fix — and emits **no status sentence at
+>   all**. Issue **1256**, filed and not fixed; `src/xschem.tcl` is in no Files
+>   cell of items A4 or A5.
+
+> **LANDED — item A5, 2026-09-02** (`src/actions.c`, `src/draw.c`, `src/svgdraw.c`,
+> `src/psprint.c`, `src/scheduler.c`;
+> `tests/headless/test_annot_declutter_1244.tcl` **93 → 105**). Issues **1252**,
+> **1253** and **1254** closed; **1257**, **1258**, **1259**, **1260**, **1261**
+> filed and not fixed. **Status E.** Four changes, five added code lines and one
+> 12-line pure function:
+>
+> * **A5-a — the gate requires a NUMBER** (§4.1 A3b above, rewritten). Driver
+>   ruling. Rows **A30** (no raw at all), **A32** (a raw that publishes nothing for
+>   this device), **A33** (the valued control, still decluttered), **A34** (the
+>   mint contract pinned from the Tcl side, so a change to `::op_annot::text`'s
+>   width pass reds a row instead of silently re-opening the defect) and **A35**
+>   (structural: one definition, one call, and the helper's body contains no
+>   `tcleval`/`tclget`/`op_annot`/`xctx` — the 0466 guarantee written as structure).
+> * **A5-b — 1253, pin names**, three byte-identical one-liners.
+> * **A5-c — 1252, the stale `symbol_bbox()` door.** ⚠ **ORDER IS LOAD-BEARING in
+>   any row that measures this**: any sync repairs the cache, so the stale door must
+>   be read **first**. Row **A40**.
+> * **A5-d — 1254, the two vacuous rows**, repaired in place and **shown failing**
+>   under the sabotage that used to leave them green (`SB7b` → A15; `SB-GATE-ALWAYS`
+>   → A17). Row **A22**'s source census golden moved `{3 1 1 1 0}` → `{4 2 2 1 0}`
+>   deliberately; the regexp was **not** widened.
+>
+> Three things this section did not say:
+>
+> * ⚠ **TWO SUITE READERS PUNISH COMMENT PROSE IN `draw.c`/`svgdraw.c`/`psprint.c`.**
+>   Row **A22** (`opa_n_grep`) counts comment lines, so writing `text_hidden_inst(`
+>   in prose inflates the census; and row **L27** of `test_op_annot.tcl` asserts the
+>   literal `HIDE_TEXT` survives in exactly **one** `.c` file. Both tripped item A5's
+>   first draft and both are avoided by wording. Whoever next comments those three
+>   files will hit them again.
+> * ⚠ **Row A38 requires the new guard on the line IMMEDIATELY after the
+>   `pin_name_visible()` anchor** (an exact trimmed-line match), so rationale prose
+>   must live *above* the loop, not between the anchor and the guard.
+> * ⚠ **`draw.c` DOES have a behavioural seam, contrary to what item A5 believed**
+>   (issue **1261**): `print_image()` calls `draw()`, so a warm-then-real
+>   `xschem print png` pair at a **tight** viewport measures a pin name going away
+>   (12912 → 8301 bytes, with an 8744/8744 `show_pinname=false` control). At the
+>   suite's usual wide viewport the name is zoom-culled at both masks and the PNGs
+>   are byte-identical — which is how the seam was missed. `draw.c`'s leg is
+>   therefore guarded by a **grep census** today.
 
 ### 4.2 Feature B — the Results Display Window
 
@@ -739,13 +941,138 @@ The header is the instance name, a colon, and the hierarchical path. ⚠ **That 
 not the tree's native spelling.** xschem's own is dot-separated and
 element-lettered — `@m.x1.x1.xm2.msky130_fd_pr__nfet_01v8_lvt`. Question Q6.
 
+> ✅ **ITEM B3, 2026-09-03 — BUILT, AND THE BLOCK IS BIGGER THAN THIS SECTION
+> DRAWS IT.** `src/rdw.tcl`, 675 lines, pure Tcl. `grep -c rdw.tcl src/Makefile`
+> **0 → 2** and the **installed** binary starts `rc=0` against the installed
+> sharedir, so issue 0424 is closed in fact and not only in the generated
+> Makefile. Singleton `.rdw`, raise-if-exists, `wm protocol … rdw::close`. The
+> pane is `text -state disabled -exportselection 1`: measured on Tk 8.6.17 with
+> `openbox` live, a real click plus `x` / `Return` / `BackSpace` / `Delete` /
+> `<<Paste>>` leaves the buffer **byte-identical**, `<<SelectAll>>` takes the X
+> `PRIMARY` selection and `<<Copy>>` lands the text on the clipboard — and the
+> clipboard text equals `rdw::block_text` of the store, so the paste shape and
+> the pane provably cannot drift. Every Tk command sits behind `rdw::have_tk`,
+> proved **behaviourally** by sourcing the file into a bare `interp create`
+> slave that has neither `winfo` nor `xschem`.
+>
+> **The block as shipped, against the four lines drawn above:**
+>
+> ```
+> M2B:/xdut/xbg/xamp1                      <- tag hdr (Q6's default, bold)
+> @m.x1.x1.xm2.msky130_fd_pr__nfet_01v8    <- tag dim (op_annot::devpath's OWN
+>                                             string — what a user pastes into
+>                                             ngspice; invariant I1, B3 builds
+>                                             no @-name of its own, ever)
+> Not everything the device has - only what this run saved.
+>                                                        <- tag note, DD-1's
+>                                                           corollary, only when
+>                                                           complete=0 AND state
+>                                                           ok AND union non-empty
+>                                                           (ISSUE 1374 cut this
+>                                                           from 121 chars; the
+>                                                           gate and the fact are
+>                                                           unchanged)
+>   @r.xr1.x0.rend1                        <- per-primitive sub-header, needed by
+>     i     : 1e-06                           D-3 (two primitives of one XR1 both
+>   @r.xr1.x0.rend2                           publish a parameter spelled `i`);
+>     i     : 2e-06                           suppressed only when there is
+>                                             exactly one primitive whose name
+>                                             equals line 2
+>     vth   : (did not converge)           <- from `nonfinite`, never `nan`/`inf`
+>     ib    :                              <- from `absent`, BLANK (invariant I3)
+> A blank value means the raw names that column but the simulator did not
+> compute it.                              <- tag note, only when absent non-empty
+> ```
+>
+> **⚠ THE ROW SET IS THE UNION OF ALL THREE BUCKETS, AND THIS IS THE ITEM'S
+> SHARPEST TRAP.** A device can appear in **no** `devices` entry at all:
+> measured, an all-`dims=0` device answers `devices {} absent {…} state ok` and
+> a binary NaN/Inf device answers `devices {} nonfinite {…} state ok`. Anything
+> that walks `dict keys [dict get $ans devices]` prints an **empty dump for a
+> real, named, non-converged device**.
+>
+> **A FIFTH SILENCE WAS NEEDED AND IS NOT IN THIS SPEC.** The seam's four non-`ok`
+> states are four silences; **`state ok` with nothing in any bucket is a fifth**,
+> and under measured rule **R1** it is the *common* one. It gets its own
+> sentence, because saying nothing is indistinguishable from a rendering bug. All
+> seven user-visible sentences are **unratified** — rule debt
+> `1245_B3_window_wording`.
+>
+> **⚠ AND A SIXTH STATE NOBODY NAMED IS LIVE AND WRONG — issue 1282.** The seam's
+> allow-list is `{op dc}`, not `{op}`, so a **DC sweep** answers `ok` with real
+> point-0 numbers and the block presents them as an operating point with the word
+> `dc` nowhere. Measured `sim_type = dc`, `state = ok`,
+> `block-mentions-dc = 0`. Filed, **not fixed**: naming it, rendering it silently
+> and refusing it are three different answers and the choice is the user's.
+>
+> **The dumps survive a close and reopen** (`::rdw::blocks` is namespace state;
+> `rdw::close` touches it not at all), deliberately diverging from the
+> Calculator, which clears its history. Rule debt `1245_B3_dumps_survive_close`.
+
 **B4. The three lists.**
 
 | key | list | source |
 |---|---|---|
 | `1` | **annotation** | the descriptor's `params` — the very list `6` paints |
-| `2` | **summary** | a new per-class ordered list; **default = all available** |
+| `2` | **summary** | a new per-class ordered list; **default = all available** ⚠ see below |
 | `3` | **all** | every parameter the simulator published for this device |
+
+✅ **THE NARROWING IS IMPLEMENTED (issue 1300, 2026-09-05).** Keys 1 and 2 now
+narrow CONTENT as well as identity, and this table describes the tree again.
+`rdw::format_answer` reads a `list` and a `class` out of its context — put
+there by `rdw::_list_ctx` at the seam's only door, beside the `sim` and
+`simtype` it already amended — and filters all three buckets by
+`::op_param_lists::effective`, reached through item R2's existing
+`rdw::_list_params` so the pane's narrowing and the pane's ORDER come from one
+list.  Key 3 is untouched: it is ruling D-5's escape hatch and still prints
+every published row in raw-file order.  A narrowed block SAYS so, naming the
+list, the number of rows withheld, how many of those did not converge and that
+key 3 has them — in the block rather than in chrome, because the block is what
+the user pastes.  Section **NW** of `tests/headless/test_rdw_window_1245.tcl`
+(ten rows, both arms) and section **KN** of `test_rdw_keys_1245.tcl` (two rows,
+real keybindings) are the fences.
+
+⚠ **AND THE TWO CORRECTIONS THIS PARAGRAPH USED TO CARRY.** It said row `S1` of
+`test_rdw_window_1245.tcl` "structurally forbids naming the list store inside
+`src/rdw.tcl`". **That has been false since item B5 wired the button column**:
+S1's own title now reads "(op_param_lists:: moved to row BT22 …)" and its six
+legs are about `ase::backend_hook`, the backend proc's name, `raw value`,
+`sim_capabilities`, `blanket_op_save` and `ase::theme`.  The fence was
+REPLACED, not relaxed: row **BT22** allows the store's thirteen PUBLISHED verbs
+by name and golds `op_param_lists::_` at zero, and `effective` is on that
+allow-list and had ten call sites in `src/rdw.tcl` before this change.  Issue
+1300's option (b) reds no row today.
+
+⚠ **"DEFAULT = ALL AVAILABLE" IS NOT WHAT THE STORE DOES, AND THE NARROWING
+MADE IT VISIBLE** (issue **1353**, 2026-09-05). An unowned summary list falls
+through `op_param_lists::effective` to `seed`, which answers **the PDK's own
+declaration** — the same triples the annotation list answers. So for every
+device on a machine with no `op_param_lists.conf` rows, **keys 1 and 2 narrow
+to the same set and still render the same block**, which is the user's own
+second complaint ("when I use 2 key, the RDW doesn't say summary") wearing a
+different cause. MEASURED on the user's tb_bandgap M18:
+`effective mos annotation` and `effective mos summary` both answer the six
+`id gm gds vgs vth vds`. The blocks are no longer byte-identical — each names
+its own list — but their ROWS are. Whether list 2's default should be the seed
+(what the store does) or the run's full published set (what this table says) is
+an **E question**, on rule debt **1300**. Not guessed here: changing the store's
+default would change what `_save_set` unions into `params` and therefore what
+the deck saves, which is ruling DD-4 ground.
+
+⚠ **AND THE SUMMARY LIST HAS NO ORDER ON THE SHEET AT ALL** (issue **1347**,
+measured 2026-09-05). `op_annot::text` draws the descriptor's `shown` key;
+`_show_set` builds `shown` by filtering the annotation+summary UNION by the
+labels of `effective $cls **annotation**`, **in union order**, and `_save_set`
+lays the union out **annotation-first**. So every drawn row takes its position
+from list `1`, and a label list `2` alone carries is not drawn at all —
+**a summary reorder can never move the drawn text, for any input.** MEASURED:
+two accepted Up presses on list 2 moved the store and the window and left
+`op_annot::text` byte-identical, while `annot_overlay_flushes` moved **+2**
+(`op_annot::register` bumps the epoch on any re-register, so the counter is not
+the sheet). The Results Display Window now says so on that arm; whether list 2
+*should* reach the sheet is a live rule debt,
+`1347_R2_summary_order_on_the_sheet`. Row **RE8** of
+`tests/headless/test_rdw_window_1245.tcl` golds the drawn STRING for both legs.
 
 **B5. Where "all" comes from — the seam, RULED D-4 + D-5.**
 
@@ -754,6 +1081,59 @@ Key 3 never asks ngspice a question directly. It asks the **backend** one:
 ```
 ase::backend::<sim>::op_param_set <devpath>   ->  ordered {param value} pairs
 ```
+
+> ⚠ **THAT RETURN SHAPE IS WRONG, AND THIS SPEC IS THE THING THAT IS WRONG.**
+> Item **B1** implemented it, measured it against this section's own examples and
+> refuted it (2026-09-03; receipt `../op_param_batch/receipts/B1.md`). §3.1's
+> `XR1` resolves to `r.xr1.x0.rend1` **and** `r.xr1.x0.rend2`, and **both**
+> publish a parameter spelled `i` — so a flat `{param value}` list cannot say
+> which primitive each number belongs to, and **ruling D-3 becomes
+> unimplementable in the shape this line asks for**. DD-1's corollary
+> independently forbids handing a caller the pairs without the incompleteness
+> riding alongside them, and there is nowhere in a flat list to put it.
+>
+> **The shape that survives measurement is an ANSWER DICT with FIVE keys:**
+>
+> | key | what it carries |
+> |---|---|
+> | `devices` | ordered `{<rawdev> {{<param> <value>} …}}` — one entry per **primitive** the request covers, raw-file order throughout |
+> | `absent` | ordered `{<rawdev> <param>}` — columns the raw **names** and the simulator **did not compute** |
+> | `nonfinite` | ordered `{<rawdev> <param> <text>}` — columns the raw **does** carry, holding Inf/NaN: **a device that did not converge** |
+> | `complete` | the honesty flag **as data** (DD-1's corollary): the value the capability declares, `0` for today's ngspice |
+> | `state` | `no_devpath` \| `no_raw` \| `not_op` \| `not_annotated` \| `ok` — four silences a caller must tell apart, which otherwise all arrive as the same empty list |
+>
+> ⚠ **`nonfinite` IS A SEPARATE BUCKET ON PURPOSE, AND IT WAS THE FIFTH KEY
+> ADDED BY B1's RE-DO** (issue 1272). It renders blank today, exactly like
+> `absent`, which is what makes collapsing the two tempting and wrong: *"the raw
+> does not carry `id`"* and *"the raw carries `id` and the simulator produced
+> NaN"* are different facts about the run, and the second is the one a designer
+> most wants surfaced — a non-converged operating point is a **result**, not a
+> gap. ⚠ And an **empty** `nonfinite` is not proof the run converged: the same
+> NaN in an **ascii** raw arrives as a finite `0` and lands in `devices`,
+> because `src/save.c`'s fast `my_atof()` path never parsed the words. That
+> asymmetry is deliberate there and is still open at the end of issue 1272.
+>
+> **The capability is a second, optional hook** — `op_param_enumerable` — beside
+> `op_param_set` in the same backend dict, because it is a question about the
+> **backend** that must be answerable before any run, click or devpath exists.
+> Neither may join `ase::register_backend`'s required-hook loop: two suites
+> hand-build five-hook registrations that raise if a sixth becomes required.
+>
+> **B1 first returned `[F]`** on two separate defects — issue **1272** (it read
+> through `op_annot::raw_or_blank` without `op_annot::_finite`, so a binary raw
+> carrying a NaN returned `nan` in the **value** bucket, I3's own failure), and
+> an over-strip in `ase::op_dev_norm` that silently lost any device whose path
+> began with a one-character segment. The shape above is not what was refuted;
+> it is what was measured. ✅ **Both were fixed the same day in a driver re-do
+> and the seam is in the tree: 37 → 49 checks, ALL PASS.** It binds **B2**,
+> **B3** and **B5**, and B3 renders from **five** keys, not two.
+>
+> **⚠ ABSENCE MAY BE REPORTED ONLY IN STATE `ok`.** Measured: `xschem raw value
+> <v> -1` is the only reader carrying the absent/zero distinction — a `dims=0`
+> column answers the empty string there and `0` at point 0, while a genuinely
+> computed `0.0` answers `0` at both — but **before `update_op()` has published,
+> point −1 is empty for every vector**. A seam that filled `absent` outside `ok`
+> would report *"the simulator did not compute id"* about a run nobody annotated.
 
 with a companion capability answer saying whether the backend can enumerate at
 all. Two implementations, one contract:
@@ -807,12 +1187,562 @@ shipped editing action for cadence-profile users only. Question Q5.
 | **Add** | — | add to annotation | add to **annotation or summary** (the dialog asks which) |
 | **Save** | write the settings file | write the settings file | write the settings file |
 
+> ✅ **ITEM B3, 2026-09-03 — THE COLUMN IS BUILT, GREYED AND INERT, AND THE
+> `—` IN THE `Add` CELL IS NOW `greyed`.** Five buttons `Up · Down · Delete ·
+> Add · Save`, the greying driven by `rdw::button_state {id kind}` — **this
+> table as data**, so B5 can assert it with no Tk. The `Add`/annotation cell was
+> an em dash, which does not say *greyed* versus *absent*; B3 shipped **greyed**
+> by ladder **L2**, because the column then keeps a constant shape as the user
+> switches lists and the other four buttons do not move under the pointer.
+> Unratified — rule debt `1245_B3_add_greyed_on_list1`; overruling costs one line
+> of `rdw::button_state` and one golden row. **Every enabled button is INERT**
+> and names item **B5** in the window's own status line; **B5 replaces
+> `rdw::inert`, it does not add a parallel command path.** The list identity is
+> `::rdw::listkind`, moved only by `rdw::set_list` — **B4 must drive that setter
+> rather than mint a second one** (invariant I1's shape). The greying keys on
+> list **identity**, never on list **content**, which is why issue **1278**'s
+> unbounded-glob freeze does **not** land on this window's redraw.
+
+> ✅ **ISSUE 1355, 2026-09-05 — THE WINDOW NOW SAYS WHICH LIST IS IN FORCE, AND
+> THE POP-UP SAYS WHICH LIST IT IS ABOUT.** The greying above is DERIVED state
+> and is unchanged; what was missing is the state it is derived FROM. MEASURED
+> at HEAD `d81b4b24` on the user's own `M18:/x1/x1`: the title was `Results
+> Display Window` on all three identities, the status line was empty on the
+> whole dump path, `.rdw` had three children and none named a list, and the
+> scope dialog was **byte-identical on annotation and on summary** with no
+> `.q2`. So lists 1 and 2 differed on screen by the **Add** button alone — which
+> is what the user reached for, and it is evidence for *"not list 3"* and none
+> at all for *"I am on summary"*. Added: a chrome `::label` `.rdw.hdr` above the
+> pane, the list's name in `wm title`, and `.rdw.scope.q2` as a **STATEMENT** on
+> lists 1 and 2 in the exact slot list 3 uses for its **QUESTION** — all read
+> from one name/gloss builder (`rdw::_list_name` / `_list_gloss` /
+> `_list_phrase`, which the two `.li.*` radiobuttons above now read too) and all
+> refreshed by the ONE proc `rdw::set_list` calls, `rdw::apply_list_state`
+> (formerly `apply_button_states`). **⚠ THE Add CELL'S CONSEQUENCE IS NOW SAID
+> OUT LOUD:** an Add from list 2 writes the ANNOTATION list, and the statement
+> names that list rather than the identity in force — `rdw::_edit_list` is the
+> one answer to "which list", read by the button, by the dialog's pre-set choice
+> and by the statement. Whether it SHOULD is issue **1357**, unratified. Five
+> new sentences, rule debt **1355**. Fenced by section **LX** and row **BT31**
+> of `test_rdw_window_1245.tcl` and section **LK** of `test_rdw_keys_1245.tcl`.
+
+> ✅ **ISSUE 1372, 2026-09-06 — ADD FROM LIST 3 NOW SUCCEEDS, AND THE OLD
+> REFUSAL'S STATED REASON WAS MEASURABLY FALSE.** The user: *"I put cursor on
+> cgs and the clicked Add button and said add to all mos … for summary list,
+> but, later, when I send summary list with 2 key, it never shows up."*
+> MEASURED end to end on their own `M18:/x1/x1` with the `ngspice-ver50`
+> registry live: **nothing downstream dropped it — nothing was ever written.**
+> `rdw::_find_triple` was the only source of a triple and looked in exactly
+> three places, all of which answered the same six sky130 rows because
+> `~/.xschem/op_param_lists.conf` owns none; `cgs` is not among the six, so the
+> Add was refused. Scale: list 3 offers **88 rows for M18 and Add was accepted
+> for 0 of them** — 82 "no declaration", 6 "already in the list" — on **both**
+> target lists. Order: the scope dialog was raised **before** the refusal was
+> computed, which is why the report reads *"it never shows up"* rather than
+> *"it refused"*. And the refusal's own reason (*a guessed kind writes a `.save`
+> card that matches nothing*) is **not true of this tree**:
+> `op_annot::_cards_for` emits `.save ${dev}[${param}]` and never reads the
+> kind — measured, a kind-0 row and a kind-1 row produce byte-identical cards.
+> **AS BUILT:** a fourth lookup, reached only when all three declared ones are
+> silent, reads the kind off the **vector name this run published**
+> (`rdw::_run_triple` → `ase::op_vector_for` → `op_annot::_kind_of_vector`, the
+> one inverse of `op_annot::_wrap`'s token.c table). Nothing is guessed: a
+> column the run does not name is still refused by name. The read is gated on
+> **sheet identity** (`rdw::_subject_devpath`, issue 1322's axis), so a block
+> dumped from another sheet mints nothing and says which sheet to go back to.
+> `rdw::_add_why` words the rule once and `rdw::button` asks it **before** the
+> dialog. **⚠ THE HAZARD THE OLD INVARIANT MISNAMED IS STILL LIVE AND IS THE
+> USER'S CALL:** an accepted row joins `_save_set`'s annotation+summary union
+> and therefore the next deck's `.save` cards — measured, `_cards_for M18` grew
+> 6 → 7 — and §3.2 / R5 say `show`'s catalogue is a superset of the savable set.
+> Rule debt **1372**. Fenced by rows **BT18** (rewritten, verdict reversed),
+> **BT33**, **BT34**, **BT35** and **BT36** of
+> `tests/headless/test_rdw_window_1245.tcl` (`RW_FLOOR` 173 → 177).
+
+> ✅ **ISSUE 1356, 2026-09-05 — THE BUTTONS ACT ON THE CURSOR ROW, AND THE
+> WINDOW SAYS SO.** The table above is silent about what a *selection* does, and
+> the user read a six-row drag as a six-row Delete. MEASURED: `tag ranges sel` =
+> `8.4 13.4` with `::rdw::targetrow` = 8, and one press produced one verdict
+> about one parameter — every reader of the text selection in `src/rdw.tcl` is
+> on the CLIPBOARD path. A conditional clause now rides every verdict when a
+> selection really spans two or more lines. **The multi-row edit itself is a
+> ruling and is NOT built**: one dialog for N rows, one status line for N
+> outcomes, and ruling **DD-10**'s last-row refusal evaluated over a batch.
+> Rule debt **1356**.
+
+> ✅ **ITEM B2, 2026-09-03 — LIST 3 HAS NO PERSISTED STATE, AND THE STORE HAS
+> NO SLOT FOR IT.** It is live from the run, its Delete is greyed above, and a
+> persisted `all` would be a list no simulator ever published — the invented
+> data **D-4** forbids. `op_param_lists::owns` answers 0 for it always,
+> `effective` answers `{}`, and a settings-file row naming it is reported and
+> skipped with a sentence saying why. **B5's Add-from-list-3 writes into
+> `annotation` or `summary`** and so is left with nowhere to write.
+
+> ⛔ **ITEM B5, 2026-09-04 — THE COLUMN WAS WIRED, WENT GREEN ON EVERY TIER,
+> AND WAS REFUTED AND REVERTED. Two cells of this table are wrong.**
+> Patch preserved at `doc/claude/op_param_batch/B5_working_tree_REFUTED.patch`;
+> the transcripts are in issue **1314**.
+>
+> ✅ **UPDATE, item B2e, 2026-09-04: the first bullet's blocker is GONE.** Ruling
+> **DD-13** landed — the descriptor carries a third list, `declared`, written by
+> `op_annot::register` alone and read by `_params`/`seed` alone, and `apply`'s
+> union takes the type's own declaration as a **third input, appended last**.
+> Re-measured on B5's own A5 scenario: two broad Deletes leave `declared`, `seed`
+> and the `.save` card intact on both types, `shown` narrows the sheet, and Add
+> has a source again. **Issues 1312, 1292 and 1287 are FIXED; B5 can be
+> re-landed from the preserved patch, which still `git apply --check`s clean.**
+> The other three bullets below still stand, and issue **1318** is new and is
+> B5-2's: `apply`'s return list now conflates the types it NARROWED with the
+> types the 1292 undo put BACK, so B5-2 must not start reading it.
+>
+> * ~~**The `Delete` column is not deliverable while issue 1312 stands.**~~ Ruling
+>   **DD-4/DD-6** says Delete *"never changes what the simulator is asked to
+>   save"*. Measured: `apply` writes the union into the descriptor's `params`
+>   and `seed` reads the PDK's own list back out of **that same field**, so
+>   deleting one parameter from the annotation list **and then from the summary
+>   list** empties it out of `params` — `op_annot::_cards_for` stops emitting its
+>   `.save` card, the PDK seed and every sibling `type=` token lose the row, and
+>   `Add` then refuses, blaming the PDK for a row xschem itself deleted.
+>   `_save_set`'s in-code claim that the union "can only ever be a SUPERSET" is
+>   **conditional on one of the two lists being unowned**, and this column is
+>   what owns both. **Fix 1312 option (a) first; it is a `src/op_param_lists.tcl`
+>   change and therefore a re-scope of B5's Files cell.**
+> * **The `Up`/`Down` cell for list `all` is undeliverable as written.** This
+>   table says *reorder* in all three columns, but ruling **D-4** and the B2 note
+>   above mean `op_param_lists::set_list` refuses to store the live list at all,
+>   so there is no stored order to move. The honest column is *"refuses, with a
+>   sentence"* — decision D11 of the reverted item, and the spec is the half that
+>   is wrong.
+> * **Two more measured defects for the re-land** (both issue 1314): the broad
+>   scope arm decided scope with an exact-key `owns` while `effective` narrows by
+>   **glob in file order** (DD-8), so with a real flavor glob live it edited a
+>   list the device does not use **and reported success**; and a `set_list` that
+>   silently reduced a list by **label** (IHP's `{id ids 0}`, label ≠ param) was
+>   reported as a plain success, breaking **1288**'s ruled *"the user is told
+>   once"* through the only UI door there is.
+
 Every Delete and Add raises a **scope dialog**: *this device flavor only*, or
 *every device of this broad class*. That maps onto the descriptor's `match`
 glob (§2.1) — narrow writes a flavor-specific entry, broad writes the class
 entry. ⚠ Modal dialogs are a known headless-harness hazard (issue 0803: a modal
 dialog hangs any suite under X); the dialog must be drivable by the tests
 without a human.
+
+> ⛔ **ITEM B5-2, 2026-09-04 — DESIGNED, BUILT, MEASURED, AND REVERTED. THE
+> COLUMN IS NOT WIRED.** The item was implemented in full from the preserved
+> patch with six corrections, went green on every tier (window 100/111, store
+> 113, keys 40), and was then **refuted and rolled back** on issue **1322** —
+> `rdw::_subject` re-resolves the block's bare instance name against whatever
+> sheet is open, so a button edits a device the user is not looking at. The work
+> is preserved at `doc/claude/op_param_batch/B5-2_working_tree_REFUTED.patch`
+> (md5 `42890cf163dd9ba1e85e312e1801c6ed`).
+>
+> **The design conclusions below were each measured and they SURVIVE the
+> revert** — they are what the re-do should build, not what the tree contains.
+> The three bullets above are therefore still unpaid in `src/`:
+>
+> * **`Up`/`Down` on list `all` refuses, with a sentence** — the third cell of
+>   the first row is wrong as written, exactly as the bullet above says.
+> * **A reorder raises no dialog, so it writes at the entry that GOVERNS the
+>   device** — the flavor entry whose glob matches this cell, else the class
+>   entry (ruling DD-2's primary key). Delete and Add keep asking, because their
+>   dialog's own radiobutton says *"this device flavor only (`<cell>`)"*.
+> * **The narrowing has ONE definition and TWO consumers** (invariant I1): the
+>   flavor-glob scan moved into a published accessor,
+>   `op_param_lists::governs {cls listname {cellname {}}}`, which answers
+>   `{flavor {<cls> <glob>}}`, `{class <cls>}` or `{}`, and `effective` is now
+>   three lines on top of it. Store row **BG1** locks the two together by
+>   asserting `get_list` of what `governs` *names* is byte-identical to
+>   `effective` of the same three arguments — so the lookalike that produced the
+>   third bullet's defect cannot come back.
+> * **The broad base stays the CLASS list.** Giving the broad arm
+>   `effective <cls> <list> <cell>` as its base — the obvious way to hand it the
+>   cell — writes the *flavor* list's rows into the *class* key and destroys
+>   every class row the flavor entry does not carry: ruling **DD-7**'s failure,
+>   the one that reverted item B2a twice. The cell reaches the broad arm **after**
+>   the write instead, in `rdw::_shadow_why`, which runs on all three arms with
+>   a different sentence each and says *"this device's own rows did not change"*
+>   rather than reporting a bare success.
+> * **A narrow key is a GLOB, and a cell name that does not match itself is
+>   refused up front** (`a[bc].sym`, `a\b.sym`). The residual — `a*b.sym` and
+>   `a?b.sym` self-match *and* match siblings — is issue **1321**, filed not
+>   fixed.
+> * **A reorder now applies immediately**, and the status line no longer cites
+>   issue 1312 as a reason to defer: DD-13 fixed 1312, so the deferral's stated
+>   cost (a reorder leaking through the seed into the unowned summary list) no
+>   longer exists, and a status line citing a fixed issue is a false statement on
+>   screen. ⚠ **Unratified, status E** — rule debts
+>   `1245_B5-2_reorder_applies_immediately` and
+>   `1245_B5-2_reorder_writes_the_governing_glob`.
+> * **Issue 1318 was NOT read**: `rdw::_apply_now` ignores `apply`'s return
+>   value, which is correct — reading it would make *"updated N types"* wrong for
+>   exactly the Reset press.
+>
+> **⚠ AND FOUR THINGS THE SPEC MUST SAY THAT IT DID NOT, EACH MEASURED WHEN THE
+> ITEM WAS REFUTED:**
+>
+> * **A block must carry its own SUBJECT, captured when it is dumped.** The
+>   header string `"<instname>:<path>"` is a *rendering*, not an identity:
+>   re-resolving the name half against the live editor answers about whatever
+>   sheet is open now, and nothing clears the pane on a load. `M1` is every
+>   device symbol's default template name, so two sheets is the ordinary case.
+>   Issue **1322**, which also records that the obvious guard — comparing the
+>   cadence path — **does not catch its own reproduction**, because two
+>   top-level sheets both report path `/`. The axis is sheet identity.
+> * **A reorder must not be able to shorten a list.** `register` accepts a
+>   declaration with two triples sharing a label and `seed` returns it verbatim,
+>   while `set_list` dedupes by label — so a length-3 reorder request comes back
+>   length 2 and **a `.save` card disappears**, making the most purely-display
+>   operation the feature has into a save decision. Rulings **DD-4/DD-6**. A
+>   length check on the reorder arm closes the class. Issue **1323**.
+> * **The pane must show which row is targeted.** `render_pane`'s
+>   `delete 1.0 end` collapses the right-gravity `insert` mark and the re-inserts
+>   carry it to the end, so *"the row your cursor is in"* silently becomes a
+>   different row on every dump while `::rdw::targetrow` disagrees — and the
+>   `-state disabled` pane draws no cursor, so nothing on screen says so. Issue
+>   **1324**.
+> * **Save must resolve its tier, not name one.** With cwd `$HOME` — how xschem
+>   is ordinarily launched — `conf_path project` and `conf_path user` are the
+>   **same path**. `load` already dedupes that collision; a writer that hardcodes
+>   `project` rewrites the user-global file while reporting a project write, and
+>   ruling **DD-7**'s *"one tier's own file"* goes vacuous. Issue **1325**.
+
+#### AS BUILT — item B5-a, 2026-09-04: three of those four, and the two dead fences
+
+Item **B5-a** is the foundations the button column stands on, split out because
+the column had been built, gone green on every tier, and been reverted **three
+times** — and never once for a defect in the buttons. It closes **1322**, the
+reorder half of **1323**, and **1325**, and repairs the two fences that were
+passing with their own subject deleted.
+
+* **A block carries what it was about.** `rdw::push` captures
+  `{instname type cellname schname}` **at dump time**, from the block's own
+  header text and the sheet that is still open, and stamps it into the block's
+  **header entry as a third element** — so the block stays one flat list of
+  entries and `llength $b`, `rdw::block_text` and `render_pane`'s line count are
+  all byte-unchanged. `rdw::block_subject {block}` is the single reader and a
+  **pure function of its argument**: it reads no namespace state, so the three
+  suites that assign `set ::rdw::blocks {}` directly cannot desync it. A
+  parallel subject list was rejected — it has *three* writers to keep aligned,
+  not two. The **class** is deliberately not captured: it is a pure classmap
+  lookup with no sheet dependence, so it keeps its one home and `src/rdw.tcl`
+  keeps naming the store's namespace zero times, which rows S1 and K11 gold.
+  A subject that does not resolve — an unfound symbol answers the literal
+  `missing` — is **not recorded at all**, because `op_param_lists::class`
+  returns the *token* for an unmapped type by contract and blank is available
+  here and nowhere later.
+* **A reorder cannot shorten a list**, through one new published verb:
+  `op_param_lists::reduce_why {scope key listname triples}` -> `{}` when a
+  `set_list` of those triples would store every row, the sentence when it would
+  reduce it. It reuses `_dup_index`, so the duplicate-label RULE keeps one
+  definition and gains a second READER — the `governs` precedent — and
+  `set_list` itself is unchanged, so issue **1288**'s ruling stands.
+  ⚠ **The guard covers `up`/`down` and nothing else, and that is a measurement,
+  not a preference.** Guarding the Add arm as well **reds window row BT27**,
+  which golds issue 1288's ruled *accept-and-report*; `rdw::_edit`'s own comment
+  had already said so (*"the Add is not refused: a third door with a third rule
+  is the disagreement issue 1288 is about"*). A reorder is definitionally
+  length-preserving, so a shortening one is unambiguously a defect; Delete is
+  neither, and its residual is filed as issue **1326** for the user to rule on.
+  ⚠ **And the guard runs BEFORE the write**, which refutes issue 1323's own
+  recommended wording (*"after the write … restore the base and refuse"*): a
+  `set_list` of the base dedupes it identically, so the restore would store a
+  third value nobody chose, and a base that came from the SEED left the key
+  UNOWNED, which no verb in this store can undo.
+* **Save says which tier it really wrote — for the cwd collision, and NOT for a
+  symlinked settings file (issue 1327).** The verb is
+  `op_param_lists::conf_tiers <path>` -> the tiers whose `conf_path` normalizes
+  to this path, in `{user project}` order. Read-only: no file, no directory, no
+  report, no list. `load` is **not** rewritten to consume it — its `seen` dedupe
+  answers a different question over a loop — and store row **CT2** locks the two
+  together by assertion instead. Which tier Save *writes* is unchanged and stays
+  issue **1273**'s, which is the user's.
+  ⚠ **`file normalize` does not resolve a path's FINAL component**, which is the
+  very fact `_resolve_target` exists for (issue 1276). `write_conf` follows the
+  link chain and writes the **real** file; `conf_tiers` compares unresolved
+  strings. So a project `.conf` that is a **symlink** to the user-global one is
+  reported as a project write while the user-global settings are rewritten —
+  issue **1325**'s own title, still reproducing, which is why 1325 is
+  **PARTIALLY FIXED** and not fixed. The cwd collision *is* closed and fenced,
+  and an intermediate symlinked `.xschem` **directory** is caught too (measured
+  `user project`); only the symlinked final component is missed, and no fixture
+  in any suite builds one. **Issue 1327 is a precondition on item B5-3.**
+* **The two dead fences.** `BE3b` passed with `rdw::_apply_now` stubbed to `{}`
+  — every field it asserted is satisfied by the descriptor *as registered* — and
+  now reads `shown` on both type tokens, a key `apply` alone writes. `Q9` passed
+  with the greying forced off, because every one of its terms was a NEGATIVE;
+  it now carries two POSITIVE claims about the sentence `rdw::button` actually
+  emits for a greyed press. Both repaired **inside**
+  `B5-2_working_tree_REFUTED.patch`, so item B5-3 inherits them working; the
+  patch's md5 and line count both moved and every citation was updated in the
+  same commit.
+* ⚠ **And one of B5-a's own new rows was dead on arrival.** Keys row `KS1`
+  passed under the sabotage that restores the shipped 1322 defect, because
+  `check` evaluates its argument list when it is *called* and the original sheet
+  had already been restored by then. The legs are now snapshotted while the
+  other sheet is still open. Recorded because it is the exact failure this item
+  exists to break, met by the item that exists to break it.
+
+#### AS BUILT — item B5-3, 2026-09-04: **THE COLUMN IS WIRED. FEATURE B IS COMPLETE.**
+
+The fourth attempt, and the first to land. The preserved patch
+`doc/claude/op_param_batch/B5-2_working_tree_REFUTED.patch` (md5
+`42890cf163dd9ba1e85e312e1801c6ed`, 3018 lines) applied `rc=0` with offsets only
+onto item B5-a's tree, and **nothing in it was retyped**. Three things were added
+on top of it, and only three.
+
+**⚠ THE TABLE IN B7 IS NOW LIVE, AND `rdw::inert` IS GONE.** `rdw::button {id}`
+is the one command every widget carries; `rdw::button_state` is the command
+path's fence as well as the widget's, so a key, a menu or a later item reaching
+the proc directly gets the same answer the disabled widget would have given.
+Every path out of it ends in a status line **naming the button it came from**.
+
+* **RULING DD-15 (issue 1326) — a duplicate display label is refused AT THE
+  DECLARATION.** `op_annot::_dup_declared_label` scans the declaration
+  `_declare` will store under `declared`, and `op_annot::register` raises before
+  anything is stored and before `::op_annot::gen` is bumped. **It scans the
+  declaration and NOT `params`**, because `apply` re-registers every applied type
+  handing back the descriptor it read with `params` replaced by the union, inside
+  a catch that turns a raise into a `_say` — a `params`-scanning guard would make
+  an ordinary Delete report *"cannot register the parameter lists"* instead of
+  doing its job (store row **DL3**). **Every read is catch-guarded and falls
+  through to ACCEPT** (store row **DL2**), because `_declare`'s own header forbids
+  parsing the value and forbids raising for a malformed one and a user's rc is a
+  supported door (I5). The rule is **written twice, not called across**:
+  `op_annot.tcl` is sourced first and `op_param_lists.tcl` depends on it, and
+  DD-6 already rejected that load-order inversion.
+  ⚠ **`reduce_why` STAYS, as the second door.** DD-15 shuts the declaration; it
+  cannot shut `::op_annot::desc`, which a fixture or an older session's stored
+  state still reaches. Store rows **RD1**, **RD5** and **BE8** were **re-pointed**
+  to a direct `::op_annot::desc` assignment — row **N9c**'s own sanctioned
+  technique — rather than deleted, so the guard stays fenced. The paragraphs in
+  `reduce_why`'s header and in the store suite's section RD that used to *reject*
+  making `register` refuse were **rewritten**, not left: a comment contradicting a
+  binding ruling is how the next reader re-derives a settled question.
+  ⚠ **Consequence filed, not fixed: issue 1328.** All four shipped PDK register
+  sites are uncaught, so a refusal aborts the rest of that `_procs.tcl`
+  (measured: the second, unrelated type never registers).
+* **RULING DD-16 — the cross-sheet edit is ALLOWED, and the source sheet is
+  named only when it differs from the open one.** `rdw::_sheet_note {subject}`,
+  a named callee on `rdw::_tier_note`'s precedent, appended inside
+  `rdw::_edit` at **one** insertion point on the **success arm only** — so all
+  three `ok` returns carry it and no refusal arm does; a refusal changed
+  nothing, so the false belief the clause corrects never forms.
+  **An absent or empty `schname` means DO NOT NAME THE SHEET** and every read is
+  caught: row **BT28** hands `_edit` a hand-built subject with no `schname` key
+  at all and `dict get` raises on it, so an unguarded read would refuse an edit
+  that was working. **The comparison is a plain string compare** — not
+  `file normalize` (issue 1327: it does not resolve a path's final component, so
+  it establishes no file identity anyway) and not `_fid` (a private store verb
+  row **BT22** forbids this file to name). Fenced two-sided: **BT29** (the real
+  two-sheet repro, the clause fires and names the SOURCE sheet, not the open one)
+  and **BT30** (the two silences, so the clause cannot pass by being
+  unconditional).
+  ⚠ **THE JUSTIFICATION FOR THE STRING COMPARE IS REFUTED, AND THE CHOICE STANDS
+  ANYWAY — issue 1329.** `rdw::_sheet_note`'s header claims the two values "are
+  byte-identical whenever they name the same sheet". They are not: one sheet
+  opened through a **symlink** yields two different strings and the clause fires
+  falsely (measured `STRING_EQ=0`, clause emitted naming the real path). The
+  choice stands because the alternative available to this file was worse — but
+  the correct fix is a **public** `op_param_lists::same_file` wrapping `_fid`,
+  added to BT22's allow-list. Blast radius is one wrong advisory sentence and
+  never a wrong write: DD-16 rules the cross-sheet edit ALLOWED, so the clause is
+  advice, not a gate.
+* **The test work.** New store section **DL** (3 rows) for DD-15; window rows
+  **BT29**/**BT30** for DD-16; **BE7** gains the acceptance proof nothing else
+  asserted — an ACCEPTED Up press leaves the deck asking for the same set of
+  values — and **BE9** gains a **third arm** driving issue 1327's symlink through
+  the button. **Both suites gained a CHECK-COUNT FLOOR** (`OL_FLOOR` 130,
+  `RW_FLOOR` 109), copied from `KX_FLOOR`'s idiom — until item B5-3 only the keys
+  suite carried one, and a green count is a statement about the FENCE.
+  ⚠ **`OL_FLOOR`'s FIRST STATED RATIONALE WAS FACTUALLY WRONG AND HAS BEEN
+  CORRECTED IN PLACE.** It claimed eleven of section BE's rows sit behind
+  `if {[llength [info commands ::rdw::scope_dialog]]}`. They do not: that guard
+  wraps only the `rename`, and the stub `proc ::rdw::scope_dialog` on the next
+  line is installed **unconditionally**. Measured — with `::rdw::scope_dialog`
+  deleted before sourcing, the store suite still ran 130 checks and still printed
+  ALL PASS, and the row that went red was window **BT9**, which is where that
+  proc's existence is actually fenced. The floors are correctly wired regardless
+  (both proved live by raising them one and watching them red); only **BE9**'s
+  symlink arm is a genuine skip path.
+  ⚠ **`RW_FLOOR` IS THE `--nogui` MINIMUM BY DESIGN**, so a `:99` run that
+  silently skipped up to 12 `live_tk` rows would still clear it. Deliberate — an
+  equality would red every headless run — and recorded here so the next crew
+  raises it arm-aware rather than discovering the gap.
+
+**⚠ ONE ACCEPTANCE SENTENCE IN THE BRIEF IS REFUTED BY MEASUREMENT, AND THE ROW
+RECORDS THE REFUTATION.** The brief asked that *"an Up press leaves
+`_cards_for`'s output byte-identical"*. It does not, and it must not: `apply`
+writes the reordered union back into `params` (row BE7's own fourth leg golds
+that) and `_cards_for` emits one card per row **in `params` order**, so the card
+list is reordered with it — measured
+`{.save @m.m1[ids]} {.save @m.m1[gm]} {.save @m.m1[gds]}` becoming
+`{.save @m.m1[gm]} {.save @m.m1[ids]} {.save @m.m1[gds]}`. DD-4/DD-6 is about
+what the simulator is asked to **compute**, and a `.save` deck is a **set**: no
+card is lost, none is invented, and the order of `.save` lines has no meaning to
+ngspice. **BE7 therefore asserts SET identity plus the length**, because a byte
+comparison would fence the ORDER, which is the one thing Up exists to change.
+
+**Issue 1288 is CLOSED** by the success-arm read of `rdw::_store_tail` (window
+row **BT27**). **Issue 1294's secondary is NOT fixed and its own prediction is
+refuted**: `rdw::_edit` builds `[list $cls $cell]`, always exactly two elements,
+and `_scope_for` returns `[lindex $g 1]` from `governs`, whose keys came through
+`_key` already canonicalised to two — **the button column cannot mint a
+three-element flavor key**, so the truncation stays latent *and unreachable*.
+
+**WHAT THE ADVERSARY FOUND AND THE ITEM DID NOT FIX** — four new numbers, every
+one measured, none of them a wrong write:
+
+* **1329** — DD-16's clause is false through a symlink (above).
+* **1330** — `rdw::_apply_now` swallows an `apply` failure. `rdw::button`
+  composes its whole sentence from `rdw::_edit` and only THEN calls `_apply_now`,
+  whose three calls are each in a bare `catch` and which returns `{}`
+  unconditionally (measured `APPLY_NOW_RC=0`, `APPLY_NOW_RES=''`,
+  `EDIT_BEFORE_APPLY=1`). A **silent-failure channel**: nothing reaches it today,
+  because the only measured route to an `apply` failure is issue 1326's
+  descriptor and DD-15 now refuses it. Fix is one `said`-tail read after
+  `_apply_now`, in `rdw::_store_tail`'s existing idiom.
+* **1331** — the narrow arm refuses a symbol path containing a **space** in the
+  store's internal jargon, with brace syntax exposed and — unlike both sibling
+  guards — no *"Choose every device of class X instead."* A third up-front guard
+  in `rdw::_edit`, beside the two that exist.
+* **1332** — the keys suite's **SD1/SD2/SD3b** drive the real modal on a fixed
+  `after 100` rather than polling for `.rdw.scope`; false-redded once in 134 runs
+  while a second crew agent held the same `:99` display. The deadman worked — it
+  did not hang. A TEST defect, and the fix is to poll.
+
+And one bound recorded on an existing number: **issue 1326's DELETE half
+survives** through the direct `::op_annot::desc` door DD-15 cannot shut (measured
+3 rows → 1, `{id ids 0}` leaving with the `gm` the user asked for). `reduce_why`
+is consulted for **reorders only**, so "one rule, two doors" holds for Up and
+Down and **not** for Delete. Unreachable in production — nothing outside the
+store suite assigns that array — and the choice of whether Delete gets a second
+door stays the USER's, which is what 1326 said from the start.
+
+#### AS BUILT — item B2d, 2026-09-04: the answer dict is UNTRUSTED INPUT
+
+The five-key table above is a **description of what a well-behaved backend
+sends**, and item B2d makes the renderer treat it as exactly that. Ruling
+**D-5** exists so a second backend can plug in; the first one to occupy these
+shapes will be the user's own custom ngspice. The contract, now implemented and
+fenced in `tests/headless/test_rdw_window_1245.tcl` (rows F14-F29, Q6-Q9):
+
+* **Only `state` is required.** `devices`, `absent`, `nonfinite` and `complete`
+  are required **only when `state` is `ok`**, and an absent key is EMPTY, never
+  malformed. **A non-`ok` state is a complete and legal answer on its own** and
+  is rendered from `state` alone, with **no shape check of any kind** — a
+  refusal makes no claim about data and nothing may walk what it did not claim.
+  This corrects the "five keys, always" reading that made B2a accuse a correct
+  backend of malforming its own refusal. `rdw::_answer_state` runs FIRST;
+  `rdw::_answer_flaw` is consulted only under `ok`. Row **F26** asserts that
+  order **structurally**, by reading `format_answer`'s own body.
+* **An answer with no readable `state`, or that is not a dict at all, is itself
+  malformed** and gets the flaw sentence naming the backend — never the fifth
+  silence, which is a statement about the *raw* and would be false.
+* **The bucket widths are part of the contract, and they differ**: `absent` is a
+  `{<rawdev> <param>}` PAIR, `nonfinite` a `{<rawdev> <param> <text>}` TRIPLE
+  (`rdw::_bucket_width`). A two-field `nonfinite` entry is an answer that does
+  not meet the contract, not a short form — rendering `(did not converge)` from
+  it is an assertion on no evidence.
+* **Every entry must NAME a parameter** (`rdw::_named`, a `string trim`
+  non-empty test on the `devices` pair's first field and a bucket entry's
+  second). A value under no name is the "blank row that means nothing" the
+  predicate rejects elsewhere. ⚠ The predicate is on the NAME, never on arity:
+  a value-less `{id}` is legal and renders `(no value reported)`.
+* **A missing or empty value renders `(no value reported)`**, in the same word
+  family as `(did not converge)`, so it is no longer byte-identical to an absent
+  column's blank and the per-block blank footnote is no longer false about it.
+* **⚠ ONE BLOCK ENTRY IS ONE LINE, AND THE GUARANTEE LIVES AT THE EMIT POINT.**
+  `rdw::_line {tag text}` wraps every line the file appends to a block;
+  `rdw::block_text` joins the entries with a newline, so an entry containing one
+  makes the block, the paste text and the pane report three different line
+  counts (measured: 4, 5 and 7 on one answer). The escape was
+  `_state_sentence`'s verbatim echo of the backend's own `state`, which rendered
+  two fabricated, correctly formatted operating-point rows onto the clipboard.
+  The same escape existed in `_flaw_line`'s backend name, the `dim` device-path
+  line, the fifth silence's `$dp`, the `no_devpath` instance name and
+  `dump_devpath`'s `"could not answer: $ans"` — a caught Tcl error, multi-line
+  by nature. **A new `lappend out [list …]` in this file is a defect** (row F29).
+* **Nothing raises.** `rdw::format_answer` is a pure renderer called by every
+  suite row and every widget path; a raise out of it stops `Tcl_AppInit` dead
+  under `--pipe`. 22,022 fuzzed answer shapes, zero raises.
+
+**Ruling DD-5 is implemented as option (a)** — a `dc` answer is still rendered
+and the block names the analysis, as a `note` between the device path and the
+incompleteness line. ⚠ **The wording is not DD-5's specimen**, because
+`src/save.c:1073` and `:1120` rename a *multi-point* `Operating Point` plot's
+`sim_type` to `dc`; the shipped sentence names what the loaded results call
+themselves. On the owed ledger as rule debt `1282_analysis_sentence_wording`.
+⚠ **And the sentence is a property of `rdw::dump`, not of `rdw::dump_devpath`**
+(issue **1298**): the door adds `sim` to the ctx and never `simtype`, so a
+caller building its own ctx — items B4 and B5 — loses the sentence silently.
+
+**Two refusals, not one** (`rdw::_sim_refusal`): *"no simulator named X is
+registered"* and *"X is registered but declares no `op_param_set` hook"* are
+different facts with different remedies. Membership is asked of
+`ase::backend_names` **before** `ase::backend_hook` is called, so there is one
+source of truth rather than a parsed error string.
+
+**B8. The text size — the `aA` control (issue 1368).**
+
+The user's own words: *"add a button to allow user to manipulate font size in
+RDW. it can be the 'aa' button you see in e-readers - 2nd a bigger. Key part, as
+soon as user hovers over it, tooltip should be displayed : click to increase
+font one unit. Ctrl+click to decrease font one unit"*.
+
+`.rdw.b.fontsize`, at the foot of B7's column and **deliberately outside
+`rdw::_buttons`** — it is not a list action, it is never greyed, and an entry in
+that table would put "aA" into the chrome sentence *"only Up, Down, Delete, Add
+and Save do anything"*. Plain click `rdw::font_step 1`, `<Control-Button-1>`
+`rdw::font_step -1 ; break`. The hover goes through `balloon`, the tree's ONE
+tooltip mechanism, carrying the user's sentence verbatim.
+
+> ✅ **ISSUE 1368, 2026-09-06 — BUILT, AND BOTH ONE-LINERS WERE DEFECTS.**
+> `.rdw.p.t` was `-font TkFixedFont`, and MEASURED on this binary a bare `text`
+> widget's default `-font` **IS** `TkFixedFont` — so `font configure TkFixedFont
+> -size N` is a **global** font control wearing a window-local label, moving the
+> attribute editor, the symbol-property editor, the text-input dialog,
+> editpaths, the graph dialog, the notify popup and the calculator buffer in the
+> same click. The pane and the `hdr` tag now own **private** named fonts,
+> `RdwPaneFont` / `RdwHdrFont`, derived from `font configure TkFixedFont` so the
+> family (monospace — the dumps are column-aligned with spaces) and any pixel
+> spelling are inherited. And the `hdr` tag was `font actual TkFixedFont`, a
+> font **description** and not a **name**: a FROZEN SNAPSHOT, measured at
+> linespace 17 while the pane had moved to 27, so every block header would have
+> stayed small while its body grew.
+>
+> **The model is the integer, never the font**: `font actual <f> -size` answers
+> POINTS for a font spelled in PIXELS (measured, `-14` → `10`), so a control
+> that increments what it reads back changes the user's units on the first
+> click. `::rdw_font_size` (`set_ne … 0` in `xschem.tcl`, the rc door) is the
+> record; `rdw::font_limits` is the band `{6 32}` in one place;
+> `rdw::_accept_size` **refuses** rather than clamps, which is also what keeps
+> `-size 0` — a LIVE value meaning "system default", measured at 12 here —
+> unreachable; `rdw::font_step` is the one arithmetic door and is **silent on
+> the accepted path**, speaking only at the two limits.
+>
+> **The pane is sized in CHARACTER units**, so `rdw::_apply_font` recomputes
+> `-width`/`-height` from the new metrics in the same breath as the font.
+> Without that, one step to size 20 measured `893x498+1025+557` →
+> `1757x914+161+141` — nearly the whole screen, re-placed by the window manager,
+> and it happens at OPEN time for a window built at a chosen size.
+>
+> **What does NOT follow the size**: the status line (`-font TkTextFont`), the
+> chrome label and the button labels keep the platform UI font. The pane is the
+> artifact the user pastes into a design review (ruling **DD-5**); the rest is
+> furniture whose scaling fights `rdw::_status_refit`, whose whole design (issue
+> **1362**) is "ask the widget, never a font constant". Arguable, and a pixel
+> question — rule debt **1368**, with the band and the button's placement.
+>
+> Persistence across a close and a reopen is free and is fenced; persistence
+> across SESSIONS is deliberately **not** shipped — the tree's own precedent
+> (`net_hilight_style`, `xschem.tcl:689-731`) writes that kind of preference
+> only on an explicit Save, "because it could change appearance in the user's
+> OTHER projects". Rule debt **1368**.
+>
+> Fenced by section **FZ** (FZ1..FZ11) of `test_rdw_window_1245.tcl`, ten
+> sabotages, `RW_FLOOR` 168 → 172. Pure Tcl: no new file, so the issue **0424**
+> Makefile trap does not apply.
 
 ### 4.3 The class map
 
@@ -830,28 +1760,628 @@ vertical_npn vertical_pnp                        -> bipolar
 
 Shipped as a default, **overridable and extendable in the settings file**, so a
 PDK with a token nobody anticipated is a one-line user fix and not a tool
-release. Question Q3 settles whether the class is what the lists key on, or
-whether flavor is the primary key with class as a fallback.
+release. ~~Question Q3 settles whether the class is what the lists key on, or
+whether flavor is the primary key with class as a fallback.~~ ✅ **Q3 is
+settled by DD-2: the class is the primary key and a flavor entry is an optional
+override that wins when present.**
+
+> ✅ **AS BUILT, item B2, 2026-09-03 — `src/op_param_lists.tcl`.** The map above
+> ships **verbatim and unextended**, as a namespace variable (`defaultmap`),
+> not a `switch`; row M3 fences that structurally.
+>
+> **⚠ AN UNMAPPED TOKEN IS ITS OWN CLASS — identity, never `{}` and never a
+> raise.** That is what makes the map an *override table* rather than a gate,
+> and it is what this section's one-line-user-fix promise actually rests on.
+> Measured `type=` tokens present in this tree and **not** in the map above:
+> sky130 `varactor`, `npn`, `pnp`, `pwell_resistor`, `p_diffusion_resistor`,
+> `n_diffusion_resistor`, `high_precision_p`; IHP `pnp` (**not**
+> `vertical_pnp`), `inductor`, `esd`; and `xschem_library` uses `type=` for
+> arbitrary part numbers (`2N3906`, `4001`, `12SK7`). The token space is open,
+> which is why a `switch` is provably wrong here.
+>
+> **The default was deliberately NOT extended with that census.** A map entry
+> is a *claim* that two tokens share one list; `varactor` → capacitor or `esd`
+> → diode are groupings no ruling covers, and inventing them is the shape D-4
+> forbids one level up. Each is a one-line `class` row in the settings file, as
+> this section promises.
+>
+> **⚠ THE MAP IS NOT ONTO, AND MUST NOT RAISE.** IHP registers `vertical_npn`
+> and **no** `vertical_pnp` although the map names both, and three of the five
+> classes — `resistor`, `capacitor`, `diode` — are registered by **no PDK in
+> this tree at all**. Each seeds to `{}` without raising (row S2).
+>
+> **⚠ `apply` GATES ON THIS MAP AND SO CANNOT REACH AN UNMAPPED TOKEN** — the
+> identity fallback works for `class` and `effective` and fails for `apply`,
+> leaving a stored, correct, **invisible** list. Issue **1279**, not fixed.
+
+#### 4.3.1 The class **key** and the class **display name** are two things (issue 1373)
+
+The right-hand side of the map above is the store's **primary key**. It indexes
+`lists`, `owned` and `warned`; `_flavor_matches_class` compares it with `eq`;
+and it is a **field the user types by hand** into `op_param_lists.conf`
+(`list class mos annotation`, `param class mos …`, `class nmos mos`). It is
+therefore **case-sensitive and immovable**: measured, `get_list class MOS
+annotation` is empty and `governs MOS annotation foo.sym` answers nothing.
+
+This spec has written **MOS** in prose since §2.2 and §3.4 while the
+implementation printed `mos` at every user-facing surface — the user's own
+report, verbatim: *"said add to all mos (why is that not uppercase? MOS is an
+acronym!)"*. So there is a second concept, and it is **display only**:
+
+* **`op_param_lists::class_label <class-key>`** is the ONE accessor. Table
+  lookup with an **identity fallthrough**, exactly like `class` above, so a key
+  the table has never heard of prints as itself rather than being mangled.
+* It ships `mos → MOS`, `npn → NPN`, `pnp → PNP`, `esd → ESD` and **nothing
+  else**. The rule is the user's — *acronyms upper case* — not *everything
+  upper case*: `class`'s identity fallthrough really does mint
+  `pwell_resistor`, `high_precision_p` and `subcircuit` from shipped `type=`
+  tokens, and a blind `string toupper` would shout all three. `resistor`,
+  `capacitor`, `diode` and `bipolar` are already their own human spelling and
+  reach the reader through the same identity return an unmapped key takes.
+  `set_class_label` is the rc extension door, matching `set_class`.
+* **It lives in the store, and there is no `rdw::` wrapper.** This file may not
+  call `rdw::` (source-time purity, §5), so an accessor over there could never
+  be reached by the store's own sentences — and a second copy is the
+  two-wordings drift `rdw::_list_name` exists to prevent. Every one of the
+  fifteen class interpolations in `rdw.tcl` calls this one proc.
+* **Where it must NOT be used**: any message that prints the class as a
+  *settings-file field the user types back* — `_dup_why`, `_key_why`,
+  `set_list`'s key reports, `seed`'s divergence report (which names the type
+  tokens beside it), and the parser's reports. A user who reads `MOS` there and
+  writes `list class MOS annotation` gets a silently dead entry. `MOS` has no
+  space, so unlike a two-word gloss it *looks* like a key; that is the whole
+  hazard.
+
+Fenced by rows CL1–CL5 of `test_op_param_store_1245.tcl` and CL6–CL10 of
+`test_rdw_window_1245.tcl`. The wrong-direction fix — routing a key-shaped
+store message through the accessor — reds the pre-existing row RD4.
+
+**Unratified, on rule debt 1373:** whether the table should also carry prose
+for the snake_case sky130 keys (`pwell_resistor` → "p-well resistor" and
+friends), and whether `bipolar` should read **BJT**.
 
 ### 4.4 The settings file
 
 Requirements the user stated: findable, editable by hand, shareable with
 teammates, written once per project.
 
-Proposed: **`<project>/.xschem/op_param_lists.tcl`**, with
-`~/.xschem/op_param_lists.tcl` as the user-global fallback and the project file
-winning. Written with the house **write-beside-and-move** pattern (issue 0937,
-`ase::sim_write_conf`) so an interrupted write never truncates the file. The
-window's title bar and a CIW line on every Save name the exact path, so
+> ⚠ **THIS SECTION CONFLATED TWO FILES AND IS CORRECTED BY DD-3.** There are
+> **two**: `src/op_param_lists.tcl` is the **implementation** (Tcl code,
+> shipped, sourced, installed); the **settings file** it reads is
+> `<project>/.xschem/op_param_lists.conf`, which is **data and is never
+> sourced**. The `.tcl` proposal struck through below was the vulnerability, not
+> the design.
+
+~~Proposed: **`<project>/.xschem/op_param_lists.tcl`**~~ →
+**`<project>/.xschem/op_param_lists.conf`**, with
+`~/.xschem/op_param_lists.conf` as the user-global fallback and the project
+file winning. Written with the house **write-beside-and-move** pattern (issue
+0937, `ase::sim_write_conf`) so an interrupted write never truncates the file.
+The window's title bar and a CIW line on every Save name the exact path, so
 "where is it?" is never a question.
 
-⚠ **Format.** A sourced Tcl file is arbitrary code execution, and issue 0812
-already burned this tree on `subst` and paths. Question Q8.
+~~⚠ **Format.** A sourced Tcl file is arbitrary code execution, and issue 0812
+already burned this tree on `subst` and paths. Question Q8.~~ ✅ **Q8 is
+settled by DD-3: data, never sourced.** The premise was measured rather than
+assumed — feeding a plausible shared conf to `ase::sim_load_conf`'s
+`uplevel #0 [list source $path]` idiom with the payload placed **first**, under
+a friendly `# share freely` header, gave `OPL_PWNED=1 marker_on_disk=1` and the
+Tcl error that followed was **cosmetic: the payload had already run**. A test
+row that only checked for a raise would have scored that file as safe.
+
+#### AS BUILT — item B2, 2026-09-03
+
+**The grammar.** Line-oriented, whitespace-delimited, **every row
+self-contained** so skipping a malformed row cannot silently reassign the rows
+after it. Blank lines and `#` comments skipped; a trailing `\r` trimmed
+defensively; `-encoding utf-8` pinned on **both** the read and the write
+channel with `-translation` left at `auto`.
+
+```
+version 1
+class <type-token> <broad-class>
+list  <scope> <key> <listname>
+param <scope> <key> <listname> <label> <rawparam> <kind>
+```
+
+* `scope` ∈ {`class`, `flavor`}; a `flavor` key is a **cell-name glob** matched
+  with `string match -nocase`, which is exactly the narrowing
+  `op_annot::_matches` already performs — not a second flavor concept.
+* `listname` ∈ {`annotation`, `summary`}.
+* `kind` is any integer. The store is deliberately **not stricter than
+  `op_annot::_wrap`**, whose default arm copies `token.c`'s *"anything but 0/1
+  → `v(`"*.
+* A `param` row **implicitly declares its list**, so a hand-editing user never
+  has to write the `list` line. `list` exists only to express an **emptied**
+  list, which stays empty rather than degrading to the PDK seed; a lost `list`
+  line therefore degrades to the seed, which is the safe direction.
+* Anything unrecognised — an unknown verb, a wrong field count, a non-integer
+  kind, an unknown scope or list name — is **reported and skipped**, and the
+  rest of the file still loads. An unknown `version` is reported and the file is
+  still parsed row by row.
+
+**⚠ THE VALUE TRIPLE IS `{label param kind}` AND ALL THREE FIELDS MUST SURVIVE
+THE ROUND TRIP.** `sky130A:401` and `gf180mcuD:107` both spell it `{id id 0}`;
+`ihp-sg13g2:758` spells it **`{id ids 0}`** — label `id`, param `ids`, **they
+differ**. A store that keeps only the name round-trips two PDKs *perfectly* and
+**silently rewrites IHP**. Any suite over this file that does not carry the IHP
+shape cannot see that failure.
+
+**⚠ FIELDS ARE SPLIT WITH `regexp -inline -all {\S+}`, NEVER `llength` /
+`lindex` ON THE LINE.** Measured: `llength "mos annotation { id 0"` **raises**
+`unmatched open brace in list`, so treating a teammate's line as a Tcl list
+lets a stray `{` kill the reader from inside. A parser its own input can raise
+in is not a strict parser.
+
+**⚠ THE ENCODING MUST BE PINNED, THE TRANSLATION MUST NOT BE.** Measured, same
+bytes, two locales: with `encoding system` = `utf-8` a line reads as 15
+characters; under `LC_ALL=C`, where it is `iso8859-1`, the **same bytes** read
+as 16. A file that travels between teammates is otherwise a different string
+depending on the reader's locale. CRLF, by contrast, is **already** handled by
+the default `auto` translation — copying the tree's `-translation binary` idiom
+(`ase.tcl:1625`, `xschem.tcl:7910`) would *reintroduce* the bug it looks like
+it prevents.
+
+**The tiers.** PDK seed → `~/.xschem/op_param_lists.conf` →
+`<project>/.xschem/op_param_lists.conf`, later winning. A missing file at either
+tier is the ordinary first-run case, not a failure. **The win is per
+`(scope, key, listname)`**, which *refines* DD-3's "per class": finer, never
+coarser, so a project file customising `mos annotation` no longer silently
+discards the user-global's `mos summary`. Unratified — **rule debt 1275**.
+
+**⚠ `<project>` MEANS `[pwd]`, AND THAT WAS B2's CHOICE, NOT A RULING.** There
+is no `<dir>/.xschem/` precedent in this tree. Measured: `xschem get
+current_dirname` **moves under a descend**, so a Save taken while descended into
+a PDK library cell would write the project file into the PDK tree and the next
+read, back at the top, would not find it — reader and writer silently
+disagreeing about a path the CIW names out loud. `[pwd]` is stable for a whole
+session and matches `xinit.c:3500-3515`'s `./xschemrc`. Unratified — **rule debt
+1273**; one proc to move.
+
+**List 3 (`all`) is never persisted** (D-4, and §4.2 B7 already greys its
+Delete). `owns` answers 0, `effective` answers `{}`, and a conf row naming it is
+reported and skipped with a sentence saying why.
+
+**Six defects measured in this implementation and NOT fixed**, all latent while
+the store is unwired, all inherited by B3/B5: **1276** (the writer reports
+success when the file went elsewhere), **1277** (the flavor glob wins by `lsort`
+order and carries no class), **1278** (an unbounded glob from a shared file
+freezes the consumer), **1279** (`apply` cannot reach an unmapped token),
+**1280** (`apply` narrows the deck's `.save` cards, blanking list 2), **1281**
+(Save exports the author's personal user-global settings into the team's file).
+
+### What item B2a measured about those six, 2026-09-03 — **attempted, then reverted**
+
+Item **B2a** implemented all six plus **1282–1284**, was green (store 39→56,
+window 32→43 / 42→53, seventeen sabotage variants each red on exactly their own
+rows), and was **reverted in full** after its adversary pass; the diff is
+preserved at `doc/claude/op_param_batch/B2a_working_tree_REVERTED.patch`.
+**The tree is still as B2 and B3 left it.** Four findings outlive the revert and
+are design-of-record:
+
+1. **DD-2's "the narrower entry wins" has no operational definition, and the
+   obvious one is wrong.** B2a ranked candidate globs by **fewest `*`**. Measured
+   on `sky130_fd_pr__nfet_01v8_lvt`, both insertion orders: `sky130_fd_pr__*` —
+   *the whole PDK* — beats `*nfet_01v8_lvt*`, and a bare `*` beats it too. Star
+   count is not narrowness. Rank by **literal (non-`*`) length**, or by
+   matched-prefix specificity, and fence it with a 1-star-vs-2-star pair; every
+   glob in the store suite today is 2-star, which is why the hole was invisible.
+
+2. **The flavor key still carries no class, and the fix is still free.** §4's
+   key is `{scope key listname}`, so `effective` scans flavors **across classes**
+   — a MOS flavor answers a `capacitor` query whenever its glob happens to match.
+   The fix adds a field to the settings grammar (**v2**, issue **1275**).
+   ⚠ **It stays an edit rather than a migration only until B5 writes the first
+   flavor row.** B2a's v2 also had a second, separate hole worth designing out
+   up front: it emitted the key by **interpolating a Tcl list representation**
+   and read it back by **splitting on whitespace**, so any glob carrying a list
+   metacharacter (`a[nm]fet*`, `a\*b`) round-tripped brace-quoted and could never
+   match again, with zero reports on either side.
+
+3. **A seam refusal legitimately carries only `state`.** The answer dict at §4's
+   table is documented as five keys, and the *shipped* ngspice backend populates
+   all five even when refusing (`src/ase.tcl:8781`) — but nothing requires that
+   of a **D-5** third-party backend, for which `{state no_raw}` is the natural
+   spelling. B2a's answer-validator treated an absent `devices` key as a
+   malformed answer and ran **before** the state check, so three correct refusal
+   sentences became one false accusation against the backend — a regression
+   against the shipped window. **The contract to write down: `devices`, `absent`
+   and `nonfinite` are OPTIONAL and default to empty; only `state` is required,
+   and a non-`ok` state is rendered from `state` alone.** ✅ **WRITTEN DOWN AND
+   IMPLEMENTED by item B2d, 2026-09-04** — see *"AS BUILT — item B2d"* at the end
+   of §4.2, and row F26, which asserts the ordering structurally.
+
+4. **`params` is BOTH the save list and the display list, so DD-4 needs a new
+   field** (issue **1285**, and it **blocks B5**). `op_annot::_cards_for`
+   (`op_annot.tcl:2808`) turns `dict get $d params` into `.save` cards, and
+   `op_annot::text` (`op_annot.tcl:1726`, params loop `:1741`) draws the on-sheet
+   rows from that **same list**. DD-4 says `apply` writes the **union** and the
+   **display narrows** — two different readings of one field, which no
+   implementation can satisfy. Either `op_annot::text` prefers a new descriptor
+   key over `params`, or it calls `op_param_lists::effective` directly. Both need
+   `src/op_annot.tcl`, which item B2a did not own.
+
+
+### What item B2a-2 measured about the same six, 2026-09-03 — **attempted, then reverted again**
+
+Item **B2a-2** applied B2a's patch unchanged, re-fixed its three refuted fixes,
+implemented ruling **DD-6**, and went green (store 39→**71**, window 32→**49** /
+42→**59**, ten sabotage variants, **red-before-green on every row**, Feature A's
+485/492 and 134 unmoved). It was **reverted in full** after its adversary pass;
+the diff — a **superset** of B2a's — is preserved at
+`doc/claude/op_param_batch/B2a-2_working_tree_REVERTED.patch` and applies clean
+to `849f2231`. **The tree is still as B2 and B3 left it.** Six findings are
+design-of-record, and the first two **correct this spec**:
+
+1. **⚠ CORRECTION TO FINDING 1 ABOVE: "rank by literal (non-`*`) length" DOES
+   NOT WORK EITHER, and this spec's own cited case refutes it.**
+   `sky130_fd_pr__` is **14** non-wildcard characters; `nfet_01v8_lvt` is **13**.
+   So literal length ranks that pair exactly the way star count did. **No
+   string-intrinsic metric separates a vendor prefix from a device name** — the
+   information simply is not in the two strings. B2a-2 implemented *most
+   non-wildcard characters, then fewest wildcards, then lexical* and it is still
+   wrong in a second way: **`?` is counted as a wildcard but its narrowing is
+   never credited**, so `_flavor_order {* ?*}` puts the bare `*` first and
+   `{*ab* ?ab?}` prefers the broader glob. **What the design must accept:** state
+   the implemented rule in the emitted file and make the fence *generate itself
+   from that sentence*, or DD-2's "narrower wins" keeps meaning whatever the last
+   implementer assumed. A settings file that documents a precedence its own code
+   does not implement is worse than one that says "first match wins".
+
+2. **⚠ A v2 flavor key is a two-element list used as an ARRAY INDEX, and must be
+   canonicalised at both doors.** Finding 2's quoting hole is real and B2a-2
+   fixed the *bytes* (emit class and glob as two separate unquoted fields, in
+   **both** the `list` row and the `param` row — keep that). But the **key
+   identity** hole is separate and remained: `set_list flavor {mos a[nm]fet*} …`
+   and the parser's `list`-built key are different indices, so a round trip
+   loses the entry, a re-set creates a **second** `owned` slot, and `write_conf`
+   then emits two conflicting rows one of which the reader silently discards.
+   **v1 had no such divergence** — a one-element key quoted identically from both
+   doors. **Build the key with `list` on the way in too.**
+
+3. **Finding 3's contract is CONFIRMED and was implemented correctly.** *"only
+   `state` is required, and a non-`ok` state is rendered from `state` alone"* —
+   B2a-2's implementation of it survived a 22-shape adversarial matrix with no
+   counterexample, including an answer that is not a dict at all. Two additions
+   worth writing down: **an answer with no readable `state` is itself malformed**
+   and should name the backend; and the *order* needs a **structural** fence
+   (read `format_answer`'s own body), because the ordering is the half a later
+   edit silently restores.
+
+4. **Finding 4 is settled by ruling DD-6, with two conditions this spec must
+   carry.** The new descriptor key is **`shown`**: `op_annot::text` prefers it
+   and falls back to `params`; `_cards_for`, `_claims` and `_kind` stay on
+   `params`; `apply` writes both. A descriptor declaring only `params` — all four
+   shipped PDK register sites — behaves exactly as before (**I7**).
+
+   > ⚠ **BOTH CONDITIONS THIS PARAGRAPH USED TO CARRY WERE WRONG, AND ITEM B2b
+   > SHIPPED SOMETHING ELSE.** They said (a) `shown ⊆ params` is *not* true "by
+   > construction", and (b) validate the key **where it enters (`register`),
+   > never where it draws**. The DD-6 amendment overrules the second outright
+   > (*"a key that does not parse as a list is treated as absent, full stop"*)
+   > and measurement refutes both:
+   >
+   > * **(a) is refuted by deriving the key differently.** The premise was
+   >   right — `_save_set` dedups by **label** while `set_list` still accepts a
+   >   duplicate label (issue **1288**, live and B2c's to fix) — but the
+   >   conclusion does not follow. `op_param_lists::_show_set` **filters the
+   >   union it is about to write into `params`**, keeping a triple iff its
+   >   label is among the annotation list's labels, so every element of `shown`
+   >   is *literally an element of* `params` for every input, 1288 or no 1288.
+   >   Copying the annotation list wholesale is what made (a) true, and that
+   >   copy is exactly what B2a-2 was refuted over. Attacked, not asserted:
+   >   `test_op_param_store_1245.tcl` row **D5** computes the membership under
+   >   1288's own duplicate-label input.
+   > * **(b) does not close the door it names.** MEASURED, two shapes:
+   >   `shown` = `{broken` makes even `llength` raise `unmatched open brace in
+   >   list`, but `shown` = `{id id 0} {d "x}` has `llength` **2** and raises
+   >   `unmatched open quote in list` only at the `lindex` of its second row —
+   >   so the `catch {llength …}` this sentence recommends leaves the second
+   >   shape wide open. And a register-side *raise* would reject the whole
+   >   descriptor, which is strictly worse than ignoring one key. What shipped
+   >   is `op_annot::_display_rows`, the `op_annot::_matches` idiom with the
+   >   catch enclosing **the `lindex` of every row**: malformed → absent → the
+   >   `params` rows draw. Row **D6** registers both shapes.
+   >
+   > The fallback deliberately hands back **nothing**, so `params` is still
+   > walked unvalidated and issue **0447**'s existing door is still open. A
+   > blanket catch there would close a filed defect by accident and turn it
+   > into a silently blank sheet; row **D7** and `test_op_annot`'s **K17** fence
+   > it from both sides.
+
+5. **`derived` is a THIRD consumer of the list and DD-6 does not mention it**
+   (issue **1289**). `op_annot::text` builds `vars` **inside** the loop the
+   ruling narrows, so a derived row whose operand was deleted renders **blank**
+   though the deck still saves it. Honest under **I3**, surprising to a user.
+   **Ruled on by DD-9 and implemented by item B2b**: `op_annot::text` builds
+   `vars` over `params` — what the run computed — and draws over `shown`, so a
+   derived row keeps its value when its operand is merely hidden. The params
+   loop stays the single place that reads the raw (no new `xschem` call), and
+   the narrowed rows are minted from that pass's label→value cache.
+
+   > ⚠ **"IHP ships exactly such rows (`gm/id`, `ft`)" IS FALSE ON THIS TREE**,
+   > as are issue 1289's lines 39 and 74 which say the same. MEASURED: all four
+   > shipped register sites — `sky130_procs.tcl:422`, `gf180_procs.tcl:128`,
+   > `sg13g2_procs.tcl:779` and `:829` (line numbers as of this edit; B2b's own
+   > comment block moved each down by 15) — carry `devpath`/`devproc` + `match` +
+   > `params` and nothing else; every `derived` in the three PDK files sits
+   > inside the **recovery-recipe comment**, because ruling D9 removed them, and
+   > `test_op_annot`'s gold table `P_DERIVEDACC` (`:904-911`) golds
+   > `derived` = `{}` for all seven shipped types. DD-9's substance is
+   > untouched — the fixture is **built** from that documented recipe under
+   > **I5**, which is what the recipe is for, and both named rows (`gm/id` and
+   > `ft`) are exercised by row **D4**.
+
+6. ✅ **DISARMED by item B2e, 2026-09-04 (ruling DD-13, issues 1312/1287).**
+   `_params` — and therefore `seed` — now reads a **third** descriptor list,
+   `declared`, which `op_annot::register` alone writes and nothing else can
+   reach; `apply` still writes `params`. **D-7's "the seed comes from the PDK"
+   is true again, after any number of applies and after `reset`.** Kept below
+   because the *class* of trap is live for every future field: a ruling that
+   assigns a meaning to a stored field is a statement about **every reader of
+   that field**, and this one was refuted three times running.
+   ~~**`seed` reads the field `apply` overwrites** (issue **1287**), so **D-7**'s
+   "the seed comes from the PDK" is false after the first apply and `reset`
+   cannot restore it~~ — measured `{id id 0} {gm gm 1} {gds gds 1}` before,
+   `{id id 0}` after apply **plus reset**. DD-6 makes the stale seed the *union*,
+   i.e. silently wider. **Any acceptance row that applies and then asserts a seed
+   is fencing the wrong value**; capture it in a fresh process first.
+
+7. **`apply` now reaches the PDK seed, and therefore raises on a malformed one**
+   (issue **1291**, opened by item B2b). `_save_set` / `_show_set` walk
+   `effective`, which falls through to `seed` for an unowned list and returns the
+   registered `params` **string, verbatim and unvalidated**. Measured A/B on
+   issue 0447's own shape: HEAD `rc=0` writing a clean `params`, after B2b
+   `rc=1 unmatched open brace in list` and nothing written. Latent — `apply` has
+   no caller until **B5** — but **B5 must not wire a button to this** before it
+   is settled. Recommended: skip the class and `_say` why, the way `apply`
+   already handles a failing `register`. **Never** treat a malformed seed as
+   empty: that silently drops the PDK's rows out of the union and breaks the
+   union's own superset guarantee.
+
+8. ✅ **DISARMED by item B2e, 2026-09-04 (issue 1292).** `apply` now RECORDS
+   what it wrote, per type, and on a later `apply` over a class nobody owns any
+   more it **un-does exactly its own write, in full or not at all** — including
+   `dict unset`ing `shown`, which no verb could do before. `reset` + `apply` is
+   therefore a working Reset/Defaults, and it bumps `::op_annot::gen` so the
+   redraw is live (invariant **I5**). The undo fires only while both fields are
+   still byte-identical to what apply left; anything a third party rewrote is
+   dropped from the record and left alone. **The absence of `shown` is still
+   meaningful and that is exactly why the record stores `{present value}` pairs
+   rather than values.** Residual: issue **1317** (the byte-equality guard is
+   not provenance) and issue **1318** (the return list now conflates narrowed
+   with restored).
+   ~~**Narrowing is one-way** (issue **1292**). Nothing removes the `shown` key,
+   and `apply` deliberately `continue`s a class the user owns nothing for, so
+   `reset` + `apply` leaves the sheet narrowed for the session. `shown`'s
+   **absence is meaningful** — it is the only value that means "draw every row" —
+   so "leave the descriptor alone" and "restore the PDK's behaviour" are
+   different outcomes and only the first is reachable. **B5's Reset button
+   cannot be built on `reset` + `apply` as it stands.** The honest fix is the
+   pristine-descriptor stash that issue **1287** already needs.
+
+9. **One `params` label, two rows, two answers** (issue **1293**). The
+   label→value cache the narrowed rows are minted from is FIRST wins;
+   `_evalrow`'s binding loop is LAST wins. Unreachable through `apply` (it dedups
+   by label, which is also what makes the subset hold under **1288**), so it
+   needs a hand-written descriptor or a PDK rc. Decide it with 1288, not alone.
+
+---
+
+### What item B2c measured about the settings file, 2026-09-03 — **attempted on DD-7/DD-8, then reverted**
+
+Item **B2c** was the deliberately small re-do of the two issues that had been
+implemented and refuted twice (**1277**, **1281**) plus two smaller ones
+(**1276**, **1288**), on the driver's settled designs **DD-7** (Save is a
+read-modify-write of one tier's own file) and **DD-8** (precedence is file
+order; nothing is ranked). It went green everywhere and was **reverted for issue
+1294**. Code preserved at
+`doc/claude/op_param_batch/B2c_working_tree_REVERTED.patch`.
+
+**What is now SETTLED and should be written into the design rather than
+re-derived:**
+
+* **§4.4's precedence is FILE ORDER.** Any earlier wording in this spec implying
+  the *narrower* or *more specific* glob wins is **wrong and overruled by
+  DD-8**. `"narrower"` has no defensible total order over globs — is
+  `sky130_fd_pr__*` narrower than `*nfet_01v8_lvt*`? Neither contains the other.
+  Two crews ranked and both shipped a bare `*` beating a specific pattern. The
+  store therefore needs an **insertion-order list** (`keyorder`), because a Tcl
+  array has no order and `lsort` is what both crews fell back to.
+* **A flavor entry carries a CLASS.** `effective <class>` must not scan another
+  class's flavors. That half of issue 1277 stands under DD-8; only the ranking
+  dies. The store key stays a **three**-element list whose middle field is the
+  two-element `{<class> <glob>}`, so `lindex $k 2` is still the listname.
+* **The key must be canonicalised, at exactly one door.** An uncanonicalised
+  two-element list used as an array index is how B2a-2 lost entries on a round
+  trip. `[list [lindex $key 0] [lindex $key 1]]` is idempotent for every
+  metacharacter shape measured.
+* **Metacharacters need no rejection arm.** Emit the flavor's class and glob as
+  **two separate unquoted fields**; nine of ten shapes already round-trip at v1
+  and the corruption is *created* by interpolating a two-element key whole.
+  Refusing would cost `[nm]` and `\*`, both documented `string match` features.
+* **The file must document its own precedence, and the fence must be GENERATED
+  FROM the emitted comment** — regexp the worked example out of a freshly
+  written file and build the case it describes. Both previous crews wrote
+  *"narrowest matching glob wins"* into every file they emitted **while
+  implementing something else**. This is the one row that catches that, and it
+  is cheap.
+
+**⚠ THE NEW CONSTRAINT DD-7 DID NOT STATE, AND IT IS THE REASON B2c FAILED
+(issue 1294):**
+
+> **Under a read-modify-write, the writer's row classifier must be EXACTLY as
+> strict as the reader's parser.**
+
+DD-7's safety argument is *"you cannot delete a row you never parsed into a
+model."* That holds **only while the writer cannot IDENTIFY a row the reader
+refused to parse.** B2c's `_row_id` validated verb → scope → arity and stopped,
+while `_parse_line` also ran `_valid_list`, the livelist guard and `_triple`. So
+`param class mos annotation NEWROW raw ratio` was rejected by the reader,
+**identified** by the writer, and deleted when its key was dirty — rc=1, zero
+reports, the exact signature that killed B2a and B2a-2. Any laxity in the
+classifier converts DD-7 from a preservation mechanism into a deletion
+mechanism, silently.
+
+**And the fixture that would have caught it:** a "row this build does not
+understand" must be a **known verb with an unreadable field**, not an unknown
+keyword. An unknown keyword is the easy case every crew writes, and it is the
+one class the classifier genuinely cannot identify. B2c's row T4 used
+`sometotallyfuturerow whatever 1` and passed while the promise was false.
+
+**Two more properties of the DD-7 shape, measured and filed:**
+
+* **Line endings are not preserved** (issue **1295**). Reusing the parser's
+  preamble (`string trimright \r`) is right for a parser and wrong for a
+  preserver: a teammate's CRLF file comes back all-LF with zero reports, making
+  every save a whole-file diff. Either record the dominant ending and re-emit
+  it, or say so in the header. An interleaved comment inside a rewritten group
+  also moves.
+* **An existing file never gains the header** (issue **1296**, **needs a
+  ruling**). "Emit the header only into a file with no lines" is forced by DD-7
+  and fenced by the same-path byte-identity row — and it collides with "the file
+  documents its own precedence", because every file is a pre-existing file from
+  its second save onward.
+
+**Two API shapes that are now pinned by existing green rows** — a direct
+`load_conf` must stamp its keys session-dirty while the two-tier startup `load`
+must not (or the five copy-a-file rows go red or vacuous), and both
+`load_conf {path {stamp 1}}` and `write_body {fp {old {}}}` must keep their
+**required** arity at one argument.
+
+---
+
+### AS BUILT — item B2e, 2026-09-04: the descriptor carries **THREE** lists, and the union has **THREE** inputs
+
+**Ruling DD-13 implemented. Issues 1312, 1292 and 1287 are FIXED.** This is the
+third correction to the same ruling (DD-4 → DD-6 → DD-13) and the spec's earlier
+two-field description of the store is superseded by this section.
+
+#### The three lists
+
+| field | means | written by | read by |
+|---|---|---|---|
+| `declared` | what the PDK, or the user's own rc, **declared** | `op_annot::register` **only**, via `op_annot::_declare` | `op_param_lists::_params` **only** — hence `seed` |
+| `params` | what the **run computes** | `op_param_lists::apply` (the union) | `_cards_for`, `_claims`, `_kind`, and `text`'s `derived` operands |
+| `shown` | what the **sheet draws** | `op_param_lists::apply` (the annotation half) | `op_annot::_display_rows` → `op_annot::text` |
+
+`declared` and `shown` run in **opposite directions**, and that is the point:
+`shown` is written by `apply` and read by `op_annot`; `declared` is written by
+`op_annot` and read by `op_param_lists`.
+
+#### The stamp is PRESERVE-IF-PRESENT, and that is the whole design
+
+`register` puts a `declared` on a **non-empty** descriptor that does not already
+carry one — its own `params` verbatim when it has one, `{}` when it does not —
+and leaves an existing one **alone**. That single rule is what makes `apply`
+*structurally incapable* of destroying a declaration: `apply` reads a
+descriptor, sets `params`/`shown` on it and re-registers, so the key rides
+through untouched and `apply`'s body never names it. **Built, not asserted** —
+the standard the DD-6 amendment set with `_show_set`.
+
+Two pre-existing fences constrain the stamp and both still hold: the **empty
+dict is never stamped** (`register <t> {}` is the documented erasure), and the
+stamp **never parses the value** (`dict exists`/`dict get`/`dict set` only —
+test_op_annot row K17 registers a `params` holding an unmatched open brace and
+golds an rc=0 register). Validation stays where it always was, in `_params`,
+whose two `does not parse` reports moved with the read and now name **which**
+list was dropped.
+
+**ABSENT means the old behaviour exactly**: `_params` falls back to `params`, so
+every descriptor that never passed through `register` answers the bytes it
+always answered (invariant **I7**). All four shipped register sites — sky130
+`:422`, gf180 `:128`, IHP `:779` and `:829` — pass a literal dict with no
+declaration key, so the stamp fires for each and nothing shipped moved.
+
+#### ⚠ THE UNION HAS A THIRD INPUT, AND THE SPEC PREVIOUSLY SAID IT HAD TWO
+
+`apply` unions the class's annotation and summary lists with **the type's own
+declaration, appended LAST** (`_merge_declared`). **DD-13's own table does not
+say this; DD-4's guarantee sentence requires it.** The declaration key alone
+fixes the *seed* and still leaves item B5's other measured harm alive: with both
+lists owned, the union of the two has no row for a deleted parameter, so
+`_cards_for` drops the `.save` card and — under measured rule **R1** — the
+simulator stops computing it. That is the outcome DD-4 exists to forbid, and
+DD-4 states its own price: *"a user who deletes a row to make the deck smaller
+does not get a smaller deck."*
+
+* **LAST, not first**, because `_show_set` filters the union *in union order*, so
+  a declaration placed first would freeze the drawn order — which is exactly
+  what DD-13 rejected its option (b) for, and what B5's Up/Down exist to change.
+* **The TYPE's own declaration, not `seed $cls`**, because `seed` is
+  first-lexical-wins across the class and merges nothing, so a sibling type that
+  declares differently would lose its own rows.
+* **Nothing is invented (D-4):** every appended row was declared by the PDK or by
+  the user's own rc, and a malformed row is skipped rather than guessed.
+
+**The user-visible consequence, stated plainly:** *a Delete can never shrink the
+deck below what the PDK declared, for any user.* That is DD-4 behaving as ruled
+rather than a new decision — but the mechanism is new and is recorded here
+because DD-13's table does not name it.
+
+#### The issue-1292 undo
+
+Namespace variable `op_param_lists::applied`, one entry per type this session's
+`apply` rewrote, holding the **pre**-apply and the **written** `{present value}`
+state of `params` and `shown`. On a later `apply` over a class nobody owns any
+more, the undo restores both — SET when present, `dict unset` when absent —
+through `::op_annot::register` and through nothing else, because that is the only
+door that bumps `::op_annot::gen` (**I5**). It fires only when **both** fields are
+still byte-identical to what apply wrote; anything else is dropped from the
+record and left alone. **`reset` does NOT clear the record** — `reset` + `apply`
+IS the undo it exists to serve — and bare `apply`'s candidate set is
+`[array names classmap]` + `[array names applied]`, because `reset` wipes
+`classmap` back to the shipped map.
+
+**The pre-state is captured once and then HELD**, so N applies undo to the state
+before the **first** of them. That is not obvious and it was not free: the first
+implementation passed the live variable `$d`, which Tcl's `dict set` had already
+written back into, so every record's pre-state equalled its own write. **The
+suite was ALL PASS at 102 with that bug in** — rows N6 and N11 cannot reach the
+state that distinguishes the two. An out-of-suite 40-edit probe caught it.
+
+#### What is still open, and where
+
+Issues **1315** (STATUS E, a `rule` debt: the documented I5 round-trip no longer
+redeclares the seed), **1316** (rows N11 and N12 fence less than they claim),
+**1317** (`_restorable` is byte-equality, not provenance), **1318** (`apply`'s
+return list conflates narrowed with restored — **binds B5-2**), **1319** (the
+malformed-list report doubled for the common ownership shape) and **1320** (both
+lists owned and EMPTY now yields the full declaration in `params`, which
+**falsifies** the note that said it would yield none).
 
 ---
 
 ## 5. Contracts and invariants
 
+* **I-TIER (added by B2a-2, 2026-09-03).** **Writing one tier's settings file
+  must never remove a row that the file being written declared** — not a row
+  belonging to the other tier, and **not a row belonging to the tier being
+  written**. B2a leaked; B2a-2 fixed the leak and then deleted a user's own
+  explicit `class nmos mos` because the value happened to equal the shipped
+  default (`rc=1`, **zero reports**, the file left holding `version 2` alone).
+  The override-compression that skips a default-valued row is fair for a row the
+  store **synthesised** and is data loss for a row the user **typed** — the store
+  must tell those apart, and a fence must construct a tier conflict on a
+  **default-valued** token, which is the case both attempts left invisible.
+* **I-CLASSIFIER (added by B2c, 2026-09-03 — the constraint DD-7 does not
+  state, and the reason B2c was reverted).** **Under a read-modify-write, the
+  writer's row classifier must be exactly as strict as the reader's parser.**
+  DD-7's whole safety argument is *"you cannot delete a row you never parsed
+  into a model"*, and that is true only while the writer cannot **identify** a
+  row the reader refused. A classifier that validates fewer gates than the
+  parser will identify — and therefore rebuild, and therefore delete — precisely
+  the rows the parser threw away, with `rc=1` and no report. The only shape that
+  cannot drift is **one builder called by both doors** (invariant I1, one level
+  down). And the fence must use a **known verb with an unreadable field**: an
+  unknown keyword is the one class every classifier rejects anyway, so a fixture
+  built from one passes while the promise is false.
+* **I-BYTES (added by B2c).** *"Preserved verbatim"* means **bytes**, not rows.
+  A preserver that reuses a parser's line-splitting preamble silently normalises
+  line endings and loses a missing final newline; a merge that replaces a group
+  at its first line silently moves any comment that sat inside the group. Either
+  preserve them or state the transformation in the emitted header — but do not
+  write *"exactly as you wrote it"* over a writer that does neither.
 * **I1 (inherited).** One vector-name builder. Every consumer goes through
   `op_annot::devpath` / `op_annot::vector`. A list editor that lets the user type
   a parameter name must not become a second builder.
@@ -879,7 +2409,44 @@ owed ledger as a `rule` debt at the moment this spec lands.
 * ~~**Q7** — one instance, many primitives?~~ **RULED D-3**: print all of them.
   §3.6 shows `.options savecurrents` finds them for us.
 
+* ~~**Q3** — do the lists key on the broad class, or on the device flavor?~~
+  **RULED DD-2**: the class is the primary key; a per-flavor entry is an optional
+  override that wins when present. Both kinds exist, or §4.2 B7's scope dialog
+  has nothing to write. Implemented by item **B2**; ⚠ the flavor arm's
+  precedence is issue **1277**.
+* ~~**Q8** — what format is the settings file?~~ **RULED DD-3**: a line-oriented
+  **data** file, never sourced, read by a strict parser that does no `source`,
+  no `eval`, no `subst` and no substitution of any kind. Anything unrecognised is
+  reported and skipped, never executed. Grammar as built in §4.4. ⚠ **The
+  ruling names the tier and leaves the *word* `<project>` undefined, and does not
+  state the grammar** — those are `rule` debts **1273** and **1275**, raised by
+  item B2 and still owed.
+
 Still open:
+
+* **Q16 — is the project settings file found beside the directory xschem was
+  LAUNCHED from, or beside the schematic being edited?** (added by item B2,
+  2026-09-03; `rule` debt **1273**; **this is item B2's status-E question**).
+  B2 shipped `[pwd]/.xschem/op_param_lists.conf` on ladder L2, because
+  `xschem get current_dirname` **moves under a descend** — a Save taken inside a
+  PDK library cell would write the project file into the PDK tree and the next
+  read, from the top, would not find it — while `[pwd]` is stable for a whole
+  session and matches `xinit.c:3500-3515`'s `./xschemrc`. **The cost of the
+  choice, stated:** the file a teammate is meant to find depends on the *launch
+  directory*, not on where the design lives, so cloning a project and starting
+  xschem from `$HOME` silently finds no project settings at all. The rejected
+  alternatives are `current_dirname` (moves) and the top-of-hierarchy
+  schematic's dirname (no Tcl accessor exists, and minting one is `op_annot` /
+  `scheduler` work B2 does not own). It is one proc to move, and **B3 and B5
+  must both resolve the path through `op_param_lists::conf_path project`** so
+  that overruling it stays one edit.
+* **Q17 — does removing a parameter from the annotation list stop *drawing* it,
+  or stop *saving* it?** (added by item B2, 2026-09-03; issue **1280**).
+  Measured coupling, not a preference: `op_annot::_cards_for` emits one `.save`
+  card per `params` row and `op_param_lists::apply` writes the annotation list
+  into `params`, so a Delete on list 1 today stops the deck saving what list 2
+  asks for, and those rows go permanently blank with no report (rule R1,
+  invariant I3). The question belongs with the item that ships Delete — **B5**.
 
 * **Q11 — the declutter's three status sentences** (added by item A1,
   2026-09-02; `rule` debt **1244**). `cadence::_annot_declutter_msg` mints one of
@@ -893,16 +2460,53 @@ Still open:
   cell does not include `utils/annot_mode.tcl`, so the wording is written once,
   there, or never. The rejected alternative was a placeholder sharpened by A3,
   which would make A3 edit a file it does not own.
-* **Q12 — does the declutter reach a registered device that got NO numbers?**
-  (added by item A3, 2026-09-02; `rule` debt **`1244_A3_blank_valued_block`**;
-  **this is item A3's status-E question**). D-6 says "only instances that got OP
-  numbers". The shipped gate is "the descriptor resolves and declares at least one
-  row", because that is exactly what the overlay paints — so a registered FET over
-  a dead or partial raw is decluttered **while its block shows `zid =` with no
-  number**. Per measured rule **R1** that is common, not exotic. The alternative
-  needs a second parser of the block's format (two builders, against **I1**) and
-  would let a sheet show an OP block over parameters it had decided not to hide.
-  See §4.1 A3b.
+* ~~**Q12 — does the declutter reach a registered device that got NO numbers?**~~
+  **ANSWERED NO by driver ruling, item A5-a, 2026-09-02.** D-6 says "only
+  instances that got OP numbers", and a label with no number did not get one. The
+  gate now requires at least one row carrying an actual value; a registered FET
+  over a dead raw — or with no raw loaded at all — keeps every one of its texts.
+  `rule` debt **`1244_A3_blank_valued_block`** stays on the user's queue as
+  confirmation. See §4.1 A3b for the mechanism, the deliberate disagreement with
+  `get_annot_overlay()`, and the two remaining slips (issues **1258**, **1259**).
+* **Q15 — with NO results file, `Ctrl-Alt-6` now hides nothing, but the status
+  line still says other device text is hidden** (added by item A5, 2026-09-02;
+  `rule` debt **1257**; **this is item A5's status-E question**). The gate moved
+  (A5-a) and `cadence::_annot_declutter_clause` did not — it is gated on bit 3 AND
+  bit 0 only, and lives in `utils/annot_mode.tcl`, item A4's landed file, which
+  item A5 does not own. Should the clause **follow the gate** (say nothing when
+  nothing was hidden), or should the press be **refused outright** with "Run a
+  simulation first"? Row **E6** golds the gap on purpose, so it stays visible.
+  ⚠ **ANSWERED 2026-09-02 by the DRIVER, and NOT YET LANDED.** The ruling is
+  *"the clause follows the gate — emitted only when something was actually
+  hidden"*, and the press is **not** refused (a mode you cannot arm before
+  simulating would be worse than one that says it is waiting): three states,
+  three sentences. Item **A7-a** implemented exactly that, was **refuted** by its
+  own adversary pass and **reverted** — see issue **1270** and the A7 entry in
+  `PLAN.md`. So Q15 is no longer an open *question*; it is unlanded *work*, and
+  row **E6** still golds the gap.
+  ⚠ **AND THE RULING'S OWN PREMISE IS OFF BY ONE: THERE ARE FOUR STATES.**
+  Measured by A7: (1) no raw (`raw loaded` -1); (2) **dead raw** — loads and
+  annotates, publishes no matching vector; (3) valued raw; (4) valued raw whose
+  only non-`@name` text was **already invisible** (`hide=instance` / `hide=true`).
+  States 2 and 4 both hide nothing while every mask-shaped and `_annotated`-shaped
+  test says otherwise, and state 4 is what refuted A7. A re-run must drive all
+  four; three sentences still suffice, because 2 and 4 both take the armed one.
+* **Q14 — the clause the OTHER four chords now carry** (added by item A4,
+  2026-09-02; `rule` debt **1251**; **this is item A4's status-E question**).
+  After a `Ctrl-Alt-6`, every `6` / `Alt-6` / `Alt-Shift-6` press appends
+  *" Decluttering is on, so other device text is hidden."* — 52 bytes, whenever
+  bit 3 **and** bit 0 are both set, **in every state, including a press that
+  found no results file**, because the sheet is stripped there too (§4.1, item A4's
+  landing note). `Ctrl-Alt-6` already said the long version at the moment the bit
+  was armed (Q11). Is that the right reminder on the other keys, should it be
+  shorter, should it repeat the way out, or should the other keys stay silent?
+  ⚠ **The 255-byte status bar is why it is not longer**, and the three rejected
+  wordings are costed in issue **1251**: `" Device parameters are hidden."` (30 B)
+  names a class **D-1 explicitly rejected**; the precise per-device form (98 B)
+  puts mask 3 + `loaded` over the wall at this suite's own path; the
+  remedy-bearing form (114 B) is eaten by the elision exactly where it would be
+  needed. A1's three sentences (Q11) are **not** reworded — this composes with
+  them.
 * **Q13 — after item A3's 1247 fix, may a declutter press adopt an rc-armed
   mask?** (`rule` debt **`1244_A3_rc_armed_stamp`**). `annot_show_set()` now
   declines to stamp `xctx->annot_root` when the write moves the declutter bit
@@ -922,12 +2526,61 @@ Still open:
   slash-separated with the leading and trailing dots stripped — and put the
   raw's own device path on a second, dimmer line, because that is the string a
   user pastes into ngspice. Recorded as a `look` debt, not a blocker.
-* **Q10 — does the RDW work on the ordinary post-run desktop?** `update_op()`
-  refuses to publish when `sim_type` is not `op`/`dc` (`save.c:3680`). The
-  annotation nevertheless works with OP **and** TRAN enabled, because the raw
-  registry holds a separate op slot — that is the configuration issue 1243 was
-  measured in. **To be verified, not assumed**, as the first check of the RDW's
-  suite. Entangled with the open `rule` debts **1240** and **1243**.
+  ✅ **IMPLEMENTED AS THE DEFAULT by item B3, 2026-09-03 — NOT re-litigated.**
+  `rdw::_cadence_path` is `string map {. /} [string trim $schpath .]`, kept
+  rooted, so `.xdut.xbg.xamp1.` → `M2B:/xdut/xbg/xamp1`; line 2 is
+  `op_annot::devpath`'s own string, dimmed (`option get . disabledForeground`).
+  ⚠ **At the top sheet `sch_path` is `.` and the trim yields the empty string, so
+  the header degenerates to `M1:/`** — an edge nobody has ruled, chosen by ladder
+  L2 to keep the header's shape constant with depth (two pastes from different
+  sheets still align), and now locked by suite rows `H1`/`H2` so it cannot drift
+  silently. `sim_sch_path` was rejected: it strips every level above where the
+  raw was loaded, so the header would stop matching the schematic on screen.
+  **The `look` debt stays open — it is the spelling that needs eyes, and B3's own
+  `look` debt points at it rather than duplicating it.**
+* **Q10 — does the RDW work on the ordinary post-run desktop?** ✅ **ANSWERED
+  YES, MEASURED by item B1 with real ngspice, 2026-09-03.** `ngspice -b -r
+  <raw> <deck>` on a deck carrying `.op` then `.tran` writes **one** file holding
+  **two** plots (`Operating Point`, 1 point; then `Transient Analysis`).
+  `xschem raw read <f>` with no `sim_type` argument lands on the **op** plot,
+  `xschem annotate_op <f> 0` publishes (`raw annot` = `0 0 -1`), and
+  `raw value <v> -1` returns real device-parameter numbers — so `update_op()`'s
+  op/dc guard (`src/save.c`, and note the guard is **not** at the `:3680` this
+  line quotes) is never reached with `sim_type=tran` on that path. **The RDW is
+  reachable after an ordinary OP+TRAN run.** Two measured caveats: on the
+  `.control` + `write` writer the second `write` **overwrites** the first without
+  `set appendwrite`; and once the tran slot is read it becomes **current**, at
+  which point `raw list` and `raw value` answer about the transient — the seam
+  reads whatever slot is current and chooses none. B3's suite should now **assert**
+  this rather than ask it. Still entangled with the open `rule` debts **1240** and
+  **1243**.
+  ✅ **ASSERTED by item B3, 2026-09-03** — suite row `Q1`: one raw holding an
+  `Operating Point` plot **then** a `Transient Analysis` plot, read with
+  `annotate_op`, gives `sim_type=op` and renders its six real numbers with the
+  honesty line. It is a check now, not a question. ⚠ **But the adjacent state is
+  a live defect:** the allow-list is `{op dc}`, so a **dc** slot answers `ok` and
+  the window calls it an operating point — issue **1282**. ✅ **FIXED by item
+  B2d, 2026-09-04** (rows F14, F15, Q6) — and it brought a new question with it.
+
+* **Q18 — is the analysis sentence's wording right?** (added by item **B2d**,
+  2026-09-04; `rule` debt `1282_analysis_sentence_wording`; **this is item B2d's
+  status-E question**). Ruling **DD-5** decided that a `dc` answer is still
+  rendered and that the block names the analysis, and that decision is
+  implemented unchanged. **Its quoted specimen wording is refused, on a
+  measurement**: `src/save.c:1073` and `:1120` both rename a MULTI-POINT
+  `Operating Point` plot's `sim_type` to `dc`, so *"these numbers come from the
+  `dc` analysis at its first point, not from a standalone operating point"*
+  would tell a user who ran nothing but an operating point that they ran a
+  sweep — reproduced on a real three-point raw by row Q6. What ships instead:
+  *"These numbers come from the first point of results xschem reports as a `dc`
+  analysis, not as a standalone operating point. A `dc` sweep's first point is
+  one sweep step, and xschem also reports a multi-point operating point as
+  `dc`."* It names what the loaded results **call themselves**, which is true in
+  both cases and asserts nothing stronger. **Accept that wording, or give
+  different words?** ⚠ Four more sentences went on screen with it and no ruling
+  covers their wording either (`rule` debt `1284_four_new_sentences`): the
+  malformed-answer sentence naming the backend, the two split simulator
+  refusals, and `(no value reported)`.
 
 ---
 
@@ -978,7 +2631,29 @@ Still open:
     writing a fourth copy (invariant I1). Item A3 touches all three files.
 11. **A zero-length vector is not a zero.** `savecurrents` publishes `ig`/`is`/
     `ib` as `0 long` on sky130 FETs, and an explicit `save …[ib]` card gives a
-    `dims=0` column of `0.0`. Both are *absent*, and neither says so on stderr.
+    `dims=0` column of `0.0`. Both are *absent*.
+    ⚠ **CORRECTED 2026-09-02 by item A6, measured against ngspice 45.2 — this
+    landmine used to end "and neither says so on stderr", and that is false in
+    both directions.** There are **three** flavours and they behave differently:
+    * **`dims=0`** — the `.control` + `write` path. The **file** says so, in the
+      third tab-separated field of the `Variables:` line, and that is the only
+      in-file carrier. Item A6-b parses it (`raw_line_dims_zero()`) and publishes
+      it through `raw_vector_absent()`; `xschem raw value <v> -1` then answers
+      **empty** and invariant I3 is satisfied.
+    * **no marker at all** — the batch `-r <file>` writer, which is what
+      `src/xschem.tcl:3854` runs. The same unsatisfiable card arrives as an
+      **ordinary `current` column of 0.0**, byte-identical to a measured zero;
+      ngspice warns `unrecognized variable` on **stderr**, which xschem never
+      reads. **This flavour is not closed** — issue **1263** — so a
+      `savecurrents` run through the shipped simulate command still declutters.
+    * **genuinely zero-LENGTH** — `write` refuses the **whole plot**
+      (`no writable vector found`) and produces **no raw at all**, in one form
+      segfaulting. So this state never reaches xschem as a vector — issue
+      **1264**, and it is landmine 12's shape reached through an *option line*
+      rather than a wildcard `save` card.
+    A **real computed 0.0** is none of these and must still render `0`: a
+    transistor that is off has `id = 0` and that is a measurement, not a hole.
+    Collapsing absent and zero in **either** direction is a defect.
 12. **`save m`, `save @m*[*]` and friends do not merely fail — they destroy the
     plot.** A card that matches nothing takes the whole operating point with it
     (R5's all-bogus case), so an over-eager wildcard is worse than no wildcard.
@@ -996,6 +2671,205 @@ Still open:
     has **four**. So the gate can be stale exactly where the pick is computed
     (issue **1252**) — the same staleness shape as issue 0453. Any item that picks
     an instance by coordinate must refresh the bboxes first.
+    ⚠ **UPDATED 2026-09-02 by item A6-c.** The repair went **inside the callee**:
+    `symbol_bbox()`'s own prologue pulls the mask (`annot_show_pull_cache()`,
+    without the 0688 backstop, which can *clear* the mask and must not ride a
+    geometry verb) and, **behind the declutter bit**, syncs the overlay epoch. All
+    39 callers are therefore fresh, and issue 1252's rejection of exactly this
+    option is **deliberately reversed**, with both of its reasons answered:
+    re-entrancy is already closed by `annot_overlay_busy`, and the bit-3 prefilter
+    makes the sync a measured no-op whenever the declutter is unarmed.
+    **The "refresh the bboxes first" instruction still stands anyway**, because
+    `xschem annotate_op` and `xschem raw clear` move the gate's answer while
+    calling `symbol_bbox()` not at all — issue **1266**.
+15. **"Did the declutter hide anything?" cannot be answered by the mask, by
+    `op_annot::_annotated`, or by the rung's `return 1`** (item A7, issue
+    **1270**). The mask stopped meaning "the sheet is decluttered" when the value
+    gate landed. `_annotated` answers **1** on a dead raw — one that loads and
+    annotates but publishes no matching vector — exactly as on a valued one, and
+    `cadence::annot_mode`'s `state` reads `live` there too, so **no Tcl-visible
+    signal separates the states**. A C measurement is required. But the obvious
+    place to take it is wrong: `text_hidden_core()`'s declutter `return 1` sits
+    **above** the `show_hidden_texts` / `HIDE_TEXT` / `HIDE_TEXT_INSTANTIATED`
+    arms, so a counter bumped there answers *"the rung said hide first"*, not
+    *"this text would otherwise have been drawn"* — and on any annotated device
+    whose only non-`@name` text is already `hide=instance` (**57 shipped
+    `xschem_library/devices/*.sym`**) the sheet is byte-identical at mask 1 and
+    mask 9 while all three status producers claim a declutter. Count it only when
+    the tail below **would have returned 0** — and remember the `show_hidden_texts`
+    arm, because both Op-Annotate menu bodies turn that switch **on** one line
+    before writing the mask, so there the rung really does take the text away.
+    ⚠ A related trap for the *reader* of such a counter: the delta is moved by
+    `update_all_sym_bboxes` **alone** (measured: bbox-only 1, redraw-only 1), so
+    it is a **geometry** answer, not a screen answer. Today they agree.
+
+
+16. **A SENTENCE THAT INTERPOLATES SOMETHING A BACKEND SENT IS A LINE
+    INJECTOR** (item B2d, 2026-09-04). `rdw::block_text` joins a block's entries
+    with a newline, so one entry containing a newline makes the block, the paste
+    text and the Tk pane report **three different line counts** — measured 4, 5 and
+    7 on a single answer whose every data bucket was empty. The vehicle was the
+    smallest legal-looking thing in the whole seam: `_state_sentence`'s default arm
+    echoing the backend's own `state` string. The result on the clipboard is two
+    correctly indented, correctly formatted operating-point rows that no bucket ever
+    carried, indistinguishable from measured ones — invariant **I3**'s harm, one
+    level up from a number. **The fix is the emit point, not the sentence**
+    (`rdw::_line`), because wrapping each fragment leaves the next author a tenth
+    site. ⚠ And note where the hole was: between two rows that each fenced half of
+    it. F20 covers newline/CR/tab in a value, a parameter name and a device name;
+    F25 covers the unrecognised-state arm — with a newline-free word. **Two green
+    rows crossing a class is not the class fenced.**
+
+17. **A PICK BUILT ON THE SNAPPED MOUSE PAIR CAN NAME THE WRONG DEVICE** (item
+    B4, 2026-09-04). ⚠ **CORRECTED 2026-09-04:** this landmine used to say
+    *"`xschem get mousex` does not exist"* — **it does now**, since commit
+    `0ce85dda`: `xschem get mousex` / `mousey` answer the unsnapped coordinates
+    at `scheduler.c:5047`/`:5051`, beside `mousex_snap`/`mousey_snap` at
+    `:5055`/`:5059`. **The landmine is unchanged in substance**: every C click
+    path reads the unsnapped pair, so a Tcl pick that reads the snapped one
+    disagrees with C, and there must be **no fallback** from one to the other —
+    the fallback *is* the defect. Measured on the
+    shipped `cmos_inv.sch`: the exact point `175.175 -199.612` answers `M1`, the
+    snapped point `180 -200` answers `R1`. Swept over every instance bbox: **6.4%
+    of points miss the device, 0.5% resolve to a different one**, with nothing on
+    screen saying which happened — invariant **I3**'s harm, one object out from a
+    number. Instance bodies are the bad case because their bbox edges are not on
+    grid; a wire, drawn on grid, usually snaps onto itself. Issue **1303**. ⚠ And
+    note why no suite saw it: the pick fixture computed click points from
+    `xschem instance_bbox` **centres** — correct, adopted so the A3 declutter
+    coordinates would not be transcribed, and **a centre snaps safely**. Drive at
+    least one pick at a point measured to straddle an edge. ⚠ **And a synthetic
+    `<Motion>` cannot carry the filed pair**: `sx(175.175) = 158`,
+    `sy(-199.612) = 551` at zoom 1.2165, and the event lands at
+    `173.95876 / -200.82845`, where *both* pairs answer `M1`. An event-only row
+    is therefore **vacuous** for 1303 — it passes against the broken code.
+18. **A COMMAND MODE THAT SWALLOWS THE RELEASE LEAVES C's GESTURE HALF-STARTED**
+    (item B4, 2026-09-04). See §2.5: seize `<B1-Motion>` as well, or a drifted
+    click selects objects in a mode whose whole promise is that clicking selects
+    nothing. Live in `ase_window.tcl`, so it is a defect to fix and not merely a
+    precedent to avoid. Issue **1304**. ⚠ The class: **the three sequences a mode
+    seizes are not the three sequences a gesture uses.**
+19. **A FENCE THAT COUNTS A BINDING'S NAME DOES NOT FENCE THE BINDING** (item
+    B4-2's sabotage agent, 2026-09-04). The row written for landmine 18 asserted
+    that all four sequence names appear in the seize and the hand-back. Turning
+    `bind $cv <B1-Motion> {break}` into `bind $cv <B1-Motion> {}` — which
+    **destroys** the binding and is exactly the pre-fix behaviour — left the row
+    **green on both arms**, because the name still appeared twice in the body.
+    Only deleting the lines outright reddened it. **Fence the script, not the
+    mention** — and remember that a suite which self-skips headless leaves its
+    structural row as the *only* fence on that arm.
+20. **A ONE-SHOT FLAG ARMED BY A MAP AND CLEARED BY A `FocusIn` CANNOT BE TESTED
+    UNDER A WINDOW MANAGER** (item B4-2, 2026-09-04, issue **1306**). On
+    `:99`/openbox the WM's map-time grant consumes the flag before any row can
+    observe it, so 27 green checks and eight sabotage variants never reached the
+    interesting branch. And Tk delivers `FocusIn` **to every ancestor** of the
+    window that gains focus, with detail `NotifyNonlinearVirtual` — so a guard
+    of the form `%W eq <toplevel>` does **not** distinguish "the toplevel was
+    focused" from "a child of it was". Test such a flag WM-less, or arm it by
+    hand.
+    ⚠ **CORRECTED AND SHARPENED 2026-09-04 by item B4-3, which measured the
+    other half.** "Test it WM-less" is **not** a safe instruction: WM-less is a
+    *coin flip*, not a control. The same unmodified fixture went **5/5 green
+    then 5/5 red twenty minutes apart on the same tree**, because whether the
+    consuming `FocusIn` arrives inside the dump's own `update` or after it is
+    an internal race. Pointer parking does not cure it. **The only deterministic
+    fixture asserts the flag's post-gesture value and then RE-ARMS IT BY HAND**
+    (`set ::rdw::focus_pending 1`) before the gesture under test — measured
+    BOUNCED 5/5 unfixed and KEPT 4/4 fixed on **both** arms.
+    ⚠ **And the obvious fix is wrong.** `[string match .rdw* [focus]]` — the
+    predicate issue 1306's own "Recommended fix" prints — matches the
+    **descendant** as readily as the toplevel, so the click is still bounced;
+    measured 3/3 on both arms by three independent agents.
+    ⚠ **AND SO IS THE FIX THAT REPLACED IT — CORRECTED 2026-09-06 BY ISSUE
+    1369.** "The map-time grant lands on the TOPLEVEL, every deliberate landing
+    lands on a CHILD" is true **only until the user's first click in the
+    window**. Tk keeps a focus record **per toplevel**: once any child has held
+    the Tk focus, every later grant is resolved by Tk to that child, and the
+    toplevel sees the grant as a `FocusIn` with detail `NotifyVirtual` while
+    `[focus]` already reads the child. Measured under openbox in a minimal
+    two-toplevel program: clean record → `NotifyAncestor`, `[focus]` = the
+    toplevel; after one click in a `-state disabled` text pane → `NotifyVirtual`,
+    `[focus]` = the pane. So an **exact equality declines the grant for ever**
+    after one ordinary click, which is issue 1369. The landing test is
+    `winfo toplevel` — *did the keyboard land IN this window* — and the
+    discriminator that tells the user's own click from the grant is the
+    **`<ButtonPress>` on the toplevel tag**, not the landing at all. Both event
+    orders are measured, the second through XTEST so a real click-to-focus WM's
+    passive grab is involved: on Tk's own path the press runs before the queued
+    `FocusIn` (the disarm wins); on a real WM the `FocusIn` arrives **first** and
+    the click still wins, because `tk::TextButton1`'s own `focus $w` takes the
+    keyboard straight back. Keep `string match` out of the proc with a
+    structural row.
+    ⚠ **AND `-state disabled` DOES NOT KEEP A `text` OUT OF THE FOCUS.**
+    `tk::TextButton1` calls `focus $w` unconditionally
+    (`/usr/share/tcltk/tk8.6/text.tcl:579`); only `tk::EntryButton1` checks for
+    `disabled` (`entry.tcl:356`). `-takefocus 0` does not stop it either — that
+    governs Tab traversal. Two widgets in the Results window take the keyboard
+    on a press, and a comment in `rdw.tcl` said neither did.
+21. **A RECOMMENDED FIX IN AN ISSUE FILE IS A HYPOTHESIS, NOT A MEASUREMENT**
+    (item B4-3, 2026-09-04). Issue 1306's option (a) was reasoned correctly —
+    *decide on where the keyboard landed, not on which window named the event* —
+    and its **printed code line did not work**. Three agents measured it
+    independently before anyone shipped anything else. The batch's rule *"take
+    the recommendation unless your own measurement refutes its reasoning"* cuts
+    both ways: **run the recommendation as a sabotage variant**, so the tree
+    permanently rejects it and the next crew cannot re-derive it.
+22. **A SHARED WORKING TREE MAKES EVERY MEASUREMENT WORTHLESS, AND IT LOOKS LIKE
+    FLAKE** (item B4-3, 2026-09-04). Two verify agents independently recorded
+    ~25% spurious reds on the item's own headline rows; the cause was another
+    crew agent running sabotage variants **directly on `src/rdw.tcl` in the
+    shared tree** instead of on a copy (hard rule 3). The failure signatures
+    matched that agent's variants exactly. **Take a before/after `md5sum` of
+    every tracked file a run depends on and discard any run whose signature
+    moved.** Both agents did, and both then measured zero flake. A "flaky
+    focus suite" is the story this failure tells about itself, and it is false.
+
+23. **A SAFETY ARGUMENT THAT DEPENDS ON A FIELD BEING UNOWNED EXPIRES THE MOMENT
+    A UI CAN OWN IT** (item B5, 2026-09-04). `op_param_lists::_save_set` carries
+    a comment asserting that the union it writes into `params` "can only ever be
+    a SUPERSET of what `params` already held and no PDK row is ever lost". The
+    reasoning is correct and the conclusion is false: it holds only while at
+    least one of the annotation and summary lists is **unowned**, because an
+    unowned list answers the seed and re-includes the row. The whole point of
+    the button column is to let a user own both. **When a comment proves an
+    invariant from the current state of a store, write down the state it
+    assumes** — and when you build the feature that changes that state, grep for
+    the comments that assumed it. This one had been true, and correct, and
+    reviewed, for three items.
+
+24. **A ROW THAT ENDS ITS OWN STORM WITH AN UNDO FENCES THE UNDO, NOT THE STORM**
+    (item B2e, 2026-09-04). Row **N11** is the driver's own *"attack the
+    declaration, do not assert it"* row: a five-step storm of edits, then a
+    `reset` + `apply`, then six assertions. But `reset` + `apply` is precisely
+    the pair that fires the issue-1292 undo, which repairs `params` one line
+    before the row looks at it. **Three of the seven sabotage variants broke the
+    declaration mid-storm and N11 stayed green** — one of them losing a `.save`
+    card *inside N11's own storm*, the live DD-4 violation, invisible. Filed as
+    issue **1316**. **Assert INSIDE the storm, not only after it**, and be
+    suspicious of any row whose last action before its assertions is a verb that
+    repairs state.
+
+25. **A STRUCTURAL FENCE THAT GREPS SOURCE TEXT ONLY FENCES THE SPELLINGS ITS
+    AUTHOR ENUMERATED** (item B2e, 2026-09-04). Row **N12** proves *"`apply` is
+    incapable of writing the declaration"* by counting lines that carry a
+    dict-writing command **and the literal key name**. A write through a
+    variable key — `dict set d $key $value` — carries no literal and is not
+    counted, and that is not hypothetical: `_apply_state`, two procs away in the
+    same file, already writes exactly that way. Nothing evades it today. **Assert
+    the property from OUTSIDE — compare the stored value against what the writer
+    was handed — rather than counting the source lines that could have changed
+    it.**
+
+26. **`dict set d k v` WRITES BACK INTO `d` AS WELL AS RETURNING THE NEW DICT**
+    (item B2e, 2026-09-04). Obvious in the man page, invisible at the call site.
+    Capturing a "pre" state as `$d` and then writing `dict set d params …`
+    records the **post** state; the issue-1292 undo then restored the state
+    before the *last* apply instead of the state before the *first*, and **the
+    suite was ALL PASS at 102 with the bug in**, because the two rows that could
+    have caught it use fixtures where those two states coincide. Caught by an
+    out-of-suite adversarial probe. **Snapshot a pre-state into a value the
+    subsequent writes cannot reach** — a list element, a `dict get` into a fresh
+    variable — never the variable you are about to write through.
 
 ---
 

@@ -1437,12 +1437,41 @@ int set_text_flags(xText *t)
  * frame, so a tclgetvar per call is too costly. Refreshed at each BULK visibility
  * evaluation -- draw(), calc_drawing_bbox(), `xschem print`, `xschem
  * update_all_sym_bboxes`, startup and the CLI batch print -- because svg_draw(),
- * create_ps() and symbol_bbox() do NOT go through draw(). NOTE this is why the
- * mirror is a push+pull: `xschem set annot_show` writes the Tcl var too, so a later
+ * create_ps() and symbol_bbox() do NOT go through draw(). Since item A6-c
+ * symbol_bbox() refreshes it ITSELF, through annot_show_pull_cache() below -- the
+ * pull WITHOUT this function's 0688 backstop, for the reason written there.
+ * NOTE this is why the mirror is a push+pull: `xschem set annot_show` writes the
+ * Tcl var too, so a later
  * sync can never undo the setter (decision D4). show_hidden_texts' own pull cache is
  * refreshed at only three sites and is measurably stale in the export paths -- that
  * is issue 0453 and is deliberately NOT fixed here. */
 void annot_show_sync_cache(void)
+{
+  annot_show_pull_cache();
+  /* 0688 -- THE BACKSTOP. A root-sheet change that never runs load_schematic()
+   * (clear_schematic() composes a fresh untitled name IN PLACE, save.c:4850) is
+   * invisible to the deterministic seam in save.c, so the pull above is followed
+   * by the same check. Placed AFTER the pull deliberately: the pull is what makes
+   * the C field agree with the Tcl var, and clearing before it would be undone by
+   * it. */
+  annot_show_check_root();
+}
+
+/* 1244 (item A6-c, issue 1260 part 3) -- THE PULL ALONE, WITHOUT THE 0688 BACKSTOP.
+ * A SPLIT of annot_show_sync_cache() above, not a second pull: that function now IS
+ * this one plus the 0688 root check, so there is still exactly one place that
+ * makes the C mirror agree with the Tcl var (invariant I1) and the backstop still has
+ * exactly the eight bulk entry points it had.
+ *
+ * ⚠ WHY A READ-ONLY GEOMETRY VERB MAY NOT RUN THE BACKSTOP. That check can
+ * annot_show_set(0), i.e. CLEAR the mask -- which is why item A5-c left the mask
+ * unsynced at `recompute_inst_bbox` and accepted that the two symbol_bbox() doors then
+ * answered opposite picks for a bare `set ::annot_show` (issue 1260 part 3, measured:
+ * one door answered M1 and the other answered nothing, on the same instant and the
+ * same pick). symbol_bbox() computes a bounding box; it must not be able to disarm the
+ * annotation as a side effect. So the geometry path calls THIS, and the eight bulk
+ * evaluation entry points keep calling the function above. */
+void annot_show_pull_cache(void)
 {
   const char *s;
   if(!xctx) return;
@@ -1452,18 +1481,12 @@ void annot_show_sync_cache(void)
    * svgdraw.c:1098, psprint.c:1370, scheduler.c x2, xinit.c x2, actions.c:4698), which
    * is exactly the staleness trap show_hidden_texts fell into (issue 0453: refreshed at
    * three sites, none of them an export entry, so its FIRST export after a Tcl-side
-   * change renders the old value).
+   * change renders the old value). Item A6-c added a NINTH caller of the pull,
+   * symbol_bbox() (src/select.c) -- see the block above this function.
    * NOT tclgetintvar(): on a missing variable it returns 0 AND dbg(0)-logs, and 0 is
    * BACKLAYER -- the annotation would silently paint in the background colour. */
   s = tclgetvar("annot_voltage_layer");
   if(s && s[0]) xctx->annot_voltage_layer = atoi(s);
-  /* 0688 -- THE BACKSTOP. A root-sheet change that never runs load_schematic()
-   * (clear_schematic() composes a fresh untitled name IN PLACE, save.c:4850) is
-   * invisible to the deterministic seam in save.c, so the pull above is followed
-   * by the same check. Placed AFTER the pull deliberately: the pull is what makes
-   * the C field agree with the Tcl var, and clearing before it would be undone by
-   * it. */
-  annot_show_check_root();
 }
 
 /* 0688 -- THE ONE C WRITER OF THE MASK (invariant I1). Every `xschem set
@@ -1739,7 +1762,32 @@ static int text_hidden_core(int flags, int ctx, int n)
      (xctx->annot_show & (ANNOT_SHOW_OP | ANNOT_SHOW_NOPARAM)) ==
                          (ANNOT_SHOW_OP | ANNOT_SHOW_NOPARAM) &&
      !annot_declutter_exempt(flags) &&
-     annot_instance_annotated(n)) return 1;
+     annot_instance_annotated(n)) {
+       /* ⚠ THE COUNTER IS NOT THE RUNG -- ISSUE 1270. The `return 1` above is the
+        * VISIBILITY answer and its position is forced (see the paragraph above);
+        * the COUNT is a different question. Visibility only needs to know that
+        * something says "hide". The status line asks who said it FIRST, because
+        * its sentence is "other device text IS HIDDEN" -- a claim about what the
+        * user can no longer see, not about which predicate fired. The three lines
+        * below are exactly the ones that would have hidden this text anyway, so a
+        * counter bumped unconditionally here says a declutter happened on any
+        * annotated device whose only non-@name text already carries hide=instance
+        * (57 shipped xschem_library/devices/*.sym) or hide=true -- a sheet that is
+        * byte-identical at mask 1 and mask 9. That is issue 1257's own defect in a
+        * fourth state, and it is what refuted item A7's first attempt.
+        *
+        * THE show_hidden_texts ARM IS LOAD-BEARING, in the direction people forget:
+        * with View > Show hidden texts ON -- which both shipped Op-Annotate menu
+        * bodies turn on one line before writing the mask -- a hide=instance text IS
+        * drawn, so the rung really does take it away and the counter MUST bump. A
+        * guard testing only the two HIDE_* bits would fix the chord and break the
+        * menu. Rows A64/A65 drive both halves. */
+       if(xctx->show_hidden_texts ||
+          (!(flags & HIDE_TEXT) &&
+           !(ctx == TEXT_CTX_INSTANCE && (flags & HIDE_TEXT_INSTANTIATED))))
+         ++annot_declutter_count;
+       return 1;
+     }
   if(xctx->show_hidden_texts) return 0;
   if(flags & HIDE_TEXT) return 1;
   if(ctx == TEXT_CTX_INSTANCE && (flags & HIDE_TEXT_INSTANTIATED)) return 1;
@@ -1844,6 +1892,29 @@ unsigned int annot_overlay_count = 0;
  * user action -- a `reload` bumps via remove_symbols() AND clear_drawing() --
  * so a counter of invalidation REQUESTS would report 2 where 1 flush happened. */
 unsigned int annot_overlay_flushes = 0;
+
+/* 1257 -- monotonic count of texts the DECLUTTER rung above actually took off the
+ * sheet. Read with `xschem get annot_declutter_count`, in the same shape as the two
+ * counters above it.
+ *
+ * ⚠ IT MEASURES THE RUNG, IT DOES NOT RE-DERIVE THE GATE, and that distinction is
+ * the whole reason it exists. After the value gate landed, `annot_show` carrying
+ * bit0|bit3 stopped meaning "the sheet is decluttered": on a sheet with no results
+ * file -- and on one whose raw loads but publishes nothing for the device -- the
+ * mask is armed and NOTHING is hidden, while `op_annot::_annotated` answers 1 in the
+ * second of those exactly as it does in the first. Every status-line producer that
+ * asked the MASK therefore described a declutter that did not happen (issue 1257).
+ * The honest answer is a measurement taken where the decision is made, so this is
+ * bumped on the rung's single `return 1` and nowhere else; a Tcl caller brackets one
+ * `update_all_sym_bboxes` + `redraw` with two reads and the DELTA is the answer.
+ *
+ * ⚠ NOT annot_overlay_count WEARING A NEW NAME. That one moves for every annotated
+ * instance at bit0 alone, i.e. it says "numbers were painted", not "text was taken
+ * away"; row A58 of tests/headless/test_annot_declutter_1244.tcl is the
+ * discrimination. Both symbol_bbox() and draw_symbol() reach the rung, so the delta
+ * is nonzero after a bbox pass alone -- which is what lets the seam work on the
+ * hidden-text side even where draw() is not reached. */
+unsigned int annot_declutter_count = 0;
 
 /* The observed-state epoch. Any field moving flushes the whole cache.
  * data_seq is the half the epoch CANNOT observe: re-running the same deck and
@@ -2054,13 +2125,76 @@ static int annot_overlay_gate(int n)
   return 1;
 }
 
-/* 1244 (item A3) -- RULING D-6's GATE: "the declutter reaches only instances that got
- * OP numbers", the user's own selection. It is the carrier the overlay already
- * computes -- gate + a NON-BLANK op_annot::text block, i.e. D9 + D1 -- so the
- * declutter and the block that replaces the parameters answer to ONE fact and cannot
- * disagree (invariant I1). A hierarchical block keeps its cell name and pin labels; a
- * descriptor-less cap or resistor is untouched; hide_symbols=2 closes the gate, so
- * the keep-name render is never doubly stripped (row A17).
+/* 1244 (item A5-a) -- "at least one row carries an ACTUAL VALUE", the value test
+ * ruling D-6 needs. Ruling D-6 reaches instances that "got OP numbers"; ::op_annot::text
+ * emits its declared rows whether or not any number arrived, so a non-blank block is
+ * NOT the same fact.
+ *
+ * ⚠ A PURE FUNCTION OF THE ALREADY-CACHED BLOCK STRING, AND THAT IS THE WHOLE
+ * ANSWER TO ISSUE 0466 (thirteen epoch fields and not one of them moved on `xschem
+ * reload`, so the overlay painted the previous file's numbers). This helper reads no
+ * Tcl variable, runs no tcleval and never asks the raw, so the gate acquires ZERO
+ * invalidation inputs of its own: it rides the ONE wholesale flush the overlay cache
+ * already performs on every epoch move (raw pointer / raw_level / raw_nvars /
+ * raw_annot_p, annot_show, modify_seq, data_seq, schhash, desc_gen), plus the explicit
+ * bumps in clear_drawing (the `xschem reload` path 0466 was filed about), set_modify,
+ * remove_symbols, save.c's raw vector edits and update_op(), and the scheduler's
+ * `raw set` arm. Value-ness therefore CANNOT be staler than the block
+ * get_annot_overlay() paints -- it is derived from that very string. Answering from a
+ * SECOND source (::op_annot::_annotated, `xschem raw value`, or a fresh tcleval from
+ * inside the gate) would be 0466 re-opened, and is deliberately not done; row A35 of
+ * tests/headless/test_annot_declutter_1244.tcl asserts that as STRUCTURE, by slicing
+ * this function's body and refusing any such reader in it.
+ *
+ * ⚠ THE FORMAT READ HERE IS MINTED IN EXACTLY ONE PLACE, the width pass of
+ * ::op_annot::text (src/op_annot.tcl): "A blank row is `label =` with NOTHING after the
+ * `=`, not even a space; every row ends in exactly one newline." Row A34 pins that
+ * contract from the Tcl side, so a change to the mint reds a row instead of silently
+ * re-opening this defect.
+ *
+ * ⚠ THE SPLIT IS THE **LAST** `=` ON THE ROW, NOT THE FIRST -- ISSUE 1258, AND THE
+ * FIRST-`=` READING IS A GATE THAT THE DATA IT INSPECTS CAN FOOL. The label half of a
+ * row is whatever the user typed in their own `params` list (invariant I5; nothing
+ * rejects an `=` in it, and item B5 will let people type these), so a descriptor
+ * registered with the label `v=x` mints the BLANK row `v=x =` -- and the first-`=`
+ * reading found the `x` after that `=` and called it a value. Measured 2026-09-02 with
+ * `xschem raw loaded` = -1, i.e. before any simulation had run: mask 1 drew
+ * `M1 VCW=1u PD {v=x =} {q   =}` and mask 9 drew `M1 {v=x =} {q   =}` -- the user's own
+ * parameter and pin label traded for two empty rows, which is verbatim the defect item
+ * A5-a was written to close. Rows A42/A43 drive it.
+ *
+ * ⚠ AND THE LAST `=`, NOT THE THREE-BYTE SEPARATOR ` = ` issue 1258 recommends. Both
+ * are the same two lines; only one is right. A label spelled `a = b` mints the BLANK
+ * row `a = b   =`, which carries ` = ` and which the separator reading therefore calls
+ * valued. The last-`=` reading is strictly stronger: the mint always puts the
+ * separator's `=` after the whole padded label, so the final `=` of a row IS the
+ * separator, whatever the label contains. Row A44 is that difference written as a
+ * check. */
+static int annot_block_has_value(const char *t)
+{
+  const char *p, *q, *eq;
+  if(!t) return 0;
+  eq = NULL;
+  for(p = t; ; ++p) {
+    if(*p == '=') { eq = p; continue; }
+    if(*p != '\n' && *p != '\0') continue;
+    /* end of a row: the value field is everything after its LAST `=` */
+    if(eq) {
+      for(q = eq + 1; q < p; ++q) {
+        if(*q != ' ' && *q != '\t') return 1;
+      }
+    }
+    eq = NULL;
+    if(*p == '\0') break;
+  }
+  return 0;
+}
+
+/* 1244 (items A3, A5) -- RULING D-6's GATE: "the declutter reaches only instances that
+ * got OP numbers", the user's own selection. D9 (the overlay's own precondition chain)
+ * AND a block carrying at least one actual VALUE. A hierarchical block keeps its cell
+ * name and pin labels; a descriptor-less cap or resistor is untouched; hide_symbols=2
+ * closes the gate, so the keep-name render is never doubly stripped (row A17).
  *
  * ⚠ IT MUST NOT CALL get_annot_overlay(), WHICH IS WHY THE CHAIN WAS FACTORED. That
  * function does `++annot_overlay_count` on every success and row O13 of
@@ -2069,20 +2203,35 @@ static int annot_overlay_gate(int n)
  * check has on the overlay. D2 is not re-tested here either: the rung's own
  * ANNOT_SHOW_OP term already implies it, and re-asking would be self-referential.
  *
- * ⚠ WHAT "GOT OP NUMBERS" MEANS, MEASURED RATHER THAN ASSUMED: op_annot::text emits
- * blank-VALUED rows when the raw publishes nothing for a registered device, so the
- * gate reads "this device has a descriptor whose match/devpath resolve and which
- * declares at least one row", not "numbers arrived". A registered device over a dead
- * raw is therefore decluttered while its block shows empty rows. That is what the
- * overlay already PAINTS, so the gate follows the pixels rather than inventing a
- * second parser of the block's format; recorded as `rule` debt
- * 1244_A3_blank_valued_block. */
+ * ⚠ WHAT "GOT OP NUMBERS" MEANS, MEASURED RATHER THAN ASSUMED -- AND ITEM A3 GOT IT
+ * WRONG. ::op_annot::text emits its declared rows even when the raw publishes nothing
+ * for a registered device (`zid =`, `zgm =`, with nothing after the `=`), and that
+ * block is NON-BLANK, so A3's "non-blank block" gate opened on it. An earlier draft of
+ * this comment then claimed the declutter and the overlay "answer to ONE fact and
+ * cannot disagree". THAT SENTENCE WAS FALSE, and the measurement is the whole of item
+ * A5-a: with `xschem raw loaded` = -1, i.e. BEFORE ANY SIMULATION HAS BEEN RUN, mask 1
+ * drew `MA1 A5W=1u {aid =} {agm =}` and mask 9 drew `MA1 {aid =} {agm =}` -- the user
+ * pressed 6, pressed Ctrl-Alt-6, and traded W/L for two empty labels. A label with no
+ * number did not get an OP number, so the gate demands annot_block_has_value() above.
+ * Rows A30 (no raw at all) / A32 (a raw that publishes nothing for this device) / A33
+ * (the valued control, which IS still decluttered) drive all three states.
+ *
+ * ⚠ SO THIS GATE IS NOW STRICTLY STRONGER THAN get_annot_overlay()'s D1 TERM, ON
+ * PURPOSE, AND D1 IS UNCHANGED. The overlay keeps PAINTING a label-only block, because
+ * a user is entitled to see WHICH parameters this device would show once the raw
+ * carries them (invariant I3's spirit: a missing vector renders blank -- never a stale
+ * or invented number). The declutter is the stronger half because it removes the
+ * USER'S OWN text, so it may fire only where numbers actually replaced it. Row A31
+ * golds the overlay's paint delta unmoved across exactly this change; "tidying" the
+ * overlay to match the gate would delete op_annot.tcl's deliberate behaviour and is
+ * what row A9 exists to catch. Driver ruling; `rule` debt 1244_A3_blank_valued_block
+ * stays on the user's queue for confirmation of the gate itself. */
 static int annot_instance_annotated(int n)
 {
   const char *t;
   if(!annot_overlay_gate(n)) return 0;
   t = annot_overlay_cached_text(n);
-  return (t && t[0]) ? 1 : 0;
+  return annot_block_has_value(t);
 }
 
 /* 1 == draw instance n's operating-point block, at *x/*y, size *size, layer

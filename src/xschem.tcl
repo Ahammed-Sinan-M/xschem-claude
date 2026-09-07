@@ -4028,7 +4028,17 @@ proc simconf_dialog_open {} {
 # ALL OF IT GOES WITH THE STORE IT EDITED (the `annotate` merge). Those fields
 # now live on the ASE-L simulator registry entry, which has its own front door
 # -- ASE-L, Setup > Simulators… -- with CRUD, validation, a capability probe and
-# a saved list that survives a restart. Two dialogs editing two records that
+# a saved list that survives a restart.
+#
+# ⚠ THE PROMISE ABOVE WAS NOT KEPT FOR TEN MONTHS, AND ISSUE 1371 IS WHAT IT
+# COST. The store moved and the door was never built: `ase::ui::simdlg_editor`
+# offered Name and Program only, so the case mode could be set solely by hand
+# editing the saved list -- and pressing Edit… on an entry that had been hand
+# edited erased it again. A user whose build was measured `fold preserve
+# distinguish` got `v(vbg)` instead of `v(VBG)` on every run and had nothing to
+# read that explained why. The Case and -n rows exist in that dialog now. The
+# Help text below said otherwise until the same fix; do not re-point either of
+# them at this window. Two dialogs editing two records that
 # describe one machine is worse than one dialog, however good each was: it is
 # the shape in which a user's case mode can end up describing a binary they are
 # no longer running.
@@ -4313,39 +4323,18 @@ If no ~/.xschem/simrc is present then a minimal default setup is presented.
 To reset to default use the corresponding button or just delete the
 ~/.xschem/simrc file manually.
 
-SIMULATOR PROFILE (the second line of each row)
+WHICH PROGRAM RUNS, AND HOW IT TREATS UPPER CASE
 
- - Exe: the simulator executable, as an absolute path or a bare name looked
-   up on PATH. It may contain variable references ($env(HOME)/...). EMPTY
-   means "behave exactly as before": the row runs its cmd string, and ASE-L
-   falls back to a bare ngspice on PATH.
- - Args: extra arguments, as a Tcl list, composed after Exe.
- - Case: the case mode this simulator is ASKED for
-   (fold / preserve / distinguish; ngspice -D casemode=...).
-   THE MENU OFFERS ONLY WHAT THE BINARY WAS MEASURED TO DELIVER. Before a
-   row is probed the only offer is fold, which every ngspice delivers
-   whether or not it is asked. "use global default" leaves the choice to
-   the global sim_case_mode floor. A mode already stored on the row that
-   was never measured is shown marked "NOT measured".
- - -n: pass --no-spiceinit. A .spiceinit -- in the run directory OR in your
-   home directory -- overrides -D casemode=, so the mode you asked for is
-   not always the mode you get. Leave this off unless you know your
-   .spiceinit is the problem.
- - Test: run the executable once per mode and report what it delivers. The
-   answer is recorded on the row and the Case menu is rebuilt from it.
-   A row added with the Add button is probed automatically, but ONLY when
-   the executable is named *ngspice* -- so that adding a licensed simulator
-   never checks out a licence just because a path was typed.
+This window does NOT choose the simulator program. That lives in ASE-L,
+under Setup > Simulators..., where each entry carries the program, its
+extra arguments, the case mode it asks for (fold / preserve / distinguish)
+and whether to pass --no-spiceinit. The saved list is
+~/.xschem/ase_simulators and it comes back at the next start.
 
 Cancel restores the whole configuration to what it was when this window
-opened: every row, every profile field, a measurement the Test button
-recorded, and the ~/.xschem/simrc file itself -- so a 'Reset to default'
-you change your mind about is put back on disk as well as in memory.
-The window manager's close button (X) is Cancel too.
-
-Editing a row's Exe, Args or -n DISCARDS that row's measurement, because a
-measurement belongs to the binary it was taken on. The Case menu drops back
-to offering fold alone until you press Test again.
+opened: every row and the ~/.xschem/simrc file itself -- so a 'Reset to
+default' you change your mind about is put back on disk as well as in
+memory. The window manager's close button (X) is Cancel too.
     } ro
   }
   button .sim.bottom.ok  -text {Accept, Save and Close} -command { simconf_accept 1 }
@@ -7023,7 +7012,28 @@ proc _remap_verify {top {tries 2}} {
   if {$tries > 1} { after 250 [list _remap_verify $top [expr {$tries - 1}]] }
 }
 
-proc raise_activate_toplevel {top} {
+# ⚠ SPLIT IN TWO, ISSUE 1340, RULING DD-6, AND THE SPLIT IS THE POINT.
+# The Results Display Window (src/rdw.tcl) needs everything above -- the WSLg
+# re-map, the creep note, issue 0843's deferred recovery -- and must NOT have
+# the last line. The user's words: "the RDW needs to be raised (no need to
+# focus, just raise), just as the Library Manager is raised when one does
+# Ctrl-Alt-S". `xschem activate_window` sets _NET_ACTIVE_WINDOW, which IS
+# activation: on a real EWMH WM it takes the keyboard off the schematic the
+# user is working on, and the grammar that fills the RDW (bare 1/2/3/4 and the
+# command mode's Escape) lives on the CANVAS, so a stolen focus leaves a mode
+# the user cannot leave (rdw::_focus_canvas records the same failure).
+#
+# ⚠ SO THE LAST LINE MOVED, IT WAS NOT DELETED. Deleting it satisfies every
+# RDW row and silently stops the Library Manager, the CIW, create_instance,
+# copy_form, save_as_form, the wave viewer, ASE and alt2_toggle_view taking the
+# focus they ARE entitled to -- fourteen call sites, on a path no RDW suite
+# walks. Rows RA5 (test_rdw_keys_1245, behavioural) and RH2
+# (test_rdw_window_1245, headless) are the fence.
+#
+# Callers that want the raise WITHOUT the activation call `raise_toplevel`
+# directly; every pre-existing caller keeps calling `raise_activate_toplevel`
+# and its behaviour is unchanged, line for line.
+proc raise_toplevel {top} {
   global has_x
   if { ![info exists has_x] || !$has_x } return
   if {![winfo exists $top]} return
@@ -7038,6 +7048,16 @@ proc raise_activate_toplevel {top} {
     after 150 [list _remap_verify $top]   ;# issue 0843: same request, same WM, same risk
   }
   raise $top
+}
+
+# The two guards are repeated rather than inherited from `raise_toplevel`'s
+# early returns: `winfo id` on a destroyed window RAISES, and the pre-split
+# proc never reached that line in either case.
+proc raise_activate_toplevel {top} {
+  global has_x
+  if { ![info exists has_x] || !$has_x } return
+  if {![winfo exists $top]} return
+  raise_toplevel $top
   catch { xschem activate_window [winfo id $top] }
 }
 
@@ -14239,7 +14259,55 @@ proc balloon_show {w arg pos} {
       set wmx [expr {[winfo pointerx $w] + 20}]
       set wmy [winfo pointery $w]
     }
-    wm geometry $top [winfo reqwidth $top.txt]x[winfo reqheight $top.txt]+$wmx+$wmy
+    ## ⚠ AND IT IS PULLED BACK ON TO THE SCREEN (issue 1368).  MEASURED on a
+    ## 1920x1080 display: the RDW's aA button sits at the foot of a button
+    ## column on the RIGHT-hand edge of its window, `winfo rootx` 1815, and its
+    ## 564 px tip anchored at the widget's left edge wanted to end at 2379 --
+    ## more than half of it off the screen, on a tooltip whose whole job is to
+    ## be read.  `pos 0` does not help: the pointer is in the same place.
+    ##
+    ## A tip that ALREADY FITS is not moved at all.  A tip that does not fit is
+    ## moved, and that is the point -- including at the two `pos 0` call sites
+    ## in the file browser (:9659 and :9674), whose tips are wide and multi-line.
+    ##
+    ## ⚠ AND A MOVED TIP MUST NOT LAND UNDER THE POINTER.  `balloon`'s own
+    ## <Leave> destroys the tip, so a tip that maps under the pointer is torn
+    ## down in the instant it appears and the <Enter> that follows re-arms it:
+    ## a tooltip that flickers forever and is never read.  MEASURED on :99 with
+    ## a first spelling of this clamp that slid every tip left: with the pointer
+    ## in the rightmost 564 px of a 1920 px screen a `pos 0` tip showed 25 times
+    ## in 1.5 s and was on screen for 2 samples out of 60; the same widget at
+    ## `pos 1`, where the anchor is the WIDGET and not the pointer, was fine.
+    ## So the two anchors are pulled back DIFFERENTLY: a widget-anchored tip
+    ## slides to the screen edge, a pointer-anchored one MIRRORS to the other
+    ## side of the pointer, and a final guard pushes any tip that still covers
+    ## the pointer clear of it.
+    ##
+    ## Vertically a widget-anchored tip FLIPS above the widget rather than
+    ## sliding, for the same reason.  Both axes are finally clamped to 0 -- a
+    ## NEGATIVE offset in a Tk geometry string means "from the far edge", so an
+    ## unclamped value would not merely be off-screen, it would be on the wrong
+    ## side of the display.  Reachable: a tip WIDER or TALLER than the screen.
+    ##
+    ## Fenced by rows FZ11 (the horizontal slide and the no-op), FZ17 (the flip
+    ## and both zero clamps) and FZ18 (the pointer guard) of
+    ## tests/headless/test_rdw_window_1245.tcl.
+    set _bw [winfo reqwidth $top.txt] ; set _bh [winfo reqheight $top.txt]
+    set _sw [winfo screenwidth $w]    ; set _sh [winfo screenheight $w]
+    set _px [winfo pointerx $w]       ; set _py [winfo pointery $w]
+    if {$wmx + $_bw > $_sw} {
+      if {$pos} { set wmx [expr {$_sw - $_bw}] } else { set wmx [expr {$_px - 20 - $_bw}] }
+    }
+    if {$wmy + $_bh > $_sh} {
+      if {$pos} { set wmy [expr {[winfo rooty $w] - $_bh}] } else { set wmy [expr {$_py - 20 - $_bh}] }
+    }
+    if {$wmx < 0} { set wmx 0 }
+    if {$wmy < 0} { set wmy 0 }
+    if {$_px >= $wmx && $_px < $wmx + $_bw && $_py >= $wmy && $_py < $wmy + $_bh} {
+      if {$_py - 20 - $_bh >= 0} { set wmy [expr {$_py - 20 - $_bh}] } \
+      elseif {$_py + 20 + $_bh <= $_sh} { set wmy [expr {$_py + 20}] }
+    }
+    wm geometry $top ${_bw}x${_bh}+$wmx+$wmy
     raise $top
 }
 
@@ -16747,6 +16815,13 @@ proc xschem::notify_safe {msg {tag {}}} {
 # registered here (a PDK does that from its own procs file; a user from a file sourced
 # after startup -- NOT from xschemrc, which is read before this line, spec I5).
 source $XSCHEM_SHAREDIR/op_annot.tcl
+# The OP parameter list store: the class map, the per-class/per-flavor ordered
+# lists, the PDK seed and the strict reader / atomic writer for
+# <pwd>/.xschem/op_param_lists.conf (doc/claude/specs/op_param_lists.md section 4.4,
+# ruling DD-3 -- that file is DATA and is never sourced). Proc definitions only at
+# source time; it reads no file and touches op_annot:: not at all until called, and
+# it must follow op_annot.tcl because it seeds from that registry.
+source $XSCHEM_SHAREDIR/op_param_lists.tcl
 # Generic command-mode suspend/resume registry (cmdmode; no Tk, no ASE knowledge).
 # doc/claude/issues/0201-no-command-suspend-resume-contract.md. MUST precede ase_window.tcl,
 # which calls cmdmode::register at source time.
@@ -16768,6 +16843,19 @@ source $XSCHEM_SHAREDIR/results.tcl
 # Calculator — waveform expression builder (calc; doc/claude/specs/calculator.md).
 # Proc definitions only at source time; the window is built on first calc::open.
 source $XSCHEM_SHAREDIR/calculator.tcl
+# Results Display Window -- the read-only, selectable, copyable pane that
+# renders the operating-point parameter set a run's raw actually holds for one
+# device (rdw; doc/claude/specs/op_param_lists.md section 4.2, feature 1245).
+# Proc definitions only at source time; the window is built on the first
+# rdw::open, and every Tk command inside sits behind rdw::have_tk -- this
+# `source` block is UNGUARDED, so a Tk command run at source time would abort
+# startup (issue 0663). Reaches the simulator only through ase::backend_hook,
+# so it must follow ase.tcl, and reads device paths only through
+# op_annot::devpath, so it must follow op_annot.tcl. Also listed in
+# src/Makefile.in's /local/install_shares -- a helper .tcl that is sourced but
+# NOT installed works in the source tree and segfaults for every installed
+# user (issue 0424).
+source $XSCHEM_SHAREDIR/rdw.tcl
 # Slick per-field "Edit Properties" form (replaces the legacy raw-text dialog)
 source $XSCHEM_SHAREDIR/property_form.tcl
 # Alt-2 schematic<->symbol view toggle (action view.toggle_view_type;
@@ -16930,6 +17018,63 @@ proc annot_menu_path_graphs_op {} {
 ## went", so this path is the message's payload and not decoration.
 proc annot_remedy_menu {} {
   return "[annot_lbl_tools] > [annot_lbl_launch_ase]"
+}
+
+# ===========================================================================
+# ISSUE 1256 -- THE TWO STOCK Op-Annotate DOORS SAY WHAT THE CHORDS SAY
+# ===========================================================================
+# `Waves > Op Annotate` and `Simulation > Graphs > Annotate Operating Point into
+# schematic` both PRESERVE bit 3 of the mask on purpose (issue 1246) and then
+# said nothing at all -- so a user who armed the schematic-parameter declutter
+# and then annotated from the MENU got a stripped sheet and not a word about
+# why, while the cadence chords describe the same state in full. Two doors, one
+# state, two descriptions: that IS the defect.
+#
+# ⚠ ONE PROC FOR BOTH DOORS, BECAUSE DUPLICATING IT WOULD REBUILD 1256 ONE LAYER
+# UP. The two -command bodies are byte-identical duplicates of each other; a copy
+# of this tail in each is two more places for one sentence to drift. Row A63 of
+# tests/headless/test_annot_declutter_1244.tcl asserts exactly that shape --
+# ZERO spellings of the sentence in this file, the cadence mint named on exactly
+# ONE code line, and both live -command scripts tailing into this proc.
+#
+# ⚠ IT OWNS THE REFRESH PAIR, AND THE PAIR IS ALSO THE MEASUREMENT. Bboxes change
+# when hidden texts appear (the `Show hidden texts` checkbutton's own pair, with
+# annot_show_sync_cache() riding inside the first), and the declutter rung bumps
+# `annot_declutter_count` as it removes each text -- so bracketing the pair with
+# two reads of that counter answers "did anything actually get hidden" without
+# re-deriving the gate. That question is issue 1257 and it is not optional here:
+# after the value gate a sheet with no results file carries bit0|bit3 and hides
+# NOTHING, so a menu that spoke on the mask alone would ship 1257 in stock code.
+#
+# ⚠ NOTHING CADENCE-SPECIFIC MAY BE REQUIRED. `::cadence` does not exist in stock
+# xschem, so the mint is BORROWED behind an `info commands` guard and this proc
+# is silent -- not broken, silent -- wherever the profile is not loaded. It emits
+# only the declutter sentence, trimmed to stand alone, and only where something
+# was hidden; every other state stays as quiet as it has always been, because a
+# stock menu is not the place to grow a state machine the chords already own.
+proc annot_declutter_say {} {
+  set a {}
+  catch {set a [xschem get annot_declutter_count]}
+  xschem update_all_sym_bboxes
+  xschem redraw
+  set b {}
+  catch {set b [xschem get annot_declutter_count]}
+  set hid 0
+  if {[string is integer -strict $a] && [string is integer -strict $b] && $b > $a} { set hid 1 }
+  # ONE line names the cadence mint, and it is this one: the sentence itself is
+  # spelled nowhere in this file (invariant I1, row A63 leg 1).
+  set cl ::cadence::_annot_declutter_clause
+  if {![llength [info commands $cl]]} { return 0 }
+  set mask 0
+  catch {set mask [xschem get annot_show]}
+  set m {}
+  catch {set m [$cl $mask $hid]}
+  set m [string trim $m]
+  if {$m eq {}} { return 0 }
+  # Through the surface's own 255-byte trimmer, never a second one: the C field
+  # behind the status line is `char statusmsg_text[256]` (src/xschem.h).
+  catch {xschem statusmsg -hold [::cadence::_annot_fit $m]}
+  return 1
 }
 
 proc build_widgets { {topwin {} } } {
@@ -17316,9 +17461,13 @@ proc build_widgets { {topwin {} } } {
          }
          # Bboxes change when hidden texts appear: the `Show hidden texts`
          # checkbutton's own pair, and annot_show_sync_cache() rides inside the
-         # first of them (scheduler.c), so no extra sync call is needed.
-         xschem update_all_sym_bboxes
-         xschem redraw
+         # first of them (scheduler.c), so no extra sync call is needed. Both
+         # live in annot_declutter_say, which runs them and then -- ONLY when the
+         # declutter rung really took text off this sheet -- says so on the held
+         # status line, in the same words the cadence chords use (issues 1256,
+         # 1257). It is silent in stock xschem and silent when nothing was
+         # hidden; it writes no mask and moves no guard.
+         annot_declutter_say
      }
   }
   $topwin.menubar.waves add command -label Op -command {waves op}
@@ -17523,6 +17672,7 @@ proc build_widgets { {topwin {} } } {
   $topwin.menubar.tools add command -label "Net highlight styles..." -command {net_hilight_style_editor}
   $topwin.menubar.tools add command -label [annot_lbl_launch_ase] -command "ase::launch_for_current"
   $topwin.menubar.tools add command -label "Calculator" -command "calc::open"
+  $topwin.menubar.tools add command -label "Results Display Window" -command "rdw::open"
   # PLAN item 12: the schematic -> Signal Browser mirror of the viewer's
   # `Descend to here`. `${topwin}.drw` is the window the gesture happened in
   # (`{}` for the main window, so `.drw`) — the command switches context there
@@ -17754,9 +17904,13 @@ tclcommand=\"xschem raw_read \$netlist_dir/[file tail [file rootname [xschem get
          }
          # Bboxes change when hidden texts appear: the `Show hidden texts`
          # checkbutton's own pair, and annot_show_sync_cache() rides inside the
-         # first of them (scheduler.c), so no extra sync call is needed.
-         xschem update_all_sym_bboxes
-         xschem redraw
+         # first of them (scheduler.c), so no extra sync call is needed. Both
+         # live in annot_declutter_say, which runs them and then -- ONLY when the
+         # declutter rung really took text off this sheet -- says so on the held
+         # status line, in the same words the cadence chords use (issues 1256,
+         # 1257). It is silent in stock xschem and silent when nothing was
+         # hidden; it writes no mask and moves no guard.
+         annot_declutter_say
      }
     }
   # doc/claude/specs/op_annotation.md §4.4 — the PDK-neutral OP-parameter
@@ -18556,6 +18710,19 @@ set_ne cadence_compat 0
 ## --script rc, so a later assignment here reaches nothing. See src/cadence_style_rc,
 ## which bumps it for the Cadence-style workarea.
 set_ne ciw_font_size 10
+## RDW text size, in points, for the Results Display Window's dump pane and its
+## bold block headers (issue 1368).  0 -- or anything outside rdw::font_limits --
+## means "follow TkFixedFont", so an ~/.xschem/xschemrc can pick the starting size
+## without knowing the window's internals.  Change it at runtime with
+## `rdw::set_font_size N`, or with the window's own aA button: plain click +1,
+## Ctrl+click -1.
+##
+## ⚠ THE TWO PANES USE PRIVATE NAMED FONTS (RdwPaneFont / RdwHdrFont, src/rdw.tcl)
+## AND NEVER TkFixedFont ITSELF.  Measured on this binary, a bare `text` widget's
+## default -font IS TkFixedFont, so resizing it would move the attribute editor,
+## the symbol-property editor, the text-input dialog, editpaths, the graph dialog,
+## the notify popup and the calculator buffer in the same breath.
+set_ne rdw_font_size 0
 # recent-files protection: the recent-views list ($USER_CONF_DIR/recent_files) belongs to the USER.
 # C sets no_recent_files=1 for a hard-gated automation session (--nogui or --pipe -- all test
 # harnesses -- or --norecent); those must never create/rewrite the file, so update below FORCES

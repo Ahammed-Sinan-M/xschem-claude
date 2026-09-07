@@ -25,6 +25,94 @@ dev display `:99`. The eleven are named in `PLAN.md`. Every later audit is
 judged by DIFFING that list by test **NAME and STATUS**, never by the red count.
 `run_regression.tcl` (T1) baseline is **ZERO** counted failures, run **solo**.
 
+# ✅ THE BATCH IS COMPLETE — 2026-09-04
+
+**Feature A** (`Ctrl-Alt-6`, the schematic declutter, issue 1244) closed at
+`4f711e80`. **Feature B** (the Results Display Window, issue 1245) closed at
+`05949661`.
+
+| | `--nogui` | `:99` |
+|---|---|---|
+| `test_annot_declutter_1244` | — | **134** |
+| `test_rdw_seam_1245` | **49** | — |
+| `test_op_param_store_1245` | **130** | 130 |
+| `test_rdw_window_1245` | **109** | **121** |
+| `test_rdw_keys_1245` | (skips) | **41** |
+| `test_op_annot` (control) | **485** | **492** |
+
+Full audit **369 pass / 11 fail / 0 crash / 2 skip of 382**, the same eleven
+names by name and verdict. T1 solo **zero**.
+
+## What the record actually looks like, stated plainly
+
+**Six items were reverted before landing**, three of them on the button column
+alone. Every one of those reverts was a crew's own adversary breaking work that
+had already gone green on every tier, and every one preserved its work as a
+re-appliable patch rather than being retyped.
+
+**Not one of the button column's three reverts was caused by the buttons.** It
+was the first real caller of the store and of the block list, and each attempt
+uncovered a latent defect underneath it — the seed reading a field `apply`
+overwrites, a block that could not say which sheet it came from, a reorder that
+deleted a `.save` card, a Save that named one file and wrote another. **Two of
+those reproduced at HEAD with no button code at all.**
+
+That is what a provider looks like when it was built and tested only against its
+own tests, and then meets its consumer.
+
+## The lesson this batch paid for eight times over
+
+**A suite fences the questions its author thought of, and a green count is a
+statement about the fence, not about the code.**
+
+* B1 was green at **37/37** while returning `nan` as a value.
+* B2c was green at **79** while deleting rows the user had typed.
+* B2d was green at **56** while the seam's own door lost its analysis sentence.
+* B4's row V8 was *written for* the focus race and **passed while the race was
+  live**, because the row before it had already reached the state that hides it.
+* B5-2 was green at **100/111/113/40**, with a clean tier diff, **while editing
+  a device nobody was looking at**.
+
+The corollaries are now standing rules in `CREW_BRIEF.md`: ordering inside a
+suite is part of the fixture; a blank result is not a pass; a falling check count
+is not a pass either.
+
+## Fourteen driver decisions, and three of them were corrections of my own
+
+DD-1 … DD-16 are in `DECISIONS.md`, each with what it costs and what it
+rejected, each on the user's queue. **DD-4 → DD-6 → DD-13 is one mistake made
+three times**: ruling on what a stored field *means* without enumerating every
+reader of it. The rule that came out of it — grep every reader first, list them,
+say what each will now see — was applied for the first time at DD-14, and held.
+
+---
+
+## ⚠ THE BASELINE IS ELEVEN NAMES AS OF 2026-09-04, NOT TWELVE
+
+`test_wave_sigbrowser_i12` was carried as an accepted red for the whole of
+Feature B, by name and by reason, on the belief that it was "the display". It
+was **solved and fixed** on 2026-09-04 (issue **1269**) and now passes inside a
+full audit:
+
+```
+SUMMARY: 368 pass  11 fail  0 crash/timeout  2 skip  (total 381)
+```
+
+**The discriminator is the POINTER POSITION.** One display, one binary, the
+pointer the only variable, deterministic both directions; a 7×5 sweep maps the
+failing set to one rectangle. "Used display fails, fresh one passes" was a
+coincidence — a fresh Xvfb parks the pointer at the screen centre, outside that
+rectangle. The mapped-toplevel count is 11 on both, so the accumulated-windows
+hypothesis is refuted by measurement, not merely unproven.
+
+⚠ **This is NOT the phantom fix this batch has been avoiding.** The
+`test_ase_core` C11 red is still deliberately left in place, because deleting a
+gitignored `untitled~.sch` would green it with no code change. This one is
+earned: a test defect was found, named, fixed, and sabotage-proved.
+
+**Every audit from here diffs against ELEVEN names.** The baseline of record is
+`audit_1269_2026-09-04.txt`.
+
 ## Items
 
 | # | item | verdict | commit | checks | files | eyeball | note |
@@ -32,13 +120,30 @@ judged by DIFFING that list by test **NAME and STATUS**, never by the red count.
 | A1 | the mask bit and the chord | `[E]` | `59b67766` | 36 new, ALL PASS | xschem.h, annot_mode.tcl, cadence_style_rc | owed | ✅ `Ctrl-Alt-6` no longer fires `Alt-6`. Filed 1246, 1247, 1248 |
 | A2 | the name classifier | `[x]` | `dcbb85c3` | 36→52, ALL PASS | xschem.h, actions.c | — | `TEXT_ANNOT_NAME 1024`, unconditional. Filed 1249, 1250 |
 | A3 | the draw rung and the per-instance gate | `[E]` | `39769294` | 52→82, ALL PASS | actions.c, draw.c, svgdraw.c, psprint.c, select.c, xschem.tcl | owed | closed 1246-1249. Filed 1251-1254. **Audit run by the DRIVER: 365/11/0/2 of 378, 11 reds identical by name** (`audit_A3_2026-09-02.txt`) |
-| A4 | the status line is not path-length-sensitive | `[ ]` | | | | | fixes **1250** (intermittent T1 red) and **1251** |
-| A5 | D-1 / D-6 conformance, and A3's staleness | `[ ]` | | | | | needs A3; fixes **1252, 1253, 1254** + the blank-block gate |
-| B1 | the backend seam | `[ ]` | | | | | D-4/D-5 are the whole item |
-| B2 | the list store and the settings file | `[ ]` | | | | | `Makefile.in` ×2 + `./configure` |
-| B3 | the window | `[ ]` | | | | | `rdw::`, not `results::` |
-| B4 | the keys and the two grammars | `[ ]` | | | | | needs B3; displaces `logic_set` |
-| B5 | the button column and the scope dialogs | `[ ]` | | | | | needs B2+B3; issue 0803 |
+| A4 | the status line is not path-length-sensitive | `[E]` | `ccd2aec1` | 82→93; stale_0684 52→54 | annot_mode.tcl | owed | **T1 solo ×4 = 0/0/0/0** — the flake is dead. Filed 1255, 1256. **Driver audit: 365/11/0/2, IDENTICAL BY NAME to A3's** (`audit_A4_2026-09-02.txt`) |
+| A5 | D-1 / D-6 conformance, and A3's staleness | `[E]` | `cd212b69` | 93→105, ALL PASS | actions.c, draw.c, svgdraw.c, psprint.c, select.c, scheduler.c | owed | closed 1252-1254 + the gate. **Ran its own audit; by-name diff vs A4 EMPTY.** Filed 1257-1261 |
+| A6 | close the value gate and the last bbox doors | `[E]` | `c8bb41f9` (driver) | 105→120, ALL PASS | actions.c, save.c, scheduler.c, select.c, xschem.h | owed | crew returned **F** — destroyed its own work, then blocked from building. Driver built, ran the suite, attributed the 12th red (**1269**, the display). **1259 only PARTIALLY closed** → **1263** to B1 |
+| A7 | the wording follows the gate, guards stop lying | `[E]` (driver re-do) | see commit | 120→**134**, ALL PASS | actions.c, op_annot.tcl, scheduler.c, xschem.h, xschem.tcl, annot_mode.tcl | owed | crew returned **F**, refuted by its own adversary (**1270**). Driver re-did from the crew's preserved patch + 4 lines + rows **A64/A65**, both sabotage-proved. Closes **1255, 1256, 1257, 1261**; fixes **1270**. T1 **0**. Audit 364/12/0/2, by-name diff vs A6 **EMPTY**. **FEATURE A CLOSES HERE** |
+| B1 | the backend seam | `[x]` | see commit | **37→49**, ALL PASS | ase.tcl, op_annot.tcl, test_rdw_seam_1245.tcl | — | crew returned **F**, refuted by its own adversary (**1272**). Driver re-did from the preserved patch + 2 fixes + 12 rows. Fixes **1272**; answers **1259** (NO) and **Q10** (YES). Answer dict is **five** keys |
+| B2 | the list store and the settings file | `[E]` | `1340da77` | 39 new, ALL PASS | op_param_lists.tcl (new), Makefile.in, 3 PDK procs | owed | `grep -c` 0→**2**, `Makefile.conf` byte-identical. Settings file is DATA (DD-3) and the sourced-conf attack was **demonstrated on this tree**. Filed **1273-1281**; six are defects in its own new code, found by its own adversary |
+| B2a | the NINE defects the adversaries found in B2's and B3's own new code | `[F]` | `560e239d` | reached 56/43, **reverted** | — | — | 9 fixes green, **3 wrong**: 1284 regressed refusal rendering, 1277's ranking was the filed defect under its own fix, 1281 turned a leak into deletion. Patch preserved, applies to `825cd3bd`. Filed **1285, 1286** |
+| B2a-2 | the re-do: apply B2a's patch, fix its three, add DD-6's field | `[F]` | `620d423e` | reached 71/49/59, **reverted** | — | — | refuted AGAIN, on the same two issues: 1281 deleted a user row a second time, 1277's ranking was wrong a second time. 1284's fix survived a **22-shape** matrix. Filed **1287-1290** |
+| — | **THE BUNDLE IS SPLIT.** Two crews × nine interlocked issues × one commit = one refuted fix reverts eight sound ones. DD-7/DD-8/DD-9 settle the two designs that failed twice; the rest goes out as three small items | | | | | | |
+| B2b | what the sheet draws: DD-6 (built, not asserted) + 1285 + 1289/DD-9 | `[E]` | `efb9ab8d` +driver | 39→**56** | op_annot.tcl, op_param_lists.tcl (`apply`,`_params`), 3 PDK procs | owed | **the split worked — first B2-family item to land.** Feature A unmoved (485/492, 134). Filed 1291-1293; **driver fixed 1291 on the spot** (rows Z0-Z4). DD-10 answers its question |
+| B2c | the settings file on disk: 1277/DD-8 + 1281/DD-7 + 1276 + 1288 | `[E]` | crew `[F]` `cb819fb5`, **driver re-do** | 56→**86** | op_param_lists.tcl, test_op_param_store_1245.tcl | owed | crew returned F on **1294** (a 3rd deletion of a user row) — driver applied its patch and fixed it. **DD-8 measured 6/6**, ranking gone. Fixes 1276, 1277, 1281, 1288, 1294, 1296-half. Filed 1294-1296 |
+| B2d | the window's robustness: 1284 (verbatim, 22 shapes) + 1282/DD-5 + 1283 | `[E]` | `924d722d` +driver | 32→**56** / 42→**66** | rdw.tcl, test_rdw_window_1245.tcl | owed | 1284's fix lands at last (thrown away twice as collateral). **Refuted the driver's own DD-5 specimen on a measurement** — `save.c` renames a multi-point OP plot to `dc`. Filed 1297-1299; **driver fixed 1297 + 1298 on the spot** (rows ND1-ND4) |
+| — | **B2 FAMILY CLOSED.** Nine issues bundled twice and reverted twice; split into four small items and **all four landed**, plus three driver fixes. Remaining: **B4** (the keys), **B5** (the buttons) | | | | | | |
+| B3 | the window | `[E]` | `724c4160` | **32** (`--nogui`) / **42** (`:99`) | rdw.tcl (new), Makefile.in, xschem.tcl | owed | `grep -c` 0→**2**, and it went further than any earlier item: `make install DESTDIR=` ships it and the **INSTALLED binary starts rc=0, not 139** — issue 0424 tested, not cited. Audit by-name diff **EMPTY**. Filed **1282-1284** |
+| B4 | the keys and the two grammars | `[F]` | `26675fd4` | peaked 68/78 + 21, **reverted** | — | — | its click read **SNAPPED** coords and named a device the user did not press (**1303**) — *and so does shipped `ase_window.tcl`*. Also 1304 (no `<B1-Motion>` → a 1px drift selects 13 objects). Filed **1300-1304** |
+| B4-a | the unsnapped accessor `xschem get mousex`/`mousey` | `[x]` | driver | +2 (P1,P2) | scheduler.c | — | the C that made 1303 fixable. **B4 is no longer a pure-Tcl item** |
+| B4-2 | the re-do: unsnapped pair, `<B1-Motion>`, the focus race | `[F]` | `2206f7cd` | peaked 74/84 + 27, **reverted** | — | — | fixed 1303 and 1304 soundly, then bounced a click out of the text pane (**1306**) and let a suspended re-arm seize the canvas for the session (**1305**). Filed 1305-1307 |
+| B4-3 | the second re-do: 1305 + 1306 | `[E]` | `8a8f66d2` +driver | 58→**76** / 68→**86**, keys **30→35** | rdw.tcl, cadence_style_rc, 2 suites | owed | **the keys work.** Filed 1308, 1309; **driver fixed 1308 on the spot** (DD-12, rows E1-E5) |
+| B5 | the button column and the scope dialogs | `[F]` | `77d71df7` | reached 96/107 + 93 + 39, **reverted** | — | — | built and green on every tier, then **MIS-SCOPED BY THE DRIVER**: two broad Deletes destroy the PDK declaration and the `.save` card (**1312**), and the fix is in the one file B5 was told not to edit. Filed 1310-1314 |
+| B2e | the declaration key: 1312 + its sibling 1292 | `[E]` | `0abba4cb` +driver | 86→**102** | op_annot.tcl, op_param_lists.tcl, 3 PDK procs | owed | **DD-13 lands.** Feature A unmoved (485/492, 134); audit 369/11/0/2, same eleven. Filed **1315-1320**; driver added the count floor and **DD-14**. B5's patch still applies (`rc=0`) |
+| B5-2 | the re-do: apply B5's patch on top of B2e | `[F]` | `05fe656f` | reached 100/111/113/40, **reverted** | — | — | the wired Delete edited **a device on a different sheet** (**1322**): the block header keeps only the instance NAME and re-resolves it against whatever sheet is open, and two sheets both holding an `M1` — the default template name — is the ordinary case. Filed **1321-1325** |
+| — | **THE PATTERN, STATED: the button column is the FIRST REAL CALLER of the store, and each attempt finds another latent defect in what it calls.** B5 → the seed read a field `apply` overwrites. B5-2 → the block cannot say which sheet it came from. **1323 and 1325 reproduce at HEAD with no button code at all.** Not a failing crew: a provider tested only against tests, meeting its consumer | | | | | | |
+| B5-a | the foundations: 1322 + 1323 + 1325 + two dead fences | `[E]` | | window 76→**83** --nogui / 86→**94** :99 · store 102→**110** · keys 35→**36** (floor 35→36) | rdw.tcl, op_param_lists.tcl, 3 suites, the preserved patch | owed | **1322 and 1323's reorder half closed; 1325's headline case closed, its title REFUTED again by the adversary in the symlink shape → 1325 is PARTIALLY FIXED and issue 1327 is a precondition on B5-3.** Both dead fences repaired **inside** the patch, so B5-3 inherits them working; patch md5 and line count moved, all citations updated. Filed **1326** (the Delete half of 1323 — the user's to rule) and **1327**. ⚠ Guarding the **Add** arm reds row **BT27**: the guard is the reorder's alone, on a measurement |
+| B5-3 | the re-do: apply B5-2's patch on top of B5-a | `[ ]` | | patched tree measured **107/119 + 123 + 41**, all `ALL PASS` | | | patch md5 `42890cf1…`, applies `rc=0` **on top of B5-a**. `KX_FLOOR` is **41** in it |
 
 ## Driver decisions (taken by the driver, not the user — recorded so they are auditable)
 
@@ -53,6 +158,118 @@ judged by DIFFING that list by test **NAME and STATUS**, never by the red count.
   that owns the files each needs (`src/xschem.tcl` for 1246, `src/actions.c` for
   1247) and the first at which any of them has a visible effect. A1 correctly
   measured and filed all three without fixing them; none is A1's to own.
+
+### ⚠ A6: what a crew could not do, and what the driver had to
+
+A6 is the first item to return **F**, and the reason is worth keeping. Its
+write-up agent ran `git checkout -- src/save.c` to undo a comment edit and
+destroyed ~99 lines of its own **unstaged, already-verified** implementation.
+Never staged, so `git fsck` recovered nothing. It reconstructed 88 lines
+verbatim plus one 8-line hunk from prose, **said so plainly**, and was then
+denied permission to run `make` — so it could not certify the reconstruction and
+**refused to commit unbuilt C**. That refusal was correct.
+
+The driver did the half the crew could not: built it (clean; the one `save.c`
+warning is pre-existing, confirmed by building both HEAD and the change and
+diffing by *content*, since A6 shifts line numbers by ~99), ran the suite
+(105 → 120, ALL PASS), and **attributed the twelfth red instead of accepting
+it** — five binaries, including A4's own commit rebuilt in a clean worktree,
+all of which fail it, against a freshly restarted display which passes all 126.
+It is the display, not the code: issue **1269**.
+
+**And then the driver's own audit turned out to be worthless, for a reason worth
+keeping.** The first post-A6 full audit reported two extra reds — including
+`test_annot_declutter_1244` itself, with every one of A6's own checks failing.
+The tree was correct; the **binary was a build behind**, left there by the
+`git stash` / build / `git stash pop` cycle run during the 1269 attribution. No
+test harness builds — `full_audit.sh:49` runs `src/xschem` as it finds it — so
+the transcript was entirely plausible and entirely false. One `make -C src`
+(which recompiled *every* object, the tell) and the suite passed 120/120.
+Recorded as a standing trap in CLAUDE.md. **The driver's rule for the rest of
+this batch: rebuild immediately before any audit that is meant to be evidence,
+and read an unexpected red as a question about the binary before it is a
+question about the code.** The 1269 table has been amended, because two of its
+rows were taken with that stale binary.
+
+**The audit re-run against a correct binary** (`audit_A6_2026-09-03.txt`):
+
+```
+SUMMARY: 364 pass  12 fail  0 crash/timeout  2 skip  (total 378)
+```
+
+`test_annot_declutter_1244` is **green in the audit**, which is what A6 had to
+prove. The list is the eleven known reds plus **`test_wave_sigbrowser_i12`**,
+which the re-measurement excludes the binary from: it passes on a freshly started
+display, passes on a second run, passes even after the red suite that precedes it
+in the audit - and fails after a full audit. Issue 1269 now carries the excluded
+candidates and the named-but-unproven mechanism (BX42 reads
+`xschem get current_win_path`, which follows X focus and `<Enter>`, so it is
+really asking where the pointer and focus are).
+
+**The baseline for A7 is therefore TWELVE NAMES, carried by name and by reason -
+never as a count.** A7 must not add a thirteenth.
+
+**Two standing lessons for the rest of this batch.** A crew that reports its own
+destruction honestly is behaving correctly and its work is still usable — check
+it, do not discard it. And an unexplained red is attributed, never absorbed:
+this one cost a worktree build and it was still cheaper than a batch that learns
+to wave reds through.
+
+### ⚠ A7: the crew was refuted, was right to be, and the re-do cost four lines
+
+A7 is the second item to return **F**, and unlike A6 nothing was lost. Its own
+adversary refuted the central mechanism, its write-up agent **agreed with the
+adversary against its own work**, reverted, and preserved every line as a
+re-appliable patch that was dry-run-applied to a pristine `git archive`
+extraction *before* anything was touched. The driver's re-do was: apply the
+patch, add four lines, write two rows.
+
+**The defect is worth remembering because it is a class, not an incident.** A7
+needed to answer *"was anything actually hidden?"* and answered it with a counter
+bumped at the declutter rung's `return 1` — which sits **above** the three
+predicates that would have hidden the text anyway. So the counter measured *which
+predicate fired first*, not *what came off the sheet*. On any annotated device
+whose only non-`@name` text already carries `hide=instance` — **57 shipped
+symbols** — the sheet was byte-identical at mask 1 and mask 9 while all three
+status-line producers claimed a declutter. That is the very defect A7 was written
+to fix, in a state nobody had named, and it was green past **132 checks**.
+
+**The lesson: a measurement taken at a seam inherits the seam's position, and
+the seam's position was chosen for a different question.** Visibility only needs
+to know that something says "hide". A sentence that says *"other device text is
+hidden"* is a claim about what the user can no longer see. Those are two
+questions and one `return`.
+
+Three things from the re-do that the rest of this batch should copy:
+
+* **A golden was wrong and the measurement was right.** A64 was written expecting
+  the stock `Graphs` door to stay silent on the counterexample sheet, like the
+  two chords. It does not, and it should not: the menu body runs
+  `set show_hidden_texts 1` one line before writing the mask, so on that door the
+  text really *is* drawn and really *is* taken away. The row now goldens the
+  asymmetry and **reads the switch back to prove the reason**. When a new row
+  reds, find out which side is wrong before changing either.
+* **Both repairs were sabotaged, not asserted.** The 1270 defect restored reds
+  A64; the tempting repair that tests only the two `HIDE_*` bits reds A65. A65
+  exists solely to catch a fix that would work for the keyboard and silently
+  break the menus — the workflow the feature was written for.
+* **A62 was green against a menu that raises**, because `xschem set annot_show`
+  runs early in the `-command` body and the mask merges before the raise. It now
+  reports whether the body raised. And the mechanism was corrected a second time
+  in the re-do: deleting the `info commands` guard raises *nothing*, because the
+  call below it is already inside a `catch`. The guard is not what keeps stock
+  xschem quiet — **the inner catch is**.
+
+### ⚠ FEATURE A CLOSES AT A7 — a driver boundary, set 2026-09-02
+
+Six landed items, **sixteen filed issues** (1246-1261). Every one measured; several
+were real — a D-1 violation, an intermittent T1 red against a zero baseline, and
+a feature that inverted itself before you had simulated. The crews behaved
+correctly. But three consecutive items have each produced residue from the item
+before, and that recursion must be bounded by a decision rather than by
+exhaustion. **A6 and A7 close feature A. Anything found after A7 is filed and
+deferred to a later batch, not spawned as another item.** Feature B — the half
+the user described first and at greater length — has not started.
 
 ### ⚠ A3's receipt carried no full audit, and the driver ran it
 
@@ -119,3 +336,23 @@ three `look` debts from the merge.
 | A1 | E | 59b67766 | test_annot_declutter_1244 new->ALL PASS 36; full_audit 364/11/0/2 of 377->365/11/0/2 of 378 (+1 = this suite, 11 reds identical by name); T1 0->0 solo; T2 HARNESS PASS 6/6->6/6; test_op_annot 492->492; annot siblings 36/52/27/15/22 unchanged; accelerators+launch_context+keybind_snap_grid 6+clone_canvas 3+audit_classifier 69 unchanged | 1246,1247,1248 | Accept the three Ctrl-Alt-6 declutter status sentences as written — including that, until item A3 lands, the ON one ("a device showing operating-point values draws its name and those values only") promises a declutter that has not arrived yet? |
 | A2 | x | dcbb85c3 | test_annot_declutter_1244 36->52 ALL PASS \| test_op_annot 492->492 \| annot_show_menu 36 \| stale_0684 52 \| hier_0911 15 \| blank_cause_0909 27 \| op_behind_tran_1242 22 \| selflog_grep_guard (no count) \| T1 0->0 solo (1 unattributed F21 red in 4 runs, filed 1250) \| T2 HARNESS PASS 6/6 \| audit 365/11/0/2 of 378, all 11 reds + 2 skips identical BY NAME | 1249, 1250 | A2 landed and committed: TEXT_ANNOT_NAME 1024 set unconditionally on a whole-string match of all three spellings, nothing visible until A3 (proved cross-binary byte-identical); rule debt 1244_A2_name_bit_vs_hide_true is wanted BEFORE A3. |
 | A3 | E | 39769294 | test_annot_declutter_1244 52->82 ALL PASS \| test_op_annot 492->492 \| annot_show_menu 36->36 \| stale_0684 52->52 \| hier_0911 15 \| blank_cause_0909 27 \| op_behind_tran_1242 22 \| spice_get_node_0861 23 \| sod_pick_0204 66 \| select_at 15 (--logdir) \| verb_noun_descend 25 \| hover_repair 5 \| cmdmode_descend 90 \| locked_wire_pick 16 \| no_untitled_litter 12 — all ALL PASS, row-id diff 0 \| te | 1251,1252,1253,1254 | The declutter fires on any instance whose descriptor RESOLVES, not one that got numbers — a registered FET over a raw with no matching vectors is decluttered while its OP block shows "zid =" with nothing after it (common, per rule R1: gm/vth exist only if the deck saved them) — is that "only instances that got OP numbers" per D-6, or must the block carry at least one actual value before any parame |
+| A4 | E | ccd2aec1 | test_annot_stale_0684 52->54 (default + roots 121/142/201, and :99); test_annot_declutter_1244 82->93 (:99); test_op_annot 485/492, blank_cause_0909 27, hier_0911 15, results_freshness 21, show_menu 36, op_behind_tran_1242 22 all unchanged; T1 SOLO x4 = 0/0/0/0; T2 HARNESS PASS 6/6; full_audit 365 pass / 11 fail / 0 crash / 2 skip of 378, eleven reds identical BY NAME to audit_A3_2026-09-02.txt | 1255,1256 | After Ctrl-Alt-6, every 6 / Alt-6 / Alt-Shift-6 press now also says " Decluttering is on, so other device text is hidden." — including before you have run a simulation, because the sheet is stripped then too: is that the right reminder, should it be shorter, should it repeat the way out (Ctrl-Alt-6), or should the other keys stay silent about it? |
+| A5 | E | cd212b69 | test_annot_declutter_1244 93->105 ALL PASS; T1 0->0 solo; T2 6/6 HARNESS PASS; op_annot 492, show_menu 36, stale_0684 54, blank_cause 27, hier 15, op_behind_tran 22, pin-name x4 + pick/descend x6 all unmoved; full_audit 365 pass/11 fail/0 crash/2 skip of 378, by-name-and-status diff vs audit_A4 EMPTY | 1257,1258,1259,1260,1261 | With no results file, Ctrl-Alt-6 now hides nothing but the held status line still says other device text is hidden - should the clause follow the gate (say nothing when nothing was hidden), or should the press be refused outright with "Run a simulation first"? |
+| A6 | F | a728d198 | Before the loss (Tk arm unless noted): test_annot_declutter_1244 105->120 ALL PASS (re-run by me), test_op_annot 485(nogui)/492(Tk)->492 ALL PASS, test_results_select ->377 ALL PASS, test_raw_read_dispatch 137->137, test_raw_read_failure_0306 63->63, test_zero_point_raw_0836 74->74, test_backannotate_digital 84->84, test_spice_get_node_0861 23->23, test_annot_show_menu 36->36, test_annot_stale_068 | 1262,1263,1264,1265,1266,1267,1268 | A6 was implemented, built and fully verified, then I destroyed A6-b's uncommitted src/save.c half with `git checkout -- src/save.c`; no code is committed, the work is preserved in doc/claude/op_param_batch/A6_working_tree_UNVERIFIED.patch and in the working tree, and A6 must be re-run starting with `cd src && make`. |
+| A7 | F | b169d5ff | As built, now REVERTED: declutter_1244 120->132 ALL PASS, stale_0684 54->56 ALL PASS both arms, op_annot 492/485 unchanged, show_menu 36, waves_gate 42, hier_0911 15, blank_cause 27, behind_tran 22, results_select 377, raw_read_dispatch 137, T1 0 counted, T2 6/6, full audit 364/12/0/2 with the twelve names verdict-identical; after the revert every suite is back at its baseline count. | 1270 | A7 is F: all four parts implemented, built and green everywhere including the audit, then refuted on a fourth state nobody had named — reverted, preserved as a re-appliable patch, and the re-do is four lines of C. |
+| B1 | F | 99cb360c | Re-taken AFTER the revert: T1 0->0 counted (117 lines, rc=0); T2 HARNESS PASS 6/6->6/6; test_ase_simcaps_0948 ok->ok; test_ase_core 1 FAILED (181 passed)->1 FAILED (181 passed), the C11 phantom by name; test_rdw_seam_1245 was ALL PASS (37) and is DELETED with the revert, so the audit denominator stays 378. | 1271,1272 | B1 REFUTED and REVERTED: the seam was green at 37/37 while returning `nan` in the VALUE bucket from a binary raw (issue 1272) — code preserved as doc/claude/op_param_batch/B1_working_tree_REFUTED.patch, applies clean to 9f1d9153, two named blockers, reconstruction is apply+fix+re-verify not a retype. |
+| B2 | E | 1340da77 | test_op_param_store_1245 new->ALL PASS 39; T1 0->0 counted solo; T2 HARNESS PASS 6/6->6/6; op_annot 485/492->485/492; startup_guard_0663 22->22; results_select 377->377; ase_simreg_0931 67->67; raw_read_dispatch 137->137; rdw_seam_1245 49->49; annot_declutter_1244 134->134 (:99 openbox); sim_casemode 28->28; ase_simdlg_0937 4->4; ase_core 1 FAILED(181)->1 FAILED(181) = the C11 untitled~.sch phanto | 1273,1274,1275,1276,1277,1278,1279,1280,1281 | Should the project settings file live beside the directory xschem was LAUNCHED from ([pwd]/.xschem/op_param_lists.conf, what shipped) or beside the schematic being edited — because as shipped, a teammate who clones the project and starts xschem from $HOME silently finds no project settings at all? |
+| B3 | E | 724c4160 | test_rdw_window_1245 new->ALL PASS 32 (--nogui) / 42 (:99); full_audit 366/12/0/2 of 380 -> 367/12/0/2 of 381 with the non-PASS diff EMPTY by name+verdict vs audit_B1; T1 0->0 counted solo; T2 HARNESS PASS 6/6->6/6; rdw_seam_1245 49->49; op_param_store_1245 39->39; startup_guard_0663 22->22; op_annot 492->492; calc_skeleton 545->545; calc_widgets 244->244; ciw/palette/lib_manager_launch/nh_editor_ | 1282,1283,1284 | Suites green, please look at the Results Display Window - and rule the one state nobody named: a DC sweep answers ok, so the window prints its point-0 numbers under "these are the operating-point columns this run saved" with the word dc nowhere (issue 1282) - should it name the analysis, keep rendering it silently, or refuse a dc raw the way it already refuses a transient? |
+| B2a | F | 560e239d | After revert, all back at baseline: test_op_param_store_1245 39->39; test_rdw_window_1245 32->32 (--nogui); test_rdw_seam_1245 49->49; test_op_annot 485->485; T1 0->0 counted (rc=0, solo); T2 HARNESS PASS 6/6->6/6. (The reverted attempt had reached 56 / 43 / 49 / 485.) | 1285,1286 | B2a REVERTED: nine fixes went green (store 39->56, window 32->43/42->53, 17 sabotage variants) but three were wrong - 1284 regressed refusal rendering vs HEAD, 1277 did not deliver DD-2, 1281 turned a leak into deletion of the user's own settings; docs committed, 2506-line patch preserved and applies clean to 825cd3bd. |
+| B2a-2 | F | 620d423e | Item was GREEN then REVERTED: store 39->71, rdw_window 32->49 / 42->59(:99), rdw_seam 49, op_annot 485/492, declutter_1244 134, audit 367/12/0/2 of 381 diff-empty, T1 zero — tree now back at baseline 39/32/49/485/134, byte-identical to 849f2231 | 1287,1288,1289,1290 | B2a-2 delivered everything asked and was reverted: four defects reproduced first-hand, incl. a SECOND deletion of a user-typed settings row and a new draw-time raise door; work preserved as B2a-2_working_tree_REVERTED.patch (superset of B2a's, applies clean to 849f2231). |
+| B2b | E | efb9ab8d | test_op_param_store_1245 39->51 (--nogui and Tk :99); test_op_annot 485->485 / 492->492; test_annot_declutter_1244 134->134; test_rdw_seam_1245 49->49; test_rdw_window_1245 32->32; T1 0->0 fail; T2 6/6 goldens; full audit 367/12/0/2 of 381, non-PASS diff EMPTY by name and verdict; no build (pure Tcl) | 1291,1292,1293 | When a user deletes the LAST row of a device's annotation list, should that device's whole OP block vanish from the sheet — which also drops it out of the declutter, so every text the declutter was hiding comes back — or should an emptied list mean "no narrowing" (which makes B5's Delete of the last row a silent no-op)? |
+| B2c | F | cb819fb5 | REVERTED to baseline, all re-measured after: test_op_param_store_1245 56->56 ALL PASS (was 79 before revert), test_op_annot 485->485, test_annot_declutter_1244 134->134, test_rdw_seam_1245 49->49, test_rdw_window_1245 32->32, T1 0->0 (117 lines; one earlier solo T1 read 3, all test_ase_optier_0963 = issue 1290 flake, suite then 94/94 alone), T2 6/6 PASS, no build (pure Tcl, src/ and tests/ byte-id | 1294,1295,1296 | B2c REVERTED (3rd on 1277/1281): DD-7's writer identifies rows its own reader rejected and deletes them, rc=1 zero reports; patch preserved, 1276/1288/DD-8 in it are sound and should be applied + fixed, not retyped. |
+| B2d | E | 924d722d | test_rdw_window_1245 32->52 --nogui / 42->62 :99 ALL PASS (additive, 0 rows removed); test_rdw_seam_1245 49->49; test_op_param_store_1245 86->86; test_op_annot 485->485; T1 0->0 counted; T2 HARNESS PASS 6/6; full_audit 367 pass/12 fail/0 crash/2 skip of 381, non-PASS set identical by name and status to audit_B2c_2026-09-04.txt | 1297,1298,1299 | DD-5's specimen wording is refused on a measurement (save.c:1073/:1120 rename a MULTI-POINT Operating Point plot to dc, so the specimen tells a user who ran only an operating point that they ran a sweep) - accept the shipped sentence "These numbers come from the first point of results xschem reports as a dc analysis, not as a standalone operating point. A dc sweep's first point is one sweep step,  |
+| B4 | F | 26675fd4 | Reverted, so after == baseline: test_rdw_window_1245 56/66 (peaked 68/78), test_rdw_keys_1245 0 (peaked 21, file removed), seam 49, store 86, op_annot 485/492, declutter 134, cmdmode 37, T1 0, T2 6/6, audit 367 pass/12 fail/0 crash/2 skip of 381 (peaked 368 of 382, non-PASS diff empty by name and verdict both times) | 1300,1301,1302,1303,1304 | B4 is F and REVERTED: its click reads SNAPPED coordinates and can name a device the user did not press (1303), and a 1px-drifted click selects 13 objects against the user's own "clicking will not change selected set" (1304) — both live in shipped ase_window.tcl too; work preserved in B4_working_tree_REVERTED.patch, applies clean to 735ea26e in both directions. |
+| B4-2 | F | 2206f7cd | post-revert = HEAD baseline: test_rdw_window_1245 58->58 --nogui / 68->68 :99 ALL PASS, test_rdw_keys_1245 absent->absent, T2 run.sh HARNESS PASS 6/6, T1 0 counted failures, src/ byte-identical to 0ce85dda (B4-2 had reached 74/84 + a 27-check keys suite and audit 368/12/0/2 of 382 before it was reverted) | 1305,1306,1307 | B4-2 REVERTED: the focus hand-back bounces a deliberate click out of the RDW text pane (1306) and a key pressed during a suspended descend seizes the canvas for the whole session (1305); all work preserved whole and re-appliable in doc/claude/op_param_batch/B4-2_working_tree_REVERTED.patch for item B4-3. |
+| B4-3 | E | 8a8f66d2 | T1 0->0 fail/58 cases; T2 6/6 goldens PASS; test_rdw_window_1245 58->76 --nogui / 68->86 :99; test_rdw_keys_1245 absent->30 :99 (skips headless); seam 49, store 86, cmdmode 37, ase_sod 52, op_annot 485, declutter 134, sod_pick 66 all unmoved; T4 make not run (pure Tcl, grep -c rdw.tcl src/Makefile = 2 before and after) | 1308,1309 | The Results window now KEEPS the keyboard when you click its text pane (so select-and-copy into a review document works) but the mode's ESC and keys 1-4 are bound on the canvas, so once the pane has focus nothing ends the mode (issue 1308) — should the window hold the keyboard and gain its own ESC, or never take the keyboard at all, and do you ratify the un-snapped refusal sentence that now ships  |
+| B5 | F | 77d71df7 | AFTER REVERT, all at pre-B5 baseline: test_rdw_window_1245 96->76 (--nogui) / 107->86 (:99), test_op_param_store_1245 93->86, test_rdw_keys_1245 39->35 (:99), CONTROLS unmoved test_rdw_seam_1245 49/49, test_op_annot 485, test_annot_declutter_1244 134 (:99); T1 0 counted failures rc=0, T2 HARNESS: PASS 6/6; no build (pure Tcl, grep -c rdw.tcl src/Makefile = 2) | 1310,1311,1312,1313,1314 | B5 built, green on every tier, and REVERTED: two broad-scope Deletes strip the parameter's .save card and the PDK seed row, violating binding ruling DD-4/DD-6, and the mechanism (issue 1312) lives in src/op_param_lists.tcl, the one file B5 may not edit - so B5 is mis-scoped and needs a store item before it. |
+| B2e | E | 0abba4cb | store 86->102 · op_annot 485->485 (--nogui) / 492->492 (:99) UNMOVED · declutter_1244 134->134 UNMOVED · rdw_window 76->76 / 86->86 · rdw_seam 49->49 · rdw_keys 35 (:99, but Verify-C saw 35/33/32 over five runs — issue-1269 focus flake, not a stable acceptance number) · T1 0->0 counted · T2 HARNESS PASS 6/6 · full audit 368/11/0/2 -> 369/11/0/2 of 382, same eleven names by name and verdict · git a | 1315,1316,1317,1318,1319,1320 | DD-13's declaration stamp is preserve-if-present, so the recovery round-trip printed in all three PDK _procs.tcl files (`set d [op_annot::descriptor nmos]; dict set d params ...; op_annot::register nmos $d`) now changes what the run computes and what the sheet draws but NOT what `seed` answers — should that recipe itself redeclare the seed, or is the one-line `dict unset d declared` escape hatch B |
+| B5-2 | F | 05fe656f | REVERTED to baseline and re-measured: window 76 --nogui / 86 :99, store 102, keys 35 (floor 35), op_annot 492, declutter 134, T1 0 fail, T2 HARNESS PASS 6/6 — the implementation had reached 100/111/113/40 green before the revert. | 1321,1322,1323,1324,1325 | B5-2 built clean and green on every tier, then the wired Delete was measured editing a device on a different sheet — reverted in full, work preserved as B5-2_working_tree_REFUTED.patch (md5 42890cf163dd9ba1e85e312e1801c6ed, applies rc=0); Feature B is NOT complete. |
+| B5-a | E | f00c90a4 | window 76→83 --nogui / 86→94 :99 · store 102→110 (both arms) · keys 35→36 :99 (KX_FLOOR RAISED 35→36) · controls unmoved seam 49, op_annot 485/492, declutter 134 · T1 0 counted fail · T2 HARNESS PASS 6/6 · T4 no build (pure Tcl, grep -c both files in src/Makefile = 2) | 1326,1327 | Three rulings are yours: (1) issue 1326 — when a PDK declares two parameters sharing a label, should Delete refuse, or keep dropping both rows and a .save card, or should op_annot::register refuse the declaration? (2) should the status line NAME the sheet a block was dumped from, and should a cross-sheet edit ever be refused? (3) do you ratify Save's new collision sentence and its project-tier def |
+| B5-3 | E | 05949661 | store 114->130 · window 83->109 nogui / 94->121 :99 · keys 36->41 (KX_FLOOR 36->41) · seam 49->49 · op_annot 485->485 / 492->492 · declutter 134->134 · T1 0 (solo) · T2 HARNESS PASS 6/6 · audit 369p/11f/0c/2s of 382, same eleven names | 1328,1329,1330,1331,1332 | Feature B is complete and committed, suites green, please look: does the wired button column, its two scope dialogs and its greying read right on screen (look debt the_B5_button_column_and_the_two_scope_dialogs, ten judgement questions, updated in place)? |

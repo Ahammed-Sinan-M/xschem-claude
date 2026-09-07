@@ -97,8 +97,10 @@ namespace eval ase::ui {
   variable annot;   array set annot {}
   # dlg(key,...): per-window records of the item-07 dialog layer — Choose
   # Analyses antype/anen/anextra, Save All allv/alli, the Design/Save-As
-  # combo full-value lists (dlib/dcell/dview/salib), and the list-dialog row
-  # index (models/simopt). Cleaned on dialog proceed/cancel AND in close.
+  # combo full-value lists (dlib/dcell/dview/salib), the list-dialog row
+  # index (models/simopt), and the Simulators row editor's own two
+  # (simnames/simrow, plus simns — the -n checkbutton's variable, issue 1371).
+  # Cleaned on dialog proceed/cancel AND in close.
   variable dlg;     array set dlg {}
   # simuse(key): the Simulators dialog's "which one is in force" combobox
   # variable (issue 0937). Session-keyed for the same reason `annot` is: two
@@ -282,6 +284,22 @@ proc ase::ui::open {key lib cell view} {
   # session mutations repaint the title + status bar (dirty marker, T=) from
   # now on
   set ::ase::session_notify ase::ui::session_changed
+  ## 1370's REPAIR: and so does a REGISTRY mutation, from wherever it is made.
+  ## The dialog's own refresh (ase::ui::simdlg_fill) covers all five gestures
+  ## of Setup > Simulators and NOTHING ELSE, and the registry has a second
+  ## door: `ase::sim_register <name> <path>` then `ase::sim_select <name>`
+  ## typed into the Command window, which is the pre-0937 path and the one this
+  ## user's own ngspice-ver50 entry was first created through. Measured live by
+  ## 1370's adversary: with a window open on `Simulator: ngspice-ver50`, that
+  ## pair left the bar naming ngspice-ver50 while ase::sim_label already
+  ## answered the new entry -- a name on the bar for a simulator that would NOT
+  ## run, until the run itself healed it.
+  ##
+  ## ⚠ NO ARGUMENT. The registry is process-global and this hook has no session
+  ## to name, so it repaints EVERY open bar. Same single-slot discipline as
+  ## session_notify, and set here rather than at file scope for the same reason
+  ## that one is: nothing in ase.tcl may depend on this file existing.
+  set ::ase::sim_notify ase::ui::refresh_status_all
   # window-activation logging, the CIW/LibMgr pattern ('+' keeps other
   # bindings; notify_window_active dedupes the FocusIn repeats)
   bind $top <FocusIn> "+[list notify_window_active $N "ASE-L $lib/$cell"]"
@@ -4887,6 +4905,16 @@ proc ase::ui::simdlg_fill {key} {
   set sel [ase::sim_selected]
   if {$sel eq {}} { set simuse($key) $none } else { set simuse($key) $sel }
   ase::ui::simdlg_status $key
+  ## 1370: AND THE BOTTOM BAR OF EVERY OPEN SESSION FOLLOWS, from HERE and not
+  ## from the five gestures. Add, Edit, Remove and both arms of the "Use this
+  ## one:" combobox all funnel through this proc -- it is the dialog's own
+  ## "the registry is the truth, the widgets are a view of it" line -- so one
+  ## call covers every path with no duplication and none can be added later
+  ## that misses it. Without it the bar goes stale the moment the user changes
+  ## the choice and stays stale until the run they were trying to predict
+  ## actually starts (`set_status running`), which is exactly the question they
+  ## opened this dialog to answer.
+  ase::ui::refresh_status_all
 }
 
 # THE ONE WRITER OF THE STATUS LABEL. A non-empty `msg` wins -- that is a
@@ -4951,11 +4979,286 @@ proc ase::ui::simdlg_selected_name {key} {
   return [lindex $names $i]
 }
 
-# The two-field row editor. An empty `name` is the Add flavor; anything else
+# --- THE CASE CHOOSER (issue 1371) ------------------------------------------
+#
+# WHAT WAS BROKEN. ase::sim_capabilities MEASURES which spellings of a net name
+# the user's build can hand back, ase::sim_casemode_requested reads the request
+# off the registry entry, and ase::run_casemode_flag turns it into
+# `-D casemode=`. Every link worked except the one that lets a person ask: this
+# editor built exactly two rows, Name and Program, so the `casemode` field could
+# only be set by hand-editing the saved list. The user's own build was measured
+# `fold preserve distinguish`, their entry carried `casemode {}`, the request
+# fell to the global floor `fold`, and their VBG net came back as `v(vbg)`.
+# `fluid-editing` HAD this door -- a second line per simulator row, Exe / Args /
+# Case / -n / Test -- and it was deleted at the annotate merge on the promise
+# that these fields are registry-entry properties now and this dialog is their
+# one door. The store moved; the door was never built. See the tombstone at
+# src/xschem.tcl (simconf), which records the promise.
+#
+# RULE A1 IS THE WHOLE POINT: never offer a mode the binary was not measured to
+# deliver. So the chooser's values come from the measurement and from nowhere
+# else, and ase::ui::simdlg_case_values is the only place in this file that
+# asks -- row S31 of tests/headless/test_ase_simdlg_0937.tcl pins that, so a
+# second copy of the rule cannot appear behind the dialog. (This line named
+# "row S20f" until issue 1371's adversary read it: there is no such row.)
+#
+# THE LABELS ARE THE ENGINE'S OWN WORDS, DELIBERATELY. `fold`, `preserve` and
+# `distinguish` are what the user types into their saved simulator list and
+# what ase::sim_register validates; prettifying them here would make the dialog
+# and the file disagree about the same setting.
+
+# label <-> stored value, both directions, so nothing has to guess. `{}` is the
+# entry's "no request of my own", which is NOT the same as `fold`: it defers to
+# the global floor, and the label names whichever mode that floor currently is.
+# A mode stored on the entry that the program was not measured to deliver is
+# shown MARKED rather than dropped -- opening this dialog must never silently
+# change what the user hand-wrote.
+#
+# ⚠ THERE ARE TWO MARKS, NOT ONE, AND ISSUE 1371's ADVERSARY IS WHY. The mark
+# used to be `(NOT measured)` for both of the states below, and both are
+# reachable:
+#
+#   `not tried yet`  nobody has measured this program, so nothing is known
+#                    about this mode either way. That is the legacy shape row
+#                    S30 is about -- until this item landed, hand-editing the
+#                    saved list was the ONLY way to ask for a case mode -- and
+#                    it is ALSO what the user sees the moment after they press
+#                    OK, because ase::sim_register's look-again (issue 0950,
+#                    row D10 of tests/headless/test_ase_simcaps_0948.tcl)
+#                    forgets every measurement on every registry edit,
+#                    deliberately and by a ratified rule.
+#   `NOT supported`  the program at the location in the Program field WAS
+#                    measured and does not deliver this mode. Measured, not
+#                    unknown -- upper case, because the user is looking at a
+#                    setting their own program has already contradicted.
+#
+# Calling the second one `(NOT measured)` was a false statement about a
+# measurement taken 449 ms earlier, and it is the one a user reaches by
+# retyping the Program field -- the A1 breach this door exists to prevent.
+proc ase::ui::simdlg_case_label {mode {state ok}} {
+  if {$mode eq {}} { return "global default ([ase::sim_casemode_floor])" }
+  switch -- $state {
+    untried     { return "$mode (not tried yet)" }
+    unsupported { return "$mode (NOT supported)" }
+  }
+  return $mode
+}
+
+proc ase::ui::simdlg_case_value {label} {
+  if {[string first {global default} $label] == 0} { return {} }
+  return [lindex [split [string trim $label] { }] 0]
+}
+
+# WHAT THIS ROW MAY OFFER. Keyed on the program named in the PROGRAM FIELD, not
+# on the simulator in force and not on the entry's stored path: the user may
+# have just typed a different location into that field, and offering the old
+# program's modes would be the same A1 breach as offering the in-force row's.
+#
+# ⚠ CACHED ANSWERS ONLY -- ase::sim_caps_have_path is a peek and starts
+# nothing. The accessor it guards LAUNCHES the program when the answer is not
+# in hand: measured 447 ms cold on the user's own build, 0 ms warm, and 31.2
+# seconds for a program that exists and never answers, with Tk frozen
+# throughout. Opening a row editor must not be a gesture that starts the user's
+# simulator -- for a licensed tool it would check out a licence. Detect is the
+# door to the other case, and it says what it is doing before it blocks.
+# WHAT THE PROCS BELOW ALL NEED, WORKED OUT ONCE: which backend, which program,
+# which extra arguments it would really be started with, what the entry has
+# stored, and whether a fresh measurement of that program is already in hand.
+# The last term decides both which mark a mode gets and whether the offer may
+# be anything other than `fold`.
+#
+# THE ARGUMENTS COME FROM THE ENTRY AND THE LOCATION FROM THE FIELD, because
+# that pair is what OK is about to register. It is also the pair the capability
+# cache is keyed on since this item's repair (ase::cap_key): asking about a
+# file with somebody else's argv used to overwrite the in-force answer, and the
+# peek below could answer about one argv while the offer was built from
+# another.
+proc ase::ui::simdlg_case_ctx {key name} {
+  variable wins
+  set path {}
+  if {[dict exists $wins $key]} {
+    set w [dict get $wins $key].simrow
+    if {[winfo exists $w]} { set path [string trim [$w.path get]] }
+  }
+  set backend [ase::ui::simdlg_backend $key]
+  set stored {}
+  set eargs {}
+  set e [ase::sim_entry $name]
+  if {$e ne {}} {
+    set stored [ase::state_get $e casemode {}]
+    set eargs [ase::state_get $e args {}]
+    set eb [ase::state_get $e backend {}]
+    if {$eb ne {}} { set backend $eb }
+  }
+  return [list $backend $path $eargs $stored \
+            [ase::sim_caps_have_path $backend $path $eargs]]
+}
+
+# WHICH MARK A MODE OUTSIDE THE OFFER GETS -- measured-and-cannot, or nobody
+# asked. One place decides, because the chooser's values and the live pick have
+# to agree about the same program.
+proc ase::ui::simdlg_case_mark {key name} {
+  if {[lindex [ase::ui::simdlg_case_ctx $key $name] 4]} { return unsupported }
+  return untried
+}
+
+proc ase::ui::simdlg_case_values {key name} {
+  lassign [ase::ui::simdlg_case_ctx $key $name] backend path eargs stored have
+  set sel fold
+  if {$have} {
+    set sel [ase::sim_casemode_selectable_path $backend $path $eargs]
+  }
+  set out [list [ase::ui::simdlg_case_label {}]]
+  foreach m $sel { lappend out [ase::ui::simdlg_case_label $m] }
+  if {$stored ne {} && [lsearch -exact $sel $stored] < 0} {
+    lappend out [ase::ui::simdlg_case_label $stored \
+                   [ase::ui::simdlg_case_mark $key $name]]
+  }
+  return $out
+}
+
+# Fill the chooser and put `mode` in it. A mode that is in neither the measured
+# set nor the entry's own record is APPENDED rather than dropped -- that is the
+# user's live pick surviving a Detect that no longer offers it, and silently
+# moving their selection would be worse than showing it marked.
+proc ase::ui::simdlg_case_show {key name mode} {
+  variable wins
+  if {![dict exists $wins $key]} { return }
+  set w [dict get $wins $key].simrow
+  if {![winfo exists $w] || ![winfo exists $w.casemode]} { return }
+  set vals [ase::ui::simdlg_case_values $key $name]
+  set lbl [ase::ui::simdlg_case_label $mode]
+  if {[lsearch -exact $vals $lbl] < 0} {
+    set lbl [ase::ui::simdlg_case_label $mode \
+               [ase::ui::simdlg_case_mark $key $name]]
+    if {[lsearch -exact $vals $lbl] < 0} { lappend vals $lbl }
+  }
+  $w.casemode configure -values $vals
+  $w.casemode set $lbl
+}
+
+# THE PROGRAM FIELD CHANGED, SO THE OFFER CHANGES WITH IT -- issue 1371's own
+# refutation, measured end to end. The item claimed the chooser was keyed on
+# the program named in the FIELD "because the user may have just typed a
+# different location in". It was -- but it was only ever BUILT at editor-open
+# and by Detect, and NOTHING REBUILT IT WHEN THE FIELD CHANGED. Measured
+# through the real widgets on 2026-09-06: an entry whose program measures
+# `fold preserve distinguish`, the location of a build measuring `fold` alone
+# typed into the Program field, and the chooser still offered `preserve`; OK
+# then saved `casemode preserve` for that build, `ase::sim_casemode_requested`
+# answered `preserve` and `ase::run_casemode_flag` emitted
+# `-D casemode=preserve` for a program measured not to deliver it. That is rule
+# A1 broken by the door built to enforce A1, through the exact gesture the
+# claim cited -- and by Browse…, with no typing at all.
+#
+# THE PICK IS KEPT AND MARKED, NEVER SILENTLY MOVED. Half a location typed into
+# the field names no program at all, so a rebuild that reset the selection
+# would destroy the user's choice one keystroke at a time. It stays, and its
+# mark becomes `(NOT supported)` the moment the field names a program that was
+# measured and cannot deliver it -- a statement in front of the user, before
+# they press OK.
+#
+# ⚠ VALIDATION, NOT A KEY BINDING, and the `after idle` is not decoration. A
+# validate command runs BEFORE the entry's own content changes, so reading
+# $w.path inside it returns the text as it WAS; the rebuild is deferred to the
+# idle point, by which time the widget holds what the user is looking at.
+# Validation also fires for a programmatic delete/insert, which is how
+# simdlg_browse writes the field -- one mechanism covers the typing and the
+# file browser both, and neither can be forgotten separately.
+proc ase::ui::simdlg_path_changed {key} {
+  variable wins; variable dlg
+  if {![dict exists $wins $key]} { return 1 }
+  set w [dict get $wins $key].simrow
+  if {![winfo exists $w] || ![winfo exists $w.casemode]} { return 1 }
+  set name {}
+  if {[info exists dlg($key,simrow)]} { set name $dlg($key,simrow) }
+  ase::ui::simdlg_case_show $key $name \
+    [ase::ui::simdlg_case_value [$w.casemode get]]
+  return 1
+}
+
+proc ase::ui::simdlg_path_validate {key} {
+  after idle [list ase::ui::simdlg_path_changed $key]
+  return 1
+}
+
+# WHAT THE EDITOR SAYS ABOUT THE PROGRAM IT IS LOOKING AT, WITHOUT TRYING IT.
+# The sentence is ase::casemode_status's -- this file composes none (ruling
+# D5-4) -- and the reason it exists is the COLD SESSION. The chooser correctly
+# offers `fold` alone until something has been measured, and until this line
+# nothing told the user that Detect is what changes that: the four-click
+# gesture this item's own issue file described ("Edit… -> pick preserve -> OK")
+# is a six-click gesture on a fresh xschem, and a user following the short one
+# finds no `preserve` and concludes nothing was fixed. That is the very
+# confusion the item was filed about.
+#
+# SILENT ON AN EMPTY FIELD, deliberately: an untouched Add form makes no claim
+# about a program the user has not named yet. Detect pressed on one answers for
+# itself.
+proc ase::ui::simdlg_case_status {key name} {
+  variable wins
+  if {![dict exists $wins $key]} { return }
+  set w [dict get $wins $key].simrow
+  if {![winfo exists $w] || ![winfo exists $w.status]} { return }
+  lassign [ase::ui::simdlg_case_ctx $key $name] backend path eargs stored have
+  if {$path eq {}} { return }
+  $w.status configure -text [ase::casemode_status $backend $path $eargs]
+}
+
+# Detect. THE ONLY PLACE IN THIS DIALOG THAT MAY START A PROCESS, and it says
+# so first: the sentence is painted and the display flushed BEFORE the launch,
+# because the launch blocks Tk and a status line that arrived afterwards would
+# only ever be read as a report about something that had already finished.
+#
+# IT MEASURES WHAT IS IN THE PROGRAM FIELD, which is what the user is looking
+# at -- so it works on Add, where there is no entry yet, as well as on Edit.
+proc ase::ui::simdlg_detect {key} {
+  variable wins; variable dlg
+  if {![dict exists $wins $key]} { return }
+  set w [dict get $wins $key].simrow
+  if {![winfo exists $w]} { return }
+  set name {}
+  if {[info exists dlg($key,simrow)]} { set name $dlg($key,simrow) }
+  set path [string trim [$w.path get]]
+  set backend [ase::ui::simdlg_backend $key]
+  set eargs {}
+  set e [ase::sim_entry $name]
+  if {$e ne {}} {
+    set eargs [ase::state_get $e args {}]
+    set eb [ase::state_get $e backend {}]
+    if {$eb ne {}} { set backend $eb }
+  }
+  set mode [ase::ui::simdlg_case_value [$w.casemode get]]
+  # NOTHING NAMED, NOTHING STARTED, AND NOTHING CLAIMED. Add… then Detect is
+  # two clicks from a menu, and it used to print "Trying  now, to find out
+  # which spellings of a net name it can hand back." followed by " has not been
+  # tried yet ...": two sentences with no subject and a leading space, about no
+  # program. ase::sim_capabilities_path guarded the LAUNCH against an empty
+  # path; the sentences were painted either side of it and were guarded by
+  # nothing.
+  if {$path eq {}} {
+    $w.status configure -text [ase::casemode_status $backend $path $eargs]
+    return
+  }
+  $w.status configure -text [ase::sim_why casemode_measuring {} $path]
+  update idletasks
+  set caps [dict create known 0]
+  catch {set caps [ase::sim_capabilities_path $backend $path $eargs]}
+  if {![winfo exists $w]} { return }
+  ase::ui::simdlg_case_show $key $name $mode
+  $w.status configure -text [ase::casemode_report $backend $path $caps]
+}
+
+# The four-field row editor. An empty `name` is the Add flavor; anything else
 # is Edit, and then the Name field is READ-ONLY -- a rename here would have to
 # be a remove plus an add, which moves the entry to the end of the list and
 # fires the "you removed X" sentence in the middle of what the user
 # experienced as a rename.
+#
+# ROW ORDER IS PART OF THE WIDGET CONTRACT the suite asserts, but the suite
+# addresses every widget by PATH, never by grid row, so adding rows here does
+# not move anything it can see: Name 0, Program 1 (+ Browse in column 2),
+# Case 2 (+ Detect in column 2), -n 3, status 4, buttons 5.
 proc ase::ui::simdlg_editor {key name} {
   variable wins; variable dlg
   if {![dict exists $wins $key]} { return }
@@ -4968,21 +5271,49 @@ proc ase::ui::simdlg_editor {key name} {
   set ep [ase::ui::dialog_row $w 1 {Program:} path]
   button $w.browse -text {Browse…} -command [list ase::ui::simdlg_browse $key]
   grid $w.browse -row 1 -column 2 -sticky w -padx {6 8} -pady 2
+  label $w.lcasemode -text {Case:} -font AseLabelFont -anchor w
+  ttk::combobox $w.casemode -width 24 -state readonly -font AseEntryFont \
+    -style Ase.TCombobox
+  grid $w.lcasemode -row 2 -column 0 -sticky w  -padx {8 6} -pady 2
+  grid $w.casemode  -row 2 -column 1 -sticky we -padx {0 8} -pady 2
+  button $w.detect -text Detect -command [list ase::ui::simdlg_detect $key]
+  grid $w.detect -row 2 -column 2 -sticky w -padx {6 8} -pady 2
+  label $w.lnospiceinit -text {-n:} -font AseLabelFont -anchor w
+  set dlg($key,simns) 0
+  checkbutton $w.nospiceinit -text {--no-spiceinit} -anchor w \
+    -variable ase::ui::dlg($key,simns)
+  grid $w.lnospiceinit -row 3 -column 0 -sticky w  -padx {8 6} -pady 2
+  grid $w.nospiceinit  -row 3 -column 1 -sticky we -padx {0 8} -pady 2
   # the editor's OWN feedback surface: a refusal about what was just typed
   # belongs where the typing is, not only in the CIW behind the dialog. Empty
   # until there is something to say, so an untouched editor makes no claim.
   label $w.status -anchor w -justify left -wraplength 420 -text {}
-  grid $w.status -row 2 -column 0 -columnspan 3 -sticky we -padx 8 -pady {4 0}
+  grid $w.status -row 4 -column 0 -columnspan 3 -sticky we -padx 8 -pady {4 0}
+  set mode {}
   if {$name ne {}} {
     $en insert 0 $name
-    foreach e [ase::sim_list] {
-      if {[dict get $e name] eq $name} { $ep insert 0 [dict get $e path] }
+    set e [ase::sim_entry $name]
+    if {$e ne {}} {
+      $ep insert 0 [ase::state_get $e path {}]
+      set mode [ase::state_get $e casemode {}]
+      set dlg($key,simns) [expr {[ase::state_get $e nospiceinit 0] ? 1 : 0}]
     }
     $en configure -state readonly
   }
+  ase::ui::simdlg_case_show $key $name $mode
+  # THE OFFER FOLLOWS THE FIELD FROM HERE ON. Wired AFTER the initial insert
+  # above, so opening the editor does not schedule a rebuild of what was just
+  # built. The status line is repainted when the field is left rather than on
+  # every keystroke: a half-typed location names no file, and a sentence about
+  # it flickering under the user's hands would be noise, while the OFFER has to
+  # follow every character or A1 is only true between gestures.
+  $ep configure -validate key \
+    -validatecommand [list ase::ui::simdlg_path_validate $key]
+  bind $ep <FocusOut> [list ase::ui::simdlg_case_status $key $name]
+  ase::ui::simdlg_case_status $key $name
   bind $en <Return> [list ase::ui::simdlg_ok $key]
   bind $ep <Return> [list ase::ui::simdlg_ok $key]
-  ase::ui::dialog_buttons $w 3 [list ase::ui::simdlg_ok $key] \
+  ase::ui::dialog_buttons $w 5 [list ase::ui::simdlg_ok $key] \
     [list ase::ui::simdlg_cancel $key]
   ase::ui::apply_theme $w
   if {$name eq {}} { focus $en } else { focus $ep }
@@ -5017,6 +5348,13 @@ proc ase::ui::simdlg_browse {key} {
   if {$f eq {}} { return }
   $w.path delete 0 end
   $w.path insert 0 $f
+  # The Case offer follows through the entry's own validation (see
+  # ase::ui::simdlg_path_validate); the status line is the half that is bound
+  # to leaving the field, and nobody leaves a field they never typed in.
+  set name {}
+  variable dlg
+  if {[info exists dlg($key,simrow)]} { set name $dlg($key,simrow) }
+  ase::ui::simdlg_case_status $key $name
 }
 
 # OK in the row editor.
@@ -5030,10 +5368,19 @@ proc ase::ui::simdlg_browse {key} {
 # A malformed CALL is different and does keep the editor up: an entry with no
 # name cannot be stored, looked up or removed, so there is nothing to record.
 #
-# EVERYTHING THE DIALOG DOES NOT SHOW IS CARRIED THROUGH. An entry can also
-# carry extra arguments and the backend it was registered for; they have no
-# fields here, and an editor that rebuilt the entry from its two visible
-# fields would silently delete them (row S9).
+# EVERY FIELD OF THE ENTRY IS WRITTEN, THE SHOWN ONES FROM THE FORM AND THE
+# REST CARRIED THROUGH UNCHANGED. An entry also carries extra arguments and the
+# backend it was registered for; they have no fields here, and an editor that
+# rebuilt the entry from its visible fields alone would silently delete them.
+#
+# ⚠ THIS COMMENT USED TO SAY "EVERYTHING THE DIALOG DOES NOT SHOW IS CARRIED
+# THROUGH", AND IT WAS THE THING THAT MISLED THE LAST READER (issue 1371). The
+# proc did not do that: it rebuilt the entry from `args` and `backend` only, so
+# opening Edit… on an entry with a case mode and pressing OK WITHOUT TYPING
+# ANYTHING erased `casemode` and `nospiceinit` and saved the erasure -- measured
+# through the real widgets, and it survived the restart because the erased list
+# is what got written. Row S9 asserted the claim for `args` and `backend` alone,
+# so the suite was green over the hole; it now covers all four.
 proc ase::ui::simdlg_ok {key} {
   variable wins; variable dlg
   if {![dict exists $wins $key]} { return }
@@ -5047,18 +5394,28 @@ proc ase::ui::simdlg_ok {key} {
   set backend {}
   if {$editing ne {}} {
     set name $editing
-    foreach e [ase::sim_list] {
-      if {[dict get $e name] ne $editing} { continue }
-      set eargs [dict get $e args]
-      set backend [dict get $e backend]
+    set e [ase::sim_entry $editing]
+    if {$e ne {}} {
+      set eargs [ase::state_get $e args {}]
+      set backend [ase::state_get $e backend {}]
     }
   }
+  set casemode {}
+  if {[winfo exists $w.casemode]} {
+    set casemode [ase::ui::simdlg_case_value [$w.casemode get]]
+  }
+  set nospiceinit 0
+  if {[info exists dlg($key,simns)]} {
+    set nospiceinit [expr {$dlg($key,simns) ? 1 : 0}]
+  }
   ase::sim_said_clear
-  if {[catch {ase::sim_register $name $path -args $eargs -backend $backend} err]} {
+  if {[catch {ase::sim_register $name $path -args $eargs -backend $backend \
+                -casemode $casemode -nospiceinit $nospiceinit} err]} {
     $w.status configure -text [ase::ui::simdlg_plain $err]
     return
   }
   array unset dlg $key,simrow
+  array unset dlg $key,simns
   destroy $w
   ase::ui::simdlg_commit $key
   ase::ui::simdlg_fill $key
@@ -5069,6 +5426,7 @@ proc ase::ui::simdlg_ok {key} {
 proc ase::ui::simdlg_cancel {key} {
   variable wins; variable dlg
   array unset dlg $key,simrow
+  array unset dlg $key,simns
   if {[dict exists $wins $key]} {
     catch {destroy [dict get $wins $key].simrow}
   }
@@ -5118,6 +5476,7 @@ proc ase::ui::simdlg_close {key} {
   variable wins; variable dlg; variable simuse
   array unset dlg $key,simnames
   array unset dlg $key,simrow
+  array unset dlg $key,simns
   if {[dict exists $wins $key]} {
     catch {destroy [dict get $wins $key].simrow}
     catch {destroy [dict get $wins $key].simdlg}
@@ -6476,6 +6835,13 @@ proc ase::ui::refresh_title {key} {
 
 # Refresh the non-status segments of the bottom bar (win# / T= / Simulator /
 # State) from the session; the colored .stat segment is set_status's own.
+#
+# ⚠ THE `Simulator:` SEGMENT NAMES WHAT WILL RUN, NOT THE BACKEND (issue 1370).
+# It used to render `[ase::state_get $st simulator]` and therefore carried zero
+# registry information: measured on a live window, `Simulator: ngspice` with
+# `ngspice-ver50` selected, with the choice cleared, and with it re-selected.
+# ase::sim_label is the one place that decides what to call it; no sentence and
+# no marker text is written in this file (ruling D5-4, row R9).
 proc ase::ui::refresh_status {key} {
   variable wins; variable wnum; variable meta
   if {![dict exists $wins $key]} { return }
@@ -6485,12 +6851,29 @@ proc ase::ui::refresh_status {key} {
   lassign [dict get $meta $key] lib cell view
   $top.status.win   configure -text [dict get $wnum $key]
   $top.status.temp  configure -text "T=[ase::state_get $st temperature 27] C"
-  $top.status.sim   configure -text "Simulator: [ase::state_get $st simulator]"
+  $top.status.sim   configure -text \
+    "Simulator: [ase::sim_label [ase::state_get $st simulator]]"
   $top.status.state configure -text "State: $view"
+}
+
+# EVERY OPEN SESSION'S BAR, because the registry is PROCESS-GLOBAL while the
+# Simulators dialog is per-session (issue 0937's own known-issues note, and the
+# half of it 1370 closes). A gesture made in one window changes which program
+# every open window would start, so every open window's bar has to follow it.
+#
+# ⚠ NO SECOND GUARD. ase::ui::refresh_status already returns quietly for a key
+# whose toplevel has gone, and `wins` and `meta` are written and deleted
+# together in ase::ui::open / ase::ui::close, so a key in one is a key in both.
+proc ase::ui::refresh_status_all {} {
+  variable wins
+  dict for {k top} $wins { ase::ui::refresh_status $k }
 }
 
 # The assembled status-bar line (tests + scripting):
 # `<win#> | Status: <S> | T=<T> C | Simulator: <sim> | State: <view>`
+# `<sim>` is ase::sim_label's answer -- the registered simulator in force, with
+# the "not going to run" marker where it applies -- and NOT the backend word
+# (issue 1370).
 proc ase::ui::status_text {key} {
   variable wins
   if {![dict exists $wins $key]} { return {} }

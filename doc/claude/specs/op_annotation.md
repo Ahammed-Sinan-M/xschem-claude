@@ -1474,6 +1474,28 @@ earlier, so the measurement is paid on a Run, where a simulator starting is what
 the user expects. It would bite immediately if this call were moved onto a path
 that renders a deck with no Run behind it.
 
+⚠ **AND A RUN ASKS IT EXACTLY ONCE (issue 1366).** `ase::run_deck` used to ask
+three times — for the SENTENCE (`ase::op_tier_report`), for the DECK
+(`render_deck`) and for the RUN RECORD (`meta optier`) — and pinned the three
+answers to nothing. Since `ase::sim_capabilities` never remembers a `known 0`
+answer (issue 0950) and re-measures on a stamp change, one probe timeout between
+two of those calls made them differ: MEASURED, a run that said shape `d` over a
+deck rendered `c`, and a record on `d` over a deck on `c` that then sent
+`ase::op_report_missing` down its dump branch and told the user to rename a run
+folder that was already correctly named, about a run that worked.
+
+`ase::run_deck` now **arms a pin** and all three readers go through
+`ase::op_tier_now`. The renderer is **bound** to the run's one answer rather than
+asked first — it runs second, so letting it measure would move the disagreement
+rather than delete it — which is what keeps the deck on disk the ground truth
+*and* makes it equal to what was said and recorded. The pin's lifetime is
+strictly one `ase::run_deck` call: armed immediately above the first consumer,
+released as soon as the record is taken and on the one statement between them
+that can raise (the render). **With nothing armed, `ase::op_tier_now` IS
+`ase::op_save_tier`, call for call** — which is what every suite that drives the
+decision or `render_deck` directly depends on, and why a re-run after the user
+registers a different simulator is never pinned to the old shape.
+
 | form | what the deck carries | cost |
 |---|---|---|
 | **a — wildcard** | `.save all`, then `save all @dev1[*] @dev2[*] …` **inside `.control`, immediately before `op`** — one request per device, wildcarded over that device's own parameters. The exact shape the capability probe measures. | O(devices) |
@@ -1666,7 +1688,8 @@ at all).
 #### What the user is told
 
 One sentence per run, minted in `ase::sim_why` (ruling D5-4) as one of
-`op_tier_blanket` / `op_tier_perdevice` / `op_tier_writeline`, said through
+`op_tier_blanket` / `op_tier_perdevice` / `op_tier_writeline` / `op_tier_dump`,
+said through
 `ase::sim_say` from `ase::run_deck` — never from `run_cmd`, whose echoes are
 pinned byte for byte by `test_ase_simreg_0931` row D4. When the override chose
 the form, `op_tier_forced` is said as well, so the user is never left wondering
@@ -1686,6 +1709,31 @@ five tails are five *different* sentences sharing one opening, so a deleted tail
 cannot fall through to the catch-all and tell the user their simulator "cannot do
 either of the shorter ways" about a simulator that can do one and was refused it
 on purpose.
+
+⚠ **AND THE SAME CATCH-ALL FIRED FOR REAL, THROUGH A MISSING SWITCH ARM RATHER
+THAN A DELETED TAIL — ISSUE 1354.** `ase::op_tier_report`'s `switch` mapped
+tiers `a` and `b` and let everything else fall to `op_tier_perdevice`, so shape
+`d` — added later — got the per-device kind, then fell past all five reason
+tails (its token is `dump`) onto exactly that catch-all. The user's own
+`/tmp/Xschem.log.5` therefore says *"Your simulator cannot do either of the
+shorter ways"* about the build that was given the **shortest** one because it
+can, one line under *"468 device OP save card(s) added to the deck"* for a
+rendered deck holding zero `@` characters. **Shape `d` now has its own kind**,
+`op_tier_dump`, with no reason tails: only `dump` (measured) and `forced` reach
+it, and the forced case already gets `op_tier_forced` said after it. Section N
+of `tests/headless/test_op_dump_altshow.tcl` holds the behavioural half —
+`test_ase_optier_0963` has no shape-`d` capability fixture and stays ALL PASS
+with the `d` arm removed, which is why the rows live there.
+
+⚠ **THE NETLIST-TIME COUNT IS A DIFFERENT SURFACE AND MAY NOT SPEAK FOR THE
+DECK.** `ase::op_cards_capture` prints its line at netlist time, before any deck
+is rendered, and it **must not** ask `ase::op_save_tier`: that goes through
+`ase::sim_capabilities`, which on a cache MISS starts the user's simulator, and
+`Simulation > Netlist > Recreate` reaches this code with no run behind it. So
+the line reports what the *walk* built — cards **and** the devices they cover —
+and says the run will report how the deck asked. The device count is there
+because on shape `d` a card count is not a smaller number, it is a category
+error: that deck carries none.
 
 #### The acceptance, and why it had to be respecified
 
@@ -3402,6 +3450,20 @@ database this window is painting from still the file it was read from?"*
 | `op_annot::db_current {cand}` | 1 iff what is attached is publishable AND still the file it was read from. `cand` is the path this surface would attach, `{}` when it has none. O(1): no vector is touched, only `raw loaded` / `raw annot` / `raw rawfile` plus a `file mtime` + `file size` stamp |
 | `op_annot::db_attach {path ?level?}` | issue **0685**'s TARGETED drop (same path, `op`/`dc` only — **never** `tran`, **never** the bare `xschem raw clear`), then attach, then **verify by re-asking** — `xschem annotate_op /nonexistent` returns the path with `TCL_OK` and nothing attached — then stamp |
 | `op_annot::db_detach {}` | the "or BLANK" half; the named-file spelling, the `raw is_digital` question first (RULING **D5-3**). `cadence::_annot_db_release` is now a one-line delegate to it |
+| `op_annot::opdump_autofill {}` | issue **1364**'s door. Merges the blanket `show all >` sidecar that belongs to the CURRENT database, **op/dc and one point only**, stale refused (issue **0838**), silent on absence (issue **0975**), idempotent, latched against re-entry. Called from `update_op()` (`src/save.c`) below its three refusals and above its publish — **not** from `db_attach`, which is the placement mistake 1364 undoes |
+
+⚠ **THE MERGE IS NOT `db_attach`'s ANY MORE, AND THE REASON IS THE HEADLINE OF
+ISSUE 1364.** Issue 1333 put it there on the premise that `db_attach` is "the one
+place that puts an operating point onto a window". It is not: `xschem
+annotate_op` is the general-purpose verb, and 61 committed schematics' launcher
+buttons, both `Annotate Operating Point into schematic` menu items, `Waves > Op
+Annotate`, the raw carried into a new window by `open_sub_schematic` /
+`hi_descend`, `results::select` and the cadence Alt-6 rungs all reach it without
+passing through `db_attach`. On shape `d` every one of those rendered `id` and
+left `gm gds vgs vth vds` blank — issue **0617** restored. `update_op()` is the
+choke point (its own RULING D5-3 comment says so), so one call there covers all
+five of its C callers: the `annotate_op` arm, `raw switch`, `raw select`,
+`raw switch_back` and the bare `update_op` verb.
 
 **Guard order inside `db_current` IS the contract**, and it is written down in that
 proc's header: nothing publishable → 0; the attached file cannot be named → 0

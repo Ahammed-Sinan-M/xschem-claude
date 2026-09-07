@@ -213,7 +213,20 @@ proc o_prime {caps} {
   set r [o_useprog $S_PLAIN]
   if {$r eq {}} { return NORESOLVE }
   if {[catch {ase::cap_stamp $r} st]} { return "RAISED:$st" }
-  set ::ase::sim_caps [dict create $r [list stamp $st caps $caps]]
+  ## ⚠ THE CACHE KEY IS ASKED FOR, NEVER SPELLED (issue 1371).  This fixture
+  ## reaches into `::ase::sim_caps` directly, which is the only way to hand the
+  ## tier decision a capability answer without launching anything -- and for as
+  ## long as the key was the resolved PATH, spelling it here was free.  Issue
+  ## 1371 re-keyed the store on {resolved eargs} so the row editor can hold an
+  ## answer per program-and-arguments, and this line's hand-spelled key stopped
+  ## matching: every primed answer became invisible, every lookup fell through
+  ## to a LIVE probe of whatever ngspice the bench could resolve, and ten rows
+  ## of this file measured that binary instead of the fixture -- T1 T2 T3 T5 T6
+  ## T10 T13 Z6 S1 all answering `c unsafe`, which is /usr/bin/ngspice's own
+  ## answer.  Nothing was wrong with the SOURCE; the fixture was writing at an
+  ## address the reader had left.  `ase::cap_key` is the one builder both sides
+  ## now use, so the next re-key moves this line with it.
+  set ::ase::sim_caps [dict create [ase::cap_key $r {}] [list stamp $st caps $caps]]
   return $r
 }
 proc o_unprime {} { catch {ase::sim_caps_clear} ; catch {ase::sim_clear} }
@@ -835,7 +848,18 @@ check {P4 issue 1243 a transient-only run is UNCHANGED -- with no operating\
 # callers. The plain-English ruling: 9th grade, say what happened AND what the
 # user can do, no internal vocabulary and no name out of the code.
 
-set TIERKINDS {op_tier_blanket op_tier_perdevice op_tier_writeline op_tier_forced}
+## ⚠ FIVE, NOT FOUR, SINCE ISSUE 1354. Shape d had no kind of its own, so
+## ase::op_tier_report's switch fell through to op_tier_perdevice and a deck
+## carrying NO per-device card at all was reported with the per-device sentence
+## -- catch-all tail included, telling the user their simulator "cannot do
+## either of the shorter ways" about the build that was given shape d BECAUSE
+## it can. That is the line in their own /tmp/Xschem.log.5 and it is what sent
+## the RDW list batch's brief at the wrong hypothesis. Adding the kind here is
+## what puts it under S2's no-code-vocabulary rule and S4's minted-once rule;
+## the behavioural half is section N of tests/headless/test_op_dump_altshow.tcl,
+## which is where a real shape-d capability answer lives.
+set TIERKINDS {op_tier_blanket op_tier_perdevice op_tier_writeline op_tier_forced\
+               op_tier_dump}
 
 ## Every kind of sentence a run said, in order, filtered to the tier ones. The
 ## recorder is intercepted rather than the CIW, so a row can tell WHICH
@@ -1006,11 +1030,11 @@ foreach k $TIERKINDS {
   if {$WHYB eq {NOPROC} || [string match RAISED:* $WHYB]} { lappend S4MINT $WHYB ; continue }
   lappend S4MINT [o_count $WHYB $k]
 }
-check {S4 STRUCTURAL, ruling D5-4: each of the four sentences exists exactly\
+check {S4 STRUCTURAL, ruling D5-4: each of the five sentences exists exactly\
  once, in the one place sentences are minted, and no say-site renders words of\
  its own into the CIW} \
   [list [o_count $S4SRC {ase::echo [ase::sim_why}] $S4MINT] \
-  [list 0 {1 1 1 1}]
+  [list 0 {1 1 1 1 1}]
 
 set RDB [o_body ase::run_deck]
 set RCB [o_body ::ase::backend::ngspice::run_cmd]
@@ -1704,7 +1728,20 @@ proc q_prime {prog caps} {
   set r [o_useprog $prog]
   if {$r eq {}} { return NORESOLVE }
   if {[catch {ase::cap_stamp $r} st]} { return "RAISED:$st" }
-  set ::ase::sim_caps [dict create $r [list stamp $st caps $caps]]
+  ## ⚠ THE CACHE KEY IS ASKED FOR, NEVER SPELLED (issue 1371).  This fixture
+  ## reaches into `::ase::sim_caps` directly, which is the only way to hand the
+  ## tier decision a capability answer without launching anything -- and for as
+  ## long as the key was the resolved PATH, spelling it here was free.  Issue
+  ## 1371 re-keyed the store on {resolved eargs} so the row editor can hold an
+  ## answer per program-and-arguments, and this line's hand-spelled key stopped
+  ## matching: every primed answer became invisible, every lookup fell through
+  ## to a LIVE probe of whatever ngspice the bench could resolve, and ten rows
+  ## of this file measured that binary instead of the fixture -- T1 T2 T3 T5 T6
+  ## T10 T13 Z6 S1 all answering `c unsafe`, which is /usr/bin/ngspice's own
+  ## answer.  Nothing was wrong with the SOURCE; the fixture was writing at an
+  ## address the reader had left.  `ase::cap_key` is the one builder both sides
+  ## now use, so the next re-key moves this line with it.
+  set ::ase::sim_caps [dict create [ase::cap_key $r {}] [list stamp $st caps $caps]]
   return $r
 }
 ## Every line the run put in front of the user, and every sentence the one mint
@@ -1868,15 +1905,48 @@ check {Q5 RULING D5-4 both new sentences are written in the one place sentences\
 ## Q6 -- the plain-English ruling. The device names themselves are the deck's
 ## own spelling and are deliberately NOT on the ban list: they are what the
 ## user searches their results with.
+##
+## ⚠ AND NEITHER IS THE USER'S OWN TYPING (issue 1370's repair). A run's
+## sentences now include one that quotes text the USER supplied -- the
+## registered entry's NAME and the program's LOCATION (`run_using`, "This run
+## is starting the simulator you named <name>, and the program it is running is
+## <path>") -- and this file registers its fixture under the name `optier`, in
+## a scratch directory called `_optier0963_<pid>`. Scanning those substitutions
+## for code words measures THIS FILE'S OWN FIXTURE NAMING and nothing else: it
+## red Q6 six times with the mint doing exactly what it is supposed to do, once
+## per run, quoting a name the bench itself chose. Measured on the unmodified
+## tree, and proven by ablation (neuter ase::run_using_report and the row goes
+## green with no other change).
+##
+## SO THE USER DATA IS LIFTED OUT FIRST and the ban list then reads only the
+## words the MINT wrote. Same discipline as row L8 of
+## tests/headless/test_ase_simreg_0931.tcl, which strips its name and its path
+## before asking `a_plaintext` whether what is left is jargon.
+##
+## ⚠ THE STRIP IS EXACT-STRING AND LONGEST-FIRST, not a wildcard. A code word
+## OUTSIDE a substitution is still caught -- delete the strip and every one of
+## the six hits above comes back -- and longest-first matters because
+## `optier-blanket` contains BOTH banned words and must go before `optier`.
+set Q_USERDATA [list $scratch optier-blanket optier]
+proc q_nouser {s} {
+  global Q_USERDATA
+  set out $s
+  foreach u $Q_USERDATA {
+    if {$u eq {}} continue
+    set out [string map [list $u {}] $out]
+  }
+  return $out
+}
 set Q6 {}
 foreach q6r [list $Q1R $Q3R $Q4R] {
   if {$q6r eq {NOPROC} || [string match RAISED:* $q6r]} { lappend Q6 $q6r ; continue }
   foreach s [lindex $q6r 1] {
     if {$s eq {}} continue
     if {[string length $s] < 80} { lappend Q6 [list SHORT $s] }
+    set smint [q_nouser $s]
     foreach w {blanket tier optier saveopparams appendwrite hier_op_names\
                blanket_op_save vector .save .control remzerovec} {
-      if {[string first $w [string tolower $s]] >= 0} { lappend Q6 [list $w $s] }
+      if {[string first $w [string tolower $smint]] >= 0} { lappend Q6 [list $w $s] }
     }
   }
 }
@@ -2211,11 +2281,28 @@ ase::op_cards_put $NL $BLK5
 # ============================================================================
 # S-NEW. WHERE THE NEW SENTENCES LIVE, AND WHAT THE OLD ONES MAY STILL CLAIM
 # ============================================================================
+## ⚠ TWO FILTERS, AND THE SECOND ONE WAS ADDED BY 1370'S REPAIR. This row is
+## about the two sentences ISSUE 0963 added, so it drops the `op_tier*` family
+## (0963's own, counted by S9/S10) and it drops kinds MINTED BY OTHER ITEMS
+## that a run legitimately says into the same stream. `run_using` (issue 1370,
+## "This run is starting the simulator you named ... ") is one: it is said once
+## per run from ase::run_deck, so it arrived here as a THIRD kind and this row
+## read {3 {1 1 1}} against {2 {1 1}} on the unmodified tree -- a shape red,
+## not a substantive one, since its own assertion (each kind minted exactly
+## once) still held for all three. Proven by ablation: neuter
+## ase::run_using_report and the row goes green with nothing else changed.
+##
+## ⚠ THE FILTER KEEPS ITS TEETH. Only kinds NAMED here are dropped; a kind no
+## one listed still lands in Q_NEWKINDS and still reds the arity, which is the
+## whole point of counting them. Adding a sentence to a run without saying so
+## here is still caught.
+set Q_OTHERITEMS {run_using}
 set Q_NEWKINDS {}
 foreach q6r [list $Q1R $Q3R] {
   if {$q6r eq {NOPROC} || [string match RAISED:* $q6r]} { continue }
   foreach k [lindex $q6r 2] {
     if {[string match op_tier* $k]} { continue }
+    if {[lsearch -exact $Q_OTHERITEMS $k] >= 0} { continue }
     if {[lsearch -exact $Q_NEWKINDS $k] < 0} { lappend Q_NEWKINDS $k }
   }
 }
@@ -2445,6 +2532,275 @@ check {N5 STRUCTURAL the bench rows read the deck's own call graph rather than\
         [expr {[o_count $N5SRC {_deck_index}] >= 1 ? 1 : 0}]] \
   {1 1}
 
+
+# ============================================================================
+# Z. ONE RUN, ONE ANSWER ABOUT THE SHAPE (issue 1366)
+# ============================================================================
+# ase::run_deck asked ase::op_save_tier THREE separate times and pinned the
+# three answers to nothing:
+#
+#   * the SENTENCE   ase::op_tier_report
+#   * the DECK       render_deck's shape switch
+#   * the RECORD     `meta optier`, which ase::op_report_missing reads later
+#
+# ⚠ AND THAT FUNCTION IS DELIBERATELY NOT CONSTANT. It reads
+# ase::sim_capabilities, which never remembers a `known 0` answer ("an answer
+# nobody worked out is never remembered", issue 0950) and re-measures on any
+# change to the resolved binary's stamp (ase::cap_stale). ONE probe timeout, or
+# ONE mtime change, between two of those calls is enough to make them differ --
+# so the three-way agreement was never a property of the code, only of a quiet
+# machine. MEASURED both directions: a report saying shape d over a deck
+# carrying 468 `@` cards, and a report saying shape c over a shape-d deck.
+#
+# ⚠ THE THIRD FACE IS THE WORST AND ROW Z4 IS ITS FENCE. With the record on `d`
+# over a deck rendered `c`, ase::op_report_missing takes its shape-d branch,
+# finds no sidecar -- correctly, because a shape-c deck writes none -- and tells
+# the user "Rename the run folder in lower case with no spaces" about a folder
+# that was already all lower case with no spaces, over a run that WORKED. That
+# is issue 0975's rule, "a run that worked must not be told it failed", broken
+# by a route 0975 never looked down.
+#
+# HOW THESE ROWS DRIVE IT. The disagreement cannot be produced by waiting for a
+# probe to time out, so ase::op_save_tier is replaced by a stand-in that answers
+# a scripted SEQUENCE and counts how many times it was asked. That makes the
+# flap deterministic and makes the headline assertion -- the run asks ONCE --
+# measurable rather than inferred. The three answers are then read from three
+# independent places: the recorder (the sentence), the deck FILE on disk (the
+# only physical evidence of what ran), and the metadata run_deck hands
+# ase::run_done.
+
+## The stand-in. Answers $seq element by element, then repeats its last answer
+## for ever, and counts the asks. The reason token is deliberately one no arm of
+## ase::sim_why knows, so a sentence cannot be satisfied by the token.
+proc z_flap {seq} {
+  set ::z_seq $seq
+  set ::z_calls 0
+  ## An EMPTY sequence means "no stand-in": the real ase::op_save_tier decides,
+  ## which is what rows Z6 needs -- the pin has to be released between two runs
+  ## whose answers come from the capability store itself, not from a script.
+  if {$seq eq {}} { return {} }
+  if {[info commands ::ase::op_save_tier] eq {}} { return NOPROC }
+  rename ::ase::op_save_tier ::z_saved_tier
+  proc ::ase::op_save_tier {state} {
+    set i $::z_calls
+    incr ::z_calls
+    if {$i >= [llength $::z_seq]} { set i [expr {[llength $::z_seq] - 1}] }
+    return [dict create tier [lindex $::z_seq $i] reason zzflap ndev 5 ncards 30]
+  }
+  return {}
+}
+proc z_unflap {} {
+  if {[info commands ::z_saved_tier] eq {}} { return }
+  rename ::ase::op_save_tier {}
+  rename ::z_saved_tier ::ase::op_save_tier
+}
+
+## WHAT THE DECK ON DISK ACTUALLY IS, read from the file the run wrote and from
+## nothing else. `d` is the dump pair inside `.control` with no per-device card
+## anywhere; `c` is per-device `.save @dev[param]` cards at deck level, which is
+## the shape a single-analysis run renders (row E8 of this suite's neighbour).
+proc z_deckshape_text {t} {
+  if {$t eq {NOPROC} || [string match RAISED:* $t]} { return $t }
+  set cards [regexp -all -line {^\.save @} $t]
+  set dump  [regexp -line {^[ \t]*show all > } $t]
+  if {$dump && $cards == 0} { return d }
+  if {!$dump && $cards > 0} { return c }
+  return "MIXED:cards=$cards:dump=$dump"
+}
+proc z_deckshape {state} {
+  set f [o_ans ase::deck_file $state]
+  if {$f eq {NOPROC} || [string match RAISED:* $f] || $f eq {}} { return NODECKPATH }
+  if {![file isfile $f]} { return NODECK }
+  return [z_deckshape_text [o_slurp $f]]
+}
+
+## One whole run under the stand-in, and the three answers it produced.
+## Returns {calls <n> said <kind> deck <shape> record <letter>}.
+##
+## The record is taken off ase::run_log_write, which run_deck calls with the
+## very metadata it hands ase::run_done -- synchronously, before the simulator
+## starts, so the row does not have to wait for an exit code to read it.
+proc z_run {seq state nl} {
+  set ::z_state $state
+  set ::z_nl $nl
+  set ::z_meta ZZNOMETA
+  if {[info commands ::ase::run_log_write] eq {}} { return NOLOGW }
+  rename ::ase::run_log_write ::z_saved_logw
+  proc ::ase::run_log_write {logpath meta data exitcode} {
+    if {[llength $meta] && $::z_meta eq {ZZNOMETA}} { set ::z_meta $meta }
+    return [::z_saved_logw $logpath $meta $data $exitcode]
+  }
+  catch {file delete -- [ase::deck_file $state]}
+  z_flap $seq
+  set kinds [o_saykinds {o_dorun $::z_state $::z_nl}]
+  set calls $::z_calls
+  z_unflap
+  rename ::ase::run_log_write {}
+  rename ::z_saved_logw ::ase::run_log_write
+  set rec ZZNORECORD
+  if {$::z_meta ne {ZZNOMETA}} {
+    if {[catch {dict get $::z_meta optier} rec]} { set rec NOKEY-optier }
+  }
+  return [list calls $calls said $kinds deck [z_deckshape $state] record $rec \
+                meta $::z_meta]
+}
+proc z_get {r k} {
+  if {![string is list $r] || [catch {dict get $r $k} v]} { return "NORUN:$r" }
+  return $v
+}
+
+## What ase::op_report_missing SAYS, not merely what it returns: the kind and
+## every sentence it minted, so a row can name the remedy it must not give.
+proc z_report {state meta} {
+  set ::z_sent {}
+  if {[info commands ::ase::sim_say] eq {}} { return NOPROC }
+  rename ::ase::sim_say ::z_saved_say
+  proc ::ase::sim_say {kind name path {extra {}} {tag error}} {
+    set m [::z_saved_say $kind $name $path $extra $tag]
+    lappend ::z_sent $m
+    return $m
+  }
+  set rc [catch {ase::op_report_missing $state $meta 0} kind]
+  rename ::ase::sim_say {}
+  rename ::z_saved_say ::ase::sim_say
+  if {$rc} { return "RAISED:$kind" }
+  return [list $kind [join $::z_sent { }]]
+}
+
+o_force {}
+o_prime $CAPS_WRITE
+ase::op_cards_put $NL $BLK5
+set Z_ST [o_state $AN_OP]
+
+## --- the measured flap, in the direction commit 6a55d626's adversary drove:
+## the sentence said d, the deck was rendered c, the record kept d.
+set Z2R [z_run {d c d} $Z_ST $NL]
+puts "MEASURE Z flap{d c d} -> calls=[z_get $Z2R calls] said=[z_get $Z2R said]\
+ deck=[z_get $Z2R deck] record=[z_get $Z2R record]"
+
+check {Z1 a run asks which shape to use EXACTLY ONCE -- three asks of a\
+ function that is deliberately allowed to answer differently on two\
+ consecutive calls is three chances for the deck, the sentence and the record\
+ to part company} \
+  [z_get $Z2R calls] 1
+
+check {Z2 and the sentence, the deck on disk and the run record are the SAME\
+ letter even when the measurement flaps underneath them -- the deck is the\
+ ground truth about what ran, and it now agrees with what the user was told} \
+  [list [z_get $Z2R said] [z_get $Z2R deck] [z_get $Z2R record]] \
+  {op_tier_dump d d}
+
+## --- the false remedy, fenced by name. The flap here leaves the record on `d`
+## over a deck rendered `c`, which is exactly the run that told the user to
+## rename a folder that was already correctly named.
+set Z4R [z_run {c c d} $Z_ST $NL]
+set Z4REP [z_report $Z_ST [z_get $Z4R meta]]
+puts "MEASURE Z flap{c c d} -> calls=[z_get $Z4R calls] said=[z_get $Z4R said]\
+ deck=[z_get $Z4R deck] record=[z_get $Z4R record] report=[lindex $Z4REP 0]"
+
+check {Z3 the run that renders a per-device deck says the per-device sentence\
+ and records the per-device letter -- the same three-way agreement in the other\
+ direction, so a fix cannot pass Z2 by hard-wiring one shape} \
+  [list [z_get $Z4R said] [z_get $Z4R deck] [z_get $Z4R record]] \
+  {op_tier_perdevice c c}
+
+check {Z4 A RUN WHOSE DECK IS THE PER-DEVICE SHAPE IS NEVER TOLD TO RENAME ITS\
+ RUN FOLDER. The dump branch of the missing-numbers report is reached from the\
+ RECORD, so a record that disagreed with the deck sent a working run down it\
+ and gave a remedy for a fault it did not have, in a folder already all lower\
+ case with no spaces (issue 0975's rule, broken by another route)} \
+  [list [expr {[lindex $Z4REP 0] eq {op_dump_missing}}] \
+        [expr {[string first {Rename the run folder} [lindex $Z4REP 1]] >= 0}]] \
+  {0 0}
+
+## --- the pin's lifetime, both ends -----------------------------------------
+## AFTER the run nothing is held, and the very next question is measured afresh.
+## The direct render below is the gesture every suite in this tree makes; it
+## must never be handed the last run's answer.
+set Z5AFTER [o_ans ase::op_tier_pin_state]
+z_flap {c}
+set Z5DECK [z_deckshape_text [o_ans ase::backend::ngspice::render_deck $Z_ST $NL]]
+set Z5CALLS $::z_calls
+z_unflap
+check {Z5 the pin is RELEASED when the run ends: nothing is armed afterwards,\
+ and a render outside a run measures for itself -- which is what every suite\
+ that drives the hook with a fixture string depends on} \
+  [list $Z5AFTER $Z5DECK [expr {$Z5CALLS >= 1}]] {{} c 1} 
+
+## A SECOND RUN AFTER THE ANSWER CHANGES. The user registers a different
+## simulator mid-session; the new run must take the new shape, not the pinned
+## one. Driven through the REAL capability path, not the stand-in, so it
+## exercises ase::op_save_tier itself.
+o_prime [dict merge $CAPS_WRITE {altshow_op_dump 1}]
+set Z6A [z_run {} $Z_ST $NL]        ;# empty seq: no stand-in, the real decision
+o_prime $CAPS_WRITE
+set Z6B [z_run {} $Z_ST $NL]
+puts "MEASURE Z rerun -> first deck=[z_get $Z6A deck] record=[z_get $Z6A record]\
+ second deck=[z_get $Z6B deck] record=[z_get $Z6B record]"
+check {Z6 a RE-RUN in the same session after the capability answer changes is\
+ not pinned to the old shape -- the previous run released its answer before it\
+ returned, so the second run measures and takes the new one} \
+  [list [z_get $Z6A deck] [z_get $Z6A record] \
+        [z_get $Z6B deck] [z_get $Z6B record] [o_ans ase::op_tier_pin_state]] \
+  {d d c c {}}
+o_prime $CAPS_WRITE
+
+## --- the one statement between the two ends that can raise ------------------
+## A run that dies in the renderer must not bequeath its answer to whatever asks
+## next, and its error must arrive unchanged.
+set Z7RC ZZNOTRUN
+if {[info commands ::ase::backend::ngspice::render_deck] ne {}} {
+  rename ::ase::backend::ngspice::render_deck ::z_saved_render
+  proc ::ase::backend::ngspice::render_deck {state netlist_text} {
+    return -code error "zz render blew up"
+  }
+  set Z7RC [catch {o_dorun $Z_ST $NL} Z7ERR]
+  rename ::ase::backend::ngspice::render_deck {}
+  rename ::z_saved_render ::ase::backend::ngspice::render_deck
+} else { set Z7ERR NOPROC }
+check {Z7 a run that dies IN the renderer releases the pin on its way out, and\
+ the renderer's error reaches the caller unchanged -- the catch that releases\
+ the pin is not allowed to become a catch that swallows a defect} \
+  [list [o_ans ase::op_tier_pin_state] \
+        [expr {[string first {zz render blew up} $Z7ERR] >= 0}]] \
+  {{} 1}
+
+## --- the empty name and the double space (issue 1366) -----------------------
+## A registered simulator whose file does not exist leaves ase::sim_status's
+## `resolved` field EMPTY BY DESIGN, and the sentence that interpolated it read
+## "xschem was not able to find out anything about what  can do" -- no name, two
+## spaces, about a simulator the user can name in one word.
+set Z8MISS [file join $scratch bin zz_no_such_program]
+catch {file delete -- $Z8MISS}
+catch {ase::sim_caps_clear}
+catch {ase::sim_clear}
+o_ans ase::sim_register optier $Z8MISS
+o_ans ase::sim_select optier
+set Z8SENT {}
+if {[info commands ::ase::sim_say] ne {}} {
+  rename ::ase::sim_say ::z_saved_say8
+  proc ::ase::sim_say {kind name path {extra {}} {tag error}} {
+    set m [::z_saved_say8 $kind $name $path $extra $tag]
+    lappend ::z8_sent $m
+    return $m
+  }
+  set ::z8_sent {}
+  o_ans ase::op_tier_report ngspice $Z_ST $NL
+  rename ::ase::sim_say {}
+  rename ::z_saved_say8 ::ase::sim_say
+  set Z8SENT [join $::z8_sent { }]
+}
+check {Z8 a sentence about a simulator always NAMES one. A registered entry\
+ whose file has gone leaves `resolved` empty, and the run then told the user it\
+ could not find out anything about what -- nothing -- can do, with a double\
+ space where the name should be} \
+  [list [expr {[string first {about what  can do} $Z8SENT] >= 0}] \
+        [expr {[string first $Z8MISS $Z8SENT] >= 0}] \
+        [expr {[string length $Z8SENT] > 40}]] \
+  {0 1 1}
+
+o_unprime
+o_prime $CAPS_WRITE
 
 # ============================================================================
 # X. THE ACCEPTANCE, ON THE USER'S OWN BENCH AND A REAL RUN (issue 0969)

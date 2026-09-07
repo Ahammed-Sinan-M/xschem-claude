@@ -266,3 +266,64 @@ THE SELF-CORRECTING SHAPE THIS ARGUES FOR: save the whole `show` catalogue once,
 then PRUNE by measurement -- drop every name that came back dims=0 and cache the
 survivors per model. The catalogue then converges on the savable set after one
 run and never lies again. `dims=0` -- not stderr -- is the only detector.
+
+## 22a. ⚠ CORRECTION, 2026-09-02 (issue 1263, found by item A6's adversary pass)
+**THE SENTENCE ABOVE IS TRUE OF ONE NGSPICE WRITER AND FALSE OF THE ONE XSCHEM
+ACTUALLY USES.** Finding 22 was measured with the `.control` + `write` idiom,
+which does emit the `dims=0` token. But xschem's own shipped simulate command is
+
+    src/xschem.tcl:3854   set_ne sim(spice,2,cmd) {ngspice -b -r "$n.raw" "$N"}
+
+and the batch `-r` writer publishes an unsatisfiable save card as a **plain zero
+column with no `dims=0` token at all** -- re-measured 2026-09-02 on ngspice 45.2,
+BSIM4 `level=14 version=4.8.1`, with `.options savecurrents`: the `Variables:`
+block lists `i(@m1[is])`, `i(@m1[ig])`, `i(@m1[ib])` as ordinary `current`
+columns, and `grep -ac 'dims=' <raw>` is **0**.
+
+So through xschem's own simulate path there is **NO WAY TO DISTINGUISH "the
+simulator could not compute this" FROM "the simulator computed 0.0"**. Not by
+`dims=`, not by vector length, not by stderr. Any design that needs that
+distinction must either change how xschem invokes ngspice, or accept that on the
+shipped path the two are the same value.
+
+Also measured while establishing this (issue **1264**): a **zero-length** vector
+makes ngspice `write` refuse the **whole plot** and produce no raw at all -- so
+the zero-length case from finding 3 cannot even reach a reader.
+
+Findings 21 and 22's arithmetic stands. It is the DETECTOR that was
+writer-specific, and this file asserted it without naming the writer.
+
+⚠ **CORRECTED 2026-09-02 by item A6, re-measured against ngspice 45.2 on
+throwaway BSIM4 decks. THE SENTENCE ABOVE IS TRUE OF THIS `.control`+`write`
+RUN AND FALSE AS A GENERAL CLAIM, and the difference matters because the writer
+xschem itself calls is the other one.** Run through the shipped simulate
+command -- `ngspice -b -r "$n.raw" "$N"`, `src/xschem.tcl:3854` -- the SAME
+unsatisfiable save card comes back as an **ordinary `current` column of 0.0 with
+no `dims=0` token anywhere in the file**:
+
+    Variables:
+            4       i(@m1[id])      current
+            5       i(@m1[is])      current
+            6       i(@m1[ig])      current
+            7       i(@m1[ib])      current
+    $ grep -ac 'dims=' sc.raw
+    0
+    $ head -3 sc.err
+    Warning: unrecognized variable - @m1[is]
+    Warning: unrecognized variable - @m1[ig]
+    Warning: unrecognized variable - @m1[ib]
+
+and read back through xschem: `i(@m1[id])` = 3.12e-4, `is`/`ig`/`ib` = 0,
+indistinguishable from a transistor that is off. **So on that path the detector
+is stderr and nothing else** -- the exact inverse of the sentence above -- and
+xschem never reads stderr. Also measured: a genuinely zero-LENGTH vector makes
+`write` refuse the WHOLE plot (`Error during 'write': no writable vector
+found`), producing no raw at all and in one form segfaulting; the finding-21
+claim that these flavours are silent is wrong for that one too.
+
+CONSEQUENCE FOR THE "SELF-CORRECTING SHAPE" ABOVE: probe-and-prune was already
+rejected by ruling **D-5**; this measurement makes the rejection
+over-determined, because the token it would prune on is absent on the path the
+tool uses. Item A6-b closes the `dims=0` flavour only, behind
+`raw_vector_absent()`. Issues **1263** (the `-r` writer) and **1264** (the
+zero-length flavour).

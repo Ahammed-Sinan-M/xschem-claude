@@ -54,8 +54,13 @@
 #                                                 `deck` (the entry-relative
 #                                                 SAVE-CARD name)          (S3)
 #   op_annot::vector <instname> <param> ?kind? -> "i(…[id])" / "…[gm]" / "v(…[vth])"
-#   op_annot::raw_or_blank <vector>            -> the value at the annotation
-#                                                 point, or {}          (S5)
+#   op_annot::raw_or_blank <vector>            -> the FINITE value at the
+#                                                 annotation point, or {}  (S5)
+#   op_annot::raw_class <vector>               -> {absent|nonfinite|value
+#                                                 <text>} — the three outcomes
+#                                                 told apart, for a caller that
+#                                                 must report a non-converged
+#                                                 device as such      (S5,1272)
 #   op_annot::eng_or_blank <value>             -> to_eng of it, or {}   (S5)
 #   op_annot::text <instname>                  -> the `label = value` block for
 #                                                 one device, or {}     (S5)
@@ -113,8 +118,69 @@
 #   params   ordered {label param kind} triples. `label` is what the display
 #            prints, `param` is the raw-file parameter name, `kind` is the
 #            wrapper (below). The lookup in `vector` matches `param`, not `label`.
+#            WHAT THE RUN COMPUTES: the `.save` cards are built from THIS list
+#            (`_cards_for`), `_claims` gates the hierarchy walk on it and
+#            `_kind` answers out of it. See `shown` below for the split.
 #   derived  ordered {label expr} — computed from params after they are read (S5)
 #   pinexpr  ordered {label expr-over-pin-voltages} — needs no save card (S5)
+#   shown    OPTIONAL ordered {label param kind} triples — WHAT THE SHEET DRAWS.
+#            `op_annot::text` PREFERS this list over `params` when it is
+#            present; nothing else in this file reads it. ABSENT means the old
+#            behaviour exactly: the sheet draws every `params` row (invariant
+#            I7 — all four shipped PDK register sites are this case). Ruling
+#            DD-6, doc/claude/op_param_batch/DECISIONS.md.
+#            THE SPLIT, IN ONE LINE: `params` is what the run computes and
+#            `shown` is what the sheet draws. Without it a user who deletes a
+#            row gets no visible change at all — the deck must keep saving it
+#            (the run needs it, and a `derived` row may need it as an operand)
+#            while the sheet must stop drawing it, which is *declutter*, the
+#            word the feature is named after.
+#            THREE PROPERTIES, EACH BUILT RATHER THAN ASSERTED:
+#              · `op_param_lists::apply` derives it by FILTERING the list it
+#                writes into `params`, so `shown` ⊆ `params` by construction
+#                for every input — including issue 1288's duplicate labels.
+#              · a `shown` row whose label is in no `params` row draws BLANK
+#                (I3). No raw read, no `_kind`, no raise, whoever wrote the key.
+#              · a MALFORMED value — one that does not parse as a list of rows
+#                — is treated as ABSENT, full stop (the DD-6 amendment). See
+#                op_annot::_display_rows; this key opens NO raise door.
+#            PRESENT AND EMPTY is NOT absent: it draws no `params` rows at all.
+#            Only an absent key falls back. *** STATUS E, unratified: see
+#            doc/claude/issues/1285 and the `1285_empty_display_key` rule debt.
+#   declared OPTIONAL ordered {label param kind} triples — THE DECLARATION:
+#            WHAT THE PDK, OR THE USER'S OWN RC, DECLARED. Ruling DD-13,
+#            doc/claude/op_param_batch/DECISIONS.md; issue 1312.
+#            WRITTEN BY `op_annot::register` AND BY NOTHING ELSE (see _declare
+#            below), READ BY `op_param_lists::_params` AND BY NOTHING ELSE —
+#            which is what `op_param_lists::seed` answers out of. That is the
+#            OPPOSITE DIRECTION from `shown` above, which `op_param_lists::apply`
+#            writes and `op_annot::text` reads, and the direction is the point.
+#            WHY IT EXISTS: `apply` writes the annotation+summary UNION into
+#            `params`, and before DD-13 `seed` read "the PDK's own list" back
+#            out of THAT SAME FIELD. So two broad-scope Deletes destroyed the
+#            PDK's declaration, took the parameter's `.save` card with it, and
+#            Add could not put it back — the exact inverse of rulings DD-4 and
+#            DD-6, whose whole content is that Delete changes what is DRAWN and
+#            never what the simulator computes. Measured by item B5.
+#            ⚠ `op_param_lists::apply` MUST NEVER WRITE IT, AND CANNOT. It
+#            round-trips the dict it read — sets `params` and `shown` on it and
+#            re-registers — so PRESERVE-IF-PRESENT (below) carries the
+#            declaration through every apply untouched and apply's body never
+#            names the key at all. Built, not asserted, which is the standard
+#            the DD-6 amendment set; row N12 of
+#            tests/headless/test_op_param_store_1245.tcl fences it.
+#            ABSENT means the old behaviour EXACTLY: `_params` falls back to
+#            `params`, so every descriptor that predates this key answers the
+#            bytes it always answered (invariant I7). Only a descriptor that
+#            reached ::op_annot::desc WITHOUT passing through `register` can be
+#            in that state.
+#            *** STATUS E, unratified: PRESERVE-IF-PRESENT means the recovery
+#            round-trip documented above and in all three PDK `_procs.tcl`
+#            files — `set d [descriptor nmos]; dict set d params …; register`
+#            — now changes what the RUN computes and what the SHEET draws but
+#            NOT what `seed` answers. The escape hatch is one line,
+#            `dict unset d declared` before re-registering, or registering a
+#            fresh dict as all four shipped sites already do. Issue 1315.
 #   match    OPTIONAL list of globs tested against the instance's CELL NAME
 #            (`getprop instance <n> cell::name`, e.g. `sky130_fd_pr/nfet_01v8.sym`).
 #            Absent or empty = permissive, i.e. exactly the behaviour before this
@@ -286,6 +352,12 @@ namespace eval op_annot {
   if {![info exists _c_name]} { set _c_name 0 }
   variable _c_model
   if {![info exists _c_model]} { set _c_model 0 }
+  ## Issue 1364's re-entry latch. Set for the length of op_annot::opdump_read's
+  ## republish, read by op_annot::opdump_autofill: `xschem update_op` is now a
+  ## door onto the merge, and a merge inside a merge is not what the caller
+  ## asked for. See the two procs for the whole story.
+  variable opdump_merging
+  if {![info exists opdump_merging]} { set opdump_merging 0 }
 }
 
 ## The effective row cap: a positive integer, or 0 for no limit. Anything the
@@ -305,6 +377,109 @@ proc op_annot::dropped {} {
   return $dropped
 }
 
+## op_annot::_declare <descriptor> -> the same descriptor, carrying THE
+## DECLARATION key. Ruling DD-13; issue 1312. `register` is its only caller and
+## this proc is the key's only writer anywhere in the tree.
+##
+## THE WHOLE DESIGN IS PRESERVE-IF-PRESENT, and it is what makes
+## `op_param_lists::apply` STRUCTURALLY INCAPABLE of destroying a declaration:
+## apply reads a descriptor, sets `params` and `shown` on it and re-registers
+## it, so a key that is already there rides straight through. Restamping from
+## `params` on every register — which reads more obvious — reintroduces issue
+## 1312 on the very first apply, because after an apply `params` IS the union.
+##
+## THREE THINGS IT MUST NOT DO, each of them fenced by a row that already
+## existed before this key did:
+##   · STAMP THE EMPTY DICT. `register <t> {}` is the documented erasure
+##     (test_op_annot's opa_clear_store; rows P0/P11/P16 gold `{{} {} {}}`), so
+##     an empty descriptor is stored exactly as empty.
+##   · PARSE THE VALUE. `dict exists`/`dict get`/`dict set` only — no
+##     `llength`, no list operation of any kind. Row K17 of test_op_annot
+##     registers a `params` holding an unmatched open brace and golds an rc=0
+##     register; the value is carried as an opaque string, exactly as `params`
+##     itself is, and `op_param_lists::_params` is where it is validated.
+##   · RAISE. Every step is guarded and every fall-through leaves the
+##     descriptor byte-identical to what the caller wrote. A raise in
+##     `register` rejects the WHOLE descriptor, which the DD-6 amendment
+##     already ruled is strictly worse than ignoring one key.
+##
+## A NON-EMPTY DESCRIPTOR WITH NO `params` AT ALL IS STAMPED WITH THE EMPTY
+## LIST, deliberately. It is legal today (`_claims` simply answers 0 for it),
+## and without the stamp `apply` could later give that type a `params` and the
+## re-register would then record apply's own UNION as the type's declaration —
+## issue 1312 surviving in the one corner nobody would think to look at.
+proc op_annot::_declare {descriptor} {
+  if {[catch {dict size $descriptor} n]} { return $descriptor }
+  if {$n == 0} { return $descriptor }
+  if {[catch {dict exists $descriptor declared} has]} { return $descriptor }
+  if {$has} { return $descriptor }
+  set p {}
+  if {![catch {dict exists $descriptor params} hp] && $hp} {
+    if {[catch {dict get $descriptor params} p]} { set p {} }
+  }
+  if {[catch {dict set descriptor declared $p} out]} { return $descriptor }
+  return $out
+}
+
+## RULING DD-15 (issue 1326) — THE REPEATED DISPLAY LABEL IN A DECLARATION, OR
+## {} WHEN THERE IS NONE.
+##
+## Two rows sharing one display label are ambiguous BY CONSTRUCTION: the label
+## is what identifies a row to the user and it is also what
+## `op_param_lists::set_list` and the settings-file parser dedupe on (issue
+## 1288's ruling, "a second entry for a label replaces the earlier one in
+## place"). So a declaration carrying two of them is asking the parameter-list
+## store for something it cannot represent, and nothing downstream can repair
+## that: a later Up or Delete hands the list back one row SHORTER than it went
+## in, and `_cards_for` then stops emitting a `.save` card the deck was asking
+## for. Measured before the guard existed — an Up press turned
+##     {id ids 0} {id vgs 2} {gm gm 1}   into   {id ids 0} {gm gm 1}
+## and `m1[vgs]` vanished from the deck. DD-15 refuses at the door where the
+## ambiguity is CREATED rather than at the far end where it shows up.
+##
+## ⚠ IT SCANS THE DECLARATION — what `_declare` will store under `declared` —
+## AND NOT `params`. `op_param_lists::apply` re-registers every applied type
+## (op_param_lists.tcl:1841) handing back the descriptor it read with `params`
+## replaced by the annotation+summary UNION, and it does so inside a catch that
+## turns a raise into a `_say`. A guard reading `params` would therefore make an
+## ordinary Delete report "cannot register the parameter lists" instead of doing
+## its job — while `_save_set` and `_merge_declared` both dedupe by label, so
+## that union is label-unique by construction and there is nothing there to
+## catch anyway.
+##
+## ⚠ EVERY READ IS CATCH-GUARDED AND FALLS THROUGH TO ACCEPT. `_declare`'s own
+## header forbids parsing the value and forbids raising for a malformed one, and
+## a `params` may be any string at all because a user's own rc is a supported
+## door (invariant I5). A declaration that does not parse as a list, or one
+## holding a row that does not parse, is accepted exactly as it was before this
+## guard existed and is validated where it always was, in
+## `op_param_lists::_params`.
+##
+## ⚠ WHY THE RULE IS WRITTEN TWICE RATHER THAN CALLED ACROSS.
+## `op_param_lists::_dup_index` (op_param_lists.tcl:607) is the same one-line
+## rule for the store's own two doors, and this proc deliberately does not call
+## it: op_annot.tcl is sourced FIRST and op_param_lists.tcl depends on it, never
+## the other way round, and ruling DD-6 already rejected exactly that load-order
+## inversion to save a dict key. One sentence, written twice; the dependency
+## stays one-way.
+proc op_annot::_dup_declared_label {descriptor} {
+  if {[catch {_declare $descriptor} d]} { return {} }
+  if {[catch {dict exists $d declared} has]} { return {} }
+  if {!$has} { return {} }
+  if {[catch {dict get $d declared} decl]} { return {} }
+  if {[catch {llength $decl} n]} { return {} }
+  set seen {}
+  for {set i 0} {$i < $n} {incr i} {
+    if {[catch {lindex $decl $i} row]} { return {} }
+    if {[catch {llength $row}]} { return {} }
+    if {[catch {lindex $row 0} label]} { return {} }
+    if {$label eq {}} { continue }
+    if {[lsearch -exact $seen $label] >= 0} { return $label }
+    lappend seen $label
+  }
+  return {}
+}
+
 ## op_annot::register <symbol-type> <dict>
 ##
 ## <symbol-type> is the symbol K-record `type=` token (`nmos`, `pmos`,
@@ -321,6 +496,14 @@ proc op_annot::dropped {} {
 ##     set d [op_annot::descriptor nmos]
 ##     dict set d params {{id id 0} {gm gm 1}}
 ##     op_annot::register nmos $d
+##
+## ⚠ THAT ROUND-TRIP CARRIES THE `declared` KEY WITH IT, and `register`
+## PRESERVES a declaration it is handed rather than restamping it (ruling
+## DD-13). So the recipe above changes what the run computes and what the sheet
+## draws and leaves the SEED where the PDK put it. To redeclare as well, drop
+## the key first — `dict unset d declared` — or register a fresh dict, which is
+## what all four shipped PDK register sites do. Issue 1315 carries the question
+## of whether the recipe itself should redeclare; it is unratified.
 proc op_annot::register {type descriptor} {
   variable desc
   if {[string trim $type] eq {}} {
@@ -332,7 +515,25 @@ proc op_annot::register {type descriptor} {
       "op_annot::register: descriptor for symbol type \"$type\" is not a\
  well-formed dict ($err)"
   }
-  set desc($type) $descriptor
+  ## RULING DD-15 (issue 1326): THE SECOND LOUD FAILURE, AND THE SAME SHAPE AS
+  ## THE FIRST. A declaration carrying two triples that share a display label is
+  ## refused ONCE, HERE, where the duplicate is introduced — not at the Delete
+  ## or the Up, which would break a button for every press of that class with a
+  ## sentence about a row the user never touched (issue 1326's option (a),
+  ## rejected). It runs BEFORE anything is stored and before `gen` is bumped, so
+  ## a refused registration leaves the registry byte-identical.
+  ## Cost, stated by the ruling: a PDK author — or a user's own rc — gets an
+  ## error at load time instead of silence. That is the point.
+  set _dup [_dup_declared_label $descriptor]
+  if {$_dup ne {}} {
+    return -code error \
+      "op_annot::register: the declaration for symbol type \"$type\" carries a\
+ second entry for label \"$_dup\"; two rows sharing one display label are\
+ ambiguous by construction and the parameter-list store cannot represent them,\
+ so a later reorder or delete would drop both rows and the `.save` card with\
+ them (ruling DD-15, issue 1326). Give one of them a different label."
+  }
+  set desc($type) [_declare $descriptor]
   ## I5: tell the draw-time overlay its cached blocks are stale (see the
   ## namespace header). Bumped on EVERY register, including a re-register with
   ## identical content -- a no-op bump costs one cache rebuild, a missed one
@@ -430,6 +631,47 @@ proc op_annot::_wrap {dev param kind} {
     1       { return "${dev}\[${param}\]" }
     default { return "v(${dev}\[${param}\])" }
   }
+}
+
+## THE INVERSE OF _wrap's TABLE, AND IT LIVES HERE FOR THAT REASON ALONE
+## (issue 1372).
+##
+## Given a name a RESULTS FILE published, which `kind` would _wrap have used to
+## build it?  `i(` -> 0, nothing -> 1, `v(` -> 2, reading the prefix that sits
+## in front of the `@`.  {} when the name is not a device-parameter vector at
+## all, or when it carries a wrapper this table does not name -- a caller that
+## cannot be told the shape must refuse, not pick one.
+##
+## ⚠ IT IS BESIDE _wrap AND NOT IN THE CALLER, WHICH IS INVARIANT I1.  The
+## forward table is token.c:4524-4525 copied once; a second file that decided
+## `i(` means 0 would be a second copy of the same table, and the two would
+## drift silently the moment token.c moved -- the numbers keep coming, they are
+## just read out of the wrong column.  ase::op_param_split already refuses to
+## re-encode this table for exactly the same reason and says so in its own
+## comment; this is the half it deliberately does not answer.
+##
+## ⚠ AND IT IS NOT _wrap RUN BACKWARDS BY CONSTRUCTION.  _wrap's `default` arm
+## folds 2 AND every other value into `v(`, so the map is not injective and the
+## inverse of `v(` is CANONICALLY 2 -- the value _wrap's own switch names.  A
+## caller wanting the exact integer some descriptor once held cannot have it
+## and does not need it: 2 and "anything else" build the same string, so they
+## read the same column.
+##
+## The one consumer is rdw::_run_triple (src/rdw.tcl), which mints a triple for
+## a column this run published that no list and no PDK descriptor declares.
+proc op_annot::_kind_of_vector {v} {
+  set a [string first {@} $v]
+  if {$a < 0} { return {} }
+  set pre [string range $v 0 [expr {$a - 1}]]
+  ## The wrapper is a PAIR.  A prefix with no closing `)` -- and a bare name
+  ## that grew one -- is a name neither arm of _wrap can have built, so it gets
+  ## the same {} an unknown prefix gets.
+  set closed [expr {[string index $v end] eq {)} ? 1 : 0}]
+  if {$pre eq {}} { return [expr {$closed ? {} : 1}] }
+  if {!$closed}   { return {} }
+  if {$pre eq {i(}} { return 0 }
+  if {$pre eq {v(}} { return 2 }
+  return {}
 }
 
 ## ISSUE 0963 — THE SAME NAME, IN EVERY SPELLING A RESULTS FILE MAY USE.
@@ -910,7 +1152,8 @@ proc op_annot::vector {instname param {kind {}}} {
 # ============================================================================
 # S5 — THE DISPLAY FORMATTER
 # ============================================================================
-#   op_annot::raw_or_blank <vector-name>  -> the number, or {}
+#   op_annot::raw_or_blank <vector-name>  -> the FINITE number, or {}
+#   op_annot::raw_class <vector-name>     -> {absent|nonfinite|value <text>}
 #   op_annot::eng_or_blank <value>        -> to_eng of it, or {}
 #   op_annot::text <instname>             -> the `label = value` block, or {}
 #
@@ -995,11 +1238,64 @@ proc op_annot::_finite {v} {
 ##   vector present   -> the number at cursor-B / the OP point.
 ## Point -1 is THE accessor (scheduler.c:10326): it falls through to
 ## xctx->raw->cursor_b_val[idx], i.e. whatever update_op() last published.
+##
+## ⚠ THE FINITE TEST IS PART OF THIS ACCESSOR NOW -- ISSUE 1272, ITEM B1.
+## It used to gate on `string is double -strict` alone, which ACCEPTS `nan` and
+## `inf`, so this proc returned the string `nan` as though it were a number and
+## the only thing in the tree that rejected it was a SECOND, SEPARATE call to
+## op_annot::_finite that every existing consumer happened to make. That made
+## correctness a property of whether the next author had read four other call
+## sites -- and item B1 is the measured case of a new one that had not: its
+## seam returned `devices {@m.x1.m1 {{id nan} ...}}` from a BINARY raw, which
+## item B3 would have rendered as `id = nan` on a schematic, verbatim what
+## invariant I3 forbids. It was green at 37/37 because its suite had no
+## non-finite row. src/save.c records that ngspice-46 on this box emits all
+## four of inf/-inf/nan/-nan, and a non-converged operating point is the
+## ordinary way to get one, so this is not an exotic input.
+##
+## The four `_finite` calls in this file and the one in eng_or_blank are now
+## belt-and-braces rather than load-bearing. They are DELIBERATELY LEFT: they
+## cost nothing, and removing them would make this one edit load-bearing for
+## five call sites at once.
+##
+## ⚠ A CALLER THAT NEEDS TO TELL "the column is not there" FROM "the column is
+## there and holds NaN" MUST USE op_annot::raw_class, NOT THIS PROC. Both
+## answer {} here, on purpose: a two-outcome accessor cannot carry a
+## three-outcome distinction, and 1272 rejected making `{}` mean two things.
 proc op_annot::raw_or_blank {v} {
-  if {$v eq {}} { return {} }
-  if {[catch {xschem raw value $v -1} r]} { return {} }
-  if {[string is double -strict $r]} { return $r }
+  ## ONE raw_class call, not two: this is the annotation hot path -- once per
+  ## parameter, per annotated device, per redraw -- and each call is an
+  ## `xschem raw value` round trip into the C.
+  set c [::op_annot::raw_class $v]
+  if {[lindex $c 0] eq {value}} { return [lindex $c 1] }
   return {}
+}
+
+## op_annot::raw_class <vector-name> -> {class value}, the THREE outcomes told
+## apart. Added by item B1 (issue 1272) because the Results Display Window's
+## backend seam must report a non-finite as its own answer and not as absence.
+##
+##   absent    {}    no raw loaded, the raw does not carry the column, or what
+##                   came back is not a number at all. Renders BLANK (I3).
+##   nonfinite <str> the raw CARRIES the column and the simulator produced
+##                   Inf/NaN -- a device that did not converge. That is a fact
+##                   about the run and a caller may want to say so.
+##   value     <num> a finite number, 0.0 INCLUDED. A cut-off transistor has
+##                   id = 0 and that is a measurement, not an absence (1259).
+##
+## ⚠ THE ASCII/BINARY ASYMMETRY IS NOT FIXED HERE AND IS NOT FIXABLE HERE.
+## The same NaN written to an ASCII raw reads back as a confident `0` and
+## reaches this proc as a finite value, because src/save.c's fast my_atof()
+## continuation path has never parsed the words. So `nonfinite` is reliable
+## only for binary raws -- which is what a real ngspice `write` produces, so it
+## is the case that matters, but a caller must not read a missing `nonfinite`
+## as proof the run converged. Still open at the end of issue 1272.
+proc op_annot::raw_class {v} {
+  if {$v eq {}} { return [list absent {}] }
+  if {[catch {xschem raw value $v -1} r]} { return [list absent {}] }
+  if {![string is double -strict $r]} { return [list absent {}] }
+  if {![::op_annot::_finite $r]} { return [list nonfinite $r] }
+  return [list value $r]
 }
 
 ## op_annot::eng_or_blank <value> -> `46.78u`, or {} for anything that is not a
@@ -1098,7 +1394,8 @@ proc op_annot::_annotated {} {
 # operating-point callers. Invariant I1 is honoured by the CALLERS, not by
 # pretending two different questions are one.
 #
-# ⚠ THE STAMP IS A PATH + mtime + size, AND THAT IS DELIBERATELY CHEAP.
+# ⚠ THE STAMP IS A PATH + mtime + size + A BOUNDED FINGERPRINT OF THE FILE'S OWN
+# BYTES, AND IT IS STILL DELIBERATELY CHEAP.
 # `cadence::_annot_db_print` -- the transient surface's fingerprint -- is one
 # `xschem raw value` per SAVED VECTOR and costs 28.3 ms on a 40000-vector
 # database (issue 0904). The operating-point path reads DEVICE PARAMETER
@@ -1108,10 +1405,43 @@ proc op_annot::_annotated {} {
 # `_annot_db_print` and requires ZERO hits; that grep is why the name must not
 # appear on a code line here.
 #
-# ⚠ KNOWN LIMITATION, STATED RATHER THAN HIDDEN: `file mtime` is 1-second
-# resolution, so a same-second rewrite of identical size is invisible to this
-# stamp. That hole is open on every re-run route and is not closed by anything
-# in this file.
+# ⚠ THE ONE-SECOND HOLE IS NARROWED, NOT CLOSED -- ISSUE 1255. Read the residue
+# paragraph at the end of this comment before quoting this line: what is closed
+# is every same-second rewrite in a file of 8 KiB or less, and every one that
+# touches the first or last 4096 bytes of a larger file. A rewrite confined to
+# the MIDDLE of a bigger file, at exactly the same size, inside the same second,
+# is still invisible -- 82 % of a 45 KB raw, measured. The headline used to say
+# "IS CLOSED" and that is the sentence a later reader would have quoted.
+# `file mtime` is 1-second
+# resolution and Tcl exposes nothing finer, so a run that finished inside the
+# same wall-clock second at the same path and the same length read as UNCHANGED
+# and the sheet went on painting the PREVIOUS run's numbers under "These results
+# were already loaded" -- issue 0684's own headline defect, arriving through the
+# guard that exists to prevent it. It failed in the safe-looking direction: no
+# error, no delay, no missing number, just the wrong one under a sentence saying
+# it was the right one (invariant I3, save.c RULING D5-1).
+#
+# The third term therefore comes FROM THE FILE and never from a counter this
+# process keeps. A "we wrote this" token minted at publish time is a guess about
+# the file: it cannot see a rewrite this process did not do, which is exactly
+# this case -- ngspice rewrites the raw, xschem does not.
+#
+# ⚠ THE WINDOW IS BOUNDED BECAUSE THIS PREDICATE RUNS ON EVERY KEY PRESS and row
+# F35 of tests/headless/test_annot_stale_0684.tcl is its budget (flat in the size
+# of the results file: big <= 3 * small + 100 microseconds). Measured in this
+# interpreter, medians of 21, on F35's own 1,218,055-byte fixture:
+#     mtime+size only          1 us small     1 us big
+#     crc32 head+tail 4096     3 us small     5 us big   <- chosen
+#     crc32 WHOLE FILE         2 us small   239 us big   <- reds F35 leg 4
+#     exec stat -c %.9Y                    1355 us big   <- reds F35 legs 2 and 3,
+#                                                           forks per press, GNU-only
+#
+# ⚠ SO A RESIDUE REMAINS, AND IT IS ASSERTED RATHER THAN GLOSSED: a rewrite
+# confined to the MIDDLE of a file larger than 8 KiB, at exactly the same size,
+# inside the same second, is still invisible. Row F51 pins that as a MEASURED
+# limit -- widen the window and it reds, which is a conversation about F35's
+# budget rather than a silent drift -- and pins its counterweight, that in a file
+# of 8 KiB or less the whole file IS the window.
 
 ## The stamp table. Keyed "<current_win_path>|<normalized raw path>", because
 ## the mask and xctx->raw are BOTH per-context: under the tabbed interface two
@@ -1130,15 +1460,65 @@ proc op_annot::_db_key {np} {
   return "$w|$np"
 }
 
-## {mtime size} for a file, or {} when it cannot be stat'ed. Both terms, not
-## just mtime: a simulator that rewrites within the same second usually changes
-## the length too, so the pair sees a little more than the clock alone.
+## A BOUNDED FINGERPRINT OF <np>'s OWN BYTES: `zlib crc32` over the first 4096
+## and the last 4096 bytes, or over the WHOLE file when it is 8192 bytes or less.
+##
+## THREE ANSWERS, AND THE DIFFERENCE BETWEEN THEM MATTERS:
+##   a crc            -- the file was sampled.
+##   {}               -- it could NOT be sampled (opened, seeked or read failed).
+##                       The caller turns that into an UNKNOWN stamp, which sends
+##                       op_annot::db_current down its re-read path. A constant
+##                       sentinel here would read as "unchanged" and would
+##                       silently restore the very defect this closes -- invariant
+##                       I3 and save.c RULING D5-1: never the previous run's
+##                       number.
+##   NO-ZLIB          -- this interpreter has no `zlib` command (Tcl 8.4/8.5).
+##                       The caller degrades to the old {mtime size} stamp, out
+##                       loud, rather than pretending. This tree runs 8.6.
+proc op_annot::_db_fingerprint {np size} {
+  if {![llength [info commands ::zlib]]} { return NO-ZLIB }
+  set fd {}
+  if {[catch {open $np rb} fd]} { return {} }
+  set d {}
+  if {[catch {
+        if {$size <= 8192} {
+          set d [read $fd]
+        } else {
+          set d [read $fd 4096]
+          seek $fd -4096 end
+          append d [read $fd 4096]
+        }
+      }]} {
+    catch {close $fd}
+    return {}
+  }
+  catch {close $fd}
+  set c {}
+  if {[catch {zlib crc32 $d} c]} { return NO-ZLIB }
+  return $c
+}
+
+## {mtime size fingerprint} for a file, or {} when it cannot be stat'ed OR cannot
+## be sampled. THREE terms since issue 1255, and each earns its place: mtime and
+## size are free and catch almost every re-run, and the fingerprint is what sees
+## the one they cannot -- a re-run that lands inside the same wall-clock second at
+## the same length. On an interpreter with no `zlib` the stamp degrades to the old
+## two terms, which is the old behaviour and is said rather than discovered.
+##
+## ⚠ IT MUST BE OF THE FILE, NOT OF US. A term stirred from a counter or a clock
+## would close issue 1255's first direction by permanently opening its second:
+## every rewrite would look different, including a byte-identical one, and every
+## press would re-read. Row F49 is the guard on that -- its rewrite is
+## byte-identical and this term must come back EQUAL across it.
 proc op_annot::_db_stat {np} {
   set m {}
   set s {}
   if {[catch {file mtime $np} m]} { return {} }
   if {[catch {file size $np} s]} { return {} }
-  return [list $m $s]
+  set fp [::op_annot::_db_fingerprint $np $s]
+  if {$fp eq {NO-ZLIB}} { return [list $m $s] }
+  if {$fp eq {}} { return {} }
+  return [list $m $s $fp]
 }
 
 ## Forget one path's stamp, or -- with no argument -- every stamp belonging to
@@ -1453,6 +1833,27 @@ proc op_annot::db_attach {path {level {}}} {
     }
     return [list 0 $e]
   }
+  ## ⚠ THE SIDECAR MERGE IS NO LONGER CALLED FROM HERE, AND ITS ABSENCE IS THE
+  ## FIX (issue 1364). Issue 1333 put a `catch {::op_annot::opdump_merge $np}`
+  ## on this line under a comment claiming "db_attach is the ONE place that puts
+  ## an operating point onto a window". THAT CLAIM WAS FALSE and the falseness
+  ## was the defect: `xschem annotate_op` is the general-purpose verb, and 61
+  ## committed schematics carrying a `tclcommand="xschem annotate_op …"`
+  ## launcher, both `Annotate Operating Point into schematic` menu items, the
+  ## raw carried into a new window by open_sub_schematic / hi_descend and
+  ## `results::select` all reach it WITHOUT coming through here. Rows F36-F41 of
+  ## tests/headless/test_annot_stale_0684.tcl say so in their own header. On the
+  ## user's registry (`tier d reason dump`) every one of those paths rendered
+  ## `id` and left `gm gds vgs vth vds` blank -- issue 0617 restored.
+  ##
+  ## The merge now happens ONCE, in the tree's own choke point: update_op()
+  ## (src/save.c) calls op_annot::opdump_autofill just below its three refusals.
+  ## `xschem annotate_op` above therefore merges before it publishes, and this
+  ## proc's own postcondition proves it did -- `op_annot::_annotated` is true
+  ## only when `annot_p >= 0`, which only update_op() sets, so an attach that
+  ## reaches the stamp below is an attach whose merge has already run. Calling
+  ## it a second time here would parse the same sidecar twice (36 ms on the
+  ## user's own 280 KB / 7825-parameter dump) for an answer that cannot differ.
   ::op_annot::_db_stamp $np
   return [list 1 {}]
 }
@@ -1580,6 +1981,71 @@ proc op_annot::_evalrow {__opa_expr __opa_vars} {
 ## Fix at register (loud, preferred) or with a read-side catch (quiet) — see
 ## doc/claude/issues/0447. S6 must not land the carrier symbol until it is
 ## closed or explicitly accepted.
+##
+## ⚠ RULINGS DD-6 AND DD-9 (item B2b, issues 1285 and 1289). TWO LISTS NOW:
+## `params` is WHAT THE RUN COMPUTES and the OPTIONAL `shown` key is WHAT THE
+## SHEET DRAWS. This proc is the ONLY reader of `shown` in the tree —
+## `_cards_for`, `_claims` and `_kind` stay on `params` and must, or a user who
+## hides a row also stops the deck saving it and the value she still wants
+## through a `derived` row vanishes with it.
+##
+## DD-9, IN ONE LINE: `vars` IS BUILT OVER `params`, ROWS ARE DRAWN OVER
+## `shown`. So `gm/id` keeps its value when `gm` is merely hidden. That is why
+## the loop below still walks `params` and still reads the raw exactly once per
+## `params` row — the narrowing is a SELECTION applied afterwards out of a
+## label→value cache, never a second read loop and never a swap of the list
+## this loop walks. Both alternatives were measured and rejected: swapping the
+## list blanks the derived rows (1289's exact failure) and a second loop adds
+## an `xschem` call per row per instance per redraw, which 1289's acceptance
+## forbids outright.
+##
+## A `shown` row whose label appears in no `params` row draws BLANK: no read,
+## no `_kind`, no raise (I3). That containment is independent of whatever
+## wrote the key, and it is deliberately belt-and-braces on top of
+## `op_param_lists::apply` deriving `shown` by FILTERING `params`.
+##
+## ⚠ THE FALLBACK HANDS BACK NOTHING, SO `params` IS STILL WALKED
+## UNVALIDATED AND ISSUE 0447's DOOR IS STILL OPEN, EXACTLY AS ABOVE. That is
+## deliberate: wrapping the `params` walk in a catch too would close 0447 by
+## accident, silently, and turn a filed defect into a blank sheet nobody can
+## see. tests/headless/test_op_annot.tcl row K17 golds that raise and
+## tests/headless/test_op_param_store_1245.tcl row D7 fences it from this side.
+
+## op_annot::_display_rows <descriptor> -> {<narrowed?> <rows>}
+##
+## {0 {}} = "this descriptor does not narrow": draw every `params` row, i.e.
+##          the behaviour of every descriptor written before the key existed.
+## {1 $v} = draw exactly these rows. NOTE {1 {}} is a real answer and is NOT
+##          the same as {0 {}} — a present-and-empty key draws no `params` rows
+##          (see the `shown` entry in the key table at the top of this file).
+##
+## ⚠ NEVER RAISES — THE DD-6 AMENDMENT'S SECOND GUARANTEE, AND IT IS BUILT,
+## NOT ASSERTED. Same shape as op_annot::_matches (`dict exists` → catch the
+## `dict get` → catch the WALK → a DATA answer), and for the same reason: this
+## runs per instance per redraw from a draw path, so a malformed value is a
+## DATA condition, i.e. "no narrowing", not an error.
+##
+## ⚠ THE CATCH ENCLOSES THE `lindex` OF EVERY ROW, NOT MERELY THE `foreach`,
+## AND THAT IS MEASURED, NOT DEFENSIVE. Two DIFFERENT malformed shapes reach
+## here and a guard that closes one leaves the other open:
+##     shown = `{broken`          -> even `llength` raises `unmatched open
+##                                   brace in list`
+##     shown = `{id id 0} {d "x}` -> `llength` is 2; only the `lindex` of the
+##                                   SECOND ROW raises `unmatched open quote`
+## A `catch {llength …}`, at register time or here, does not close the second.
+## A register-side check cannot help either: a raise there would reject the
+## whole descriptor, which is strictly worse than ignoring one key.
+proc op_annot::_display_rows {d} {
+  if {![dict exists $d shown]} { return [list 0 {}] }
+  if {[catch {dict get $d shown} v]} { return [list 0 {}] }
+  if {[catch {
+    foreach row $v {
+      lindex $row 0 ; lindex $row 1 ; lindex $row 2
+    }
+  }]} { return [list 0 {}] }
+  return [list 1 $v]
+}
+
 proc op_annot::text {instname} {
   set t [::op_annot::type $instname]
   if {$t eq {}} { return {} }
@@ -1594,6 +2060,12 @@ proc op_annot::text {instname} {
   set gate [::op_annot::_annotated]
   set rows {}
   set vars {}
+  ## DD-9's split. `prows` is the params rows in params order — what a
+  ## descriptor with no `shown` key draws, byte for byte as before this key
+  ## existed. `vals` is the same pass's label→value cache, FIRST WINS, and it
+  ## is the only thing the narrowed rows are valued from: no second read.
+  set prows {}
+  set vals [dict create]
 
   if {[dict exists $d params]} {
     foreach row [dict get $d params] {
@@ -1612,13 +2084,35 @@ proc op_annot::text {instname} {
           if {[::op_annot::_finite $val]} { break }
         }
       }
+      ## ⚠ DD-9: THIS `lappend vars` IS UNCONDITIONAL ON THE DISPLAY DECISION.
+      ## The whole ruling is this one line — a `derived` row's operand comes
+      ## from the RUN, so the row keeps its value when the operand is hidden.
       if {![::op_annot::_finite $val]} {
         set val {}
       } else {
         lappend vars $lbl $val
       }
+      lappend prows [list $lbl $val]
+      if {![dict exists $vals $lbl]} { dict set vals $lbl $val }
+    }
+  }
+
+  ## DD-6: what the SHEET draws. A descriptor with no `shown` key (every
+  ## shipped PDK register site, invariant I7) takes the `else` and is
+  ## byte-identical to the behaviour before this key existed. A narrowed one
+  ## mints its rows out of the cache above — a label the cache does not carry
+  ## draws BLANK, which is I3 and is also the draw-side containment of a key
+  ## that is not a subset of `params`.
+  set disp [::op_annot::_display_rows $d]
+  if {[lindex $disp 0]} {
+    foreach row [lindex $disp 1] {
+      set lbl [lindex $row 0]
+      set val {}
+      if {[dict exists $vals $lbl]} { set val [dict get $vals $lbl] }
       lappend rows [list $lbl $val]
     }
+  } else {
+    set rows $prows
   }
 
   ## pinexpr needs no save card: it is pin voltages, which `save all` already
@@ -3118,4 +3612,351 @@ proc op_annot::write_save_file {} {
   write_data "* operating-point .save cards - .include this file in your testbench\n$notes\n$block" $path
   if {[info exists ::has_x] && $::has_x} { catch {textwindow $path} }
   return $path
+}
+
+## ===========================================================================
+## THE BLANKET OPERATING-POINT DUMP — ngspice `set altshow` + `show`
+## ===========================================================================
+##
+## WHAT THIS IS. ngspice can already dump every device's operating point in one
+## statement. It is not a new feature and it is not this tree's invention: the
+## `altshow` set-variable landed upstream in commit 0a8a56c65 (pnenzi,
+## 2007-10-09) and `git tag --contains` puts it in EVERY release from ng-37 /
+## ngspice-22 through ngspice-46. It is undocumented, which is the only reason
+## it reads as exotic.
+##
+##   .control
+##   op
+##   set altshow
+##   show all > <path>
+##   .endc
+##
+## MEASURED on the user's own sky130 tb_bandgap (ngspice-46+, same-run against
+## the 468 `.save @dev[param]` cards the per-device tier emits):
+##   * 468 of 468 (device,parameter) pairs recovered, 0 missing;
+##   * worst relative error 4.70e-06 -- which is exactly `show`'s %.6g print
+##     rounding and nothing else;
+##   * 212 devices dumped against the 78 the cards name. The extra 134 are 24
+##     resistors, 38 capacitors, 12 B-sources and THE TWO PNPs -- and in a
+##     bandgap the PNP pair IS the reference. `.save @q` cards in that deck: 0.
+##
+## ⚠ WHY THIS IS NOT SIMPLY BETTER, AND THE THREE THINGS THAT BITE. Every one
+## of these was measured on both the local ngspice-46+ and the distro 45.2, and
+## each fails SILENTLY, which is the failure class this whole feature exists to
+## delete:
+##
+##   1. `show > <path>` CASE-FOLDS THE REDIRECT TARGET, directory component
+##      included. `show > .../MixedCaseDir/OpDump.txt` writes
+##      `.../mixedcasedir/opdump.txt`; when that directory does not exist
+##      ngspice writes NOTHING, puts the bare string `No such file or
+##      directory` on stderr, and STILL EXITS 0. `write <raw>` on the adjacent
+##      line is unaffected, so the run looks green and the raw is fine.
+##      -> opdump_request lowercases the path itself, so what we ask for and
+##         what ngspice creates are the same string. G1 below catches the rest.
+##
+##   2. `set altshow=1` LEAVES THE OLD FORMAT ACTIVE. The read is
+##      `cp_getvar("altshow", CP_BOOL, ...)` (device.c:366) and CP_BOOL rejects
+##      ANY assigned value -- `=0`, `=false` and `=1` alike. Only the bare
+##      `set altshow` works. The legacy format truncates every device name to
+##      DEV_WIDTH=21 (device.h:11, printstr_n at device.c:732), so a deck that
+##      loses the variable produces a full-looking file of unusable stubs.
+##      -> G3 detects the legacy layout and names the remedy.
+##
+##   3. `show` HAS TWO LINE GRAMMARS. Measured, same binary, same device:
+##        show all        ->  `    id                 = 2.17412e-12`
+##        show m : id gm  ->  `         id           2.17412e-12`
+##      The selective form drops the `=` entirely and right-aligns instead.
+##      -> _opdump_kv reads both, so the reader survives a deck that asks the
+##         other way.
+##
+## ⚠ IT IS THE OPERATING POINT AND NOTHING ELSE. `show` reads live CKT state,
+## not a stored plot: after `op` then `dc`, `show` reports the DC sweep's last
+## point, and `setplot op1` does NOT rewind it. After `tran` it emits ONE
+## scalar where the raw holds every timepoint. So this replaces the per-device
+## OP cards and NEVER the `.save` mechanism itself, which the cursor-driven
+## transient annotation (spec S11) still needs.
+
+## The two lines that ask for the dump. ONE source of the spelling: the deck
+## renderer and every test row take it from here, so a change to the request
+## cannot desynchronise from the reader below.
+##
+## ⚠ THE PATH IS LOWERCASED HERE, DELIBERATELY, AND IS NOT A TIDY-UP. See
+## hazard 1 above: ngspice folds it regardless, so folding it ourselves is what
+## makes opdump_read able to find the file it asked for.
+proc op_annot::opdump_path {rawpath} {
+  return [string tolower [file rootname $rawpath].opinfo]
+}
+
+proc op_annot::opdump_request {path} {
+  ## `show all`, not a bare `show`: bare show only yields device types that set
+  ## DEV_DEFAULT, which on the real bench silently drops all 24 resistors and
+  ## all 38 capacitors (150 blocks against 212). `all` is one word and costs
+  ## nothing, so there is no reason to ask the narrow question.
+  return [list "set altshow" "show all > [op_annot::opdump_path $path]"]
+}
+
+## Split one dump body line into {key value}, or {} when it is not one.
+## Handles BOTH grammars described in hazard 3 above.
+proc op_annot::_opdump_kv {line} {
+  if {[regexp {^    ([a-zA-Z_0-9]+) +=  *(.*)$} $line -> k v]} {
+    return [list $k [string trim $v]]
+  }
+  ## The selective form: leading spaces, key, spaces, single value token.
+  if {[regexp {^ +([a-zA-Z_0-9]+) +([^ ]+) *$} $line -> k v]} {
+    return [list $k $v]
+  }
+  return {}
+}
+
+## The device names a dump answered for, as they appear in its block headers
+## (no leading `@` -- the caller adds whichever spelling it compares against).
+## Cheap enough to run on a real dump: one regexp per line, no parsing of the
+## bodies, because the question is only which devices are in there.
+proc op_annot::opdump_devices {path} {
+  set out {}
+  if {![file isfile $path]} { return {} }
+  set fh [open $path r]
+  set body [read $fh]
+  close $fh
+  set seen [dict create]
+  foreach line [split $body "\n"] {
+    if {![regexp {^([^ ][^:]*):$} $line -> d]} { continue }
+    if {[dict exists $seen $d]} { continue }
+    dict set seen $d 1
+    lappend out $d
+  }
+  return $out
+}
+
+## READ A DUMP AND PUBLISH IT INTO THE CURRENTLY LOADED DATABASE.
+##
+## Returns a dict: {devices N params N skipped N dups N path <p>}.
+##
+## ⚠ IT MERGES, IT DOES NOT REPLACE, and that is the whole reason it injects
+## through `xschem raw add` rather than arriving as a row in save.c's
+## raw_reader_table. Those readers BUILD xctx->raw; this data is only half a
+## database. The node voltages come from the deck's own `.save all` + `write`
+## -- 423 vectors on tb_bandgap, carrying ZERO hierarchy knowledge -- and a
+## reader that replaced the raw would throw them away. Two loaded databases
+## cannot serve one redraw either: get_raw_index resolves against the CURRENT
+## one only (save.c, the `sch_waves_loaded() >= 0` arm), so "load the dump
+## alongside" is not available. Merge is the only shape that works.
+##
+## ⚠ `xschem update_op` AT THE END IS LOAD-BEARING. `xschem raw value <v> -1`
+## serves the update_op snapshot, not live vector storage, so skipping the
+## republish returns a full set of silent ZEROS -- which look like real
+## annotations, and are worse than the blank row they replace.
+## MERGE THE SIDECAR DUMP THAT BELONGS TO <rawpath>, IF THERE IS ONE.
+##
+## ⚠ THIS IS THE CALL THE FEATURE SHIPPED WITHOUT (issue 1333), and its absence
+## was not a missing convenience -- it was the 0617 defect restored. Shape d
+## emits NO per-device save card, so with nothing reading the dump the raw held
+## no device parameters at all and `op_annot::text M1` rendered
+## `id =  gm =  gds =  vgs =  vth =  vds =` on a run that exited 0 with a
+## perfect raw and a clean log. MEASURED on the ngspice build carrying the
+## printer fix; the same cell on the per-device shape annotated five of those
+## six rows.
+##
+## Silence is the right answer for a raw with no sidecar beside it, which is
+## every run of every other shape: this proc is on the path of ALL operating
+## point annotation, not just shape d's.
+##
+## ⚠ A STALE SIDECAR IS NOT MERGED, for issue 0838's reason word for word. A
+## number painted onto a schematic carries no provenance and no timestamp, so
+## one left behind by an earlier run is indistinguishable from a live one. The
+## raw gets its freshness check from `ase::results_stale`; the sidecar gets this
+## one, against the raw it claims to belong to. Equal mtimes pass -- one run
+## writes both, and on a coarse filesystem clock they land on the same second.
+proc op_annot::opdump_merge {rawpath} {
+  set dump {}
+  if {[catch {::op_annot::opdump_path $rawpath} dump]} { return {} }
+  if {$dump eq {} || ![file isfile $dump]} { return {} }
+  set rt 0 ; set dt 0
+  if {[catch {file mtime $rawpath} rt]} { return {} }
+  if {[catch {file mtime $dump} dt]} { return {} }
+  if {$dt < $rt} { return [dict create stale 1 path $dump] }
+  set r {}
+  if {[catch {::op_annot::opdump_read $dump} r]} {
+    return [dict create error $r path $dump]
+  }
+  return $r
+}
+
+## op_annot::opdump_autofill -> {} | whatever op_annot::opdump_merge answered.
+##
+## ⚠ THE SECOND DOOR (issue 1364), AND IT IS THE ONE EVERY ANNOTATION PATH THAT
+## IS NOT THE ASE-L WINDOW GOES THROUGH. Issue 1333 gave `opdump_merge` its
+## first caller, in `op_annot::db_attach`, and that wired ONE door: ASE-L's
+## Results > Annotate and the cadence profile's `6`, both of which come through
+## db_attach. `xschem annotate_op` -- the general-purpose C verb -- did not, and
+## neither did anything reached through it: the 61 committed schematics carrying
+## a `tclcommand="xschem annotate_op …"` launcher, the shipped
+## Simulation > Graphs > Annotate Operating Point menu item (twice, once per
+## menubar), the raw carried across by Open-in-new-window and by hi_descend,
+## `results::select`'s `xschem raw select`, and the cadence Alt-6 rungs that
+## acquire with `xschem raw read` / `xschem raw switch` and publish with
+## `xschem update_op`. MEASURED on the user's own registry (ngspice-ver50, so
+## `ase::op_save_tier` answers `tier d reason dump`): after `xschem annotate_op
+## <raw> 0 op`, `op_annot::text M1` rendered `id` and left `gm gds vgs vth vds`
+## BLANK -- and the one row that appeared is the accident, `.options
+## savecurrents` putting `i(@dev[id])` in the raw with no card present. Issue
+## 0617 restored, on a run that exited 0 with a perfect raw and a clean log.
+##
+## ⚠ WHERE IT IS CALLED FROM, AND WHY THERE. `update_op()` (src/save.c) is the
+## tree's own choke point -- its comment has said so since RULING D5-3: "the
+## `annotate_op` arm, both `raw switch` gates and the bare [verb]" all funnel
+## through it, and `raw select` joined them since. One call there covers every
+## door above, present and future, which is exactly what wiring the doors one at
+## a time did not. It sits AFTER that function's three refusals (digital,
+## zero-point, not-op/dc), so a database that is not going to be published as an
+## operating point is never merged into.
+##
+## ⚠ THE GATE IS REPEATED HERE RATHER THAN INHERITED, because this proc is also
+## callable from Tcl and a caller cannot be relied on to have earned it:
+##   * `xschem raw add` raises "No raw file loaded" with nothing attached, so
+##     the merge cannot run before a database is on the window (issue 1333's
+##     first measured reason, re-checked at scheduler.c's `raw` dispatcher and
+##     still true);
+##   * op/dc ONLY. The dump is one snapshot; painting it over a TRANSIENT would
+##     put a number nobody measured beside the thing it is drawn next to, which
+##     RULING D5-1 forbids in those words. `cadence::_annot_tran_supply` reaches
+##     `xschem annotate_op <path> <lvl>` as its second ask and can land on the
+##     op plot of a file whose transient is on screen -- that arm is why the
+##     type is asked here and not assumed;
+##   * ONE POINT ONLY, the same term `raw switch` / `raw select` / `switch_back`
+##     require before they republish. `update_op()` is deliberately one term
+##     weaker (issue 0862: a multi-point .dc sweep still publishes its FIRST
+##     step), and `show` dumps the state at the END of the run -- so on a sweep
+##     the merge would paint the last step's numbers flat across every step and
+##     publish them as the first. Blank is the honest answer there.
+##
+## ⚠ SILENT, ALWAYS (issue 0975). A missing, empty, legacy or stale sidecar is
+## not this proc's news to break: `ase::op_report_missing` is the one surface
+## that speaks about a dump that did not arrive, and it has the run's shape in
+## hand to say it precisely. A raw with no sidecar beside it is EVERY run of
+## every other shape, which is why silence is the right answer and not a
+## swallowed error.
+##
+## ⚠ AND IT IS IDEMPOTENT, which is what makes ONE call site enough rather than
+## a call site per door. `xschem raw add <name> <value>` on a name already in
+## the database adds no column and re-writes the same value through
+## plot_raw_custom_data() (raw_add_vector(), src/save.c), so a second publish
+## over the same database answers the same rows. MEASURED on the user's own
+## 280 KB / 7825-parameter sidecar: 36 ms per pass, byte-identical dict,
+## identical rendered rows. Row W12 is the fence. `op_annot::db_attach`'s own
+## `opdump_merge` call (issue 1333) is GONE for the same reason -- it now sits
+## downstream of `xschem annotate_op`, which merges before it publishes.
+proc op_annot::opdump_autofill {} {
+  variable opdump_merging
+  ## G0 -- NO MERGE INSIDE A MERGE. op_annot::opdump_read republishes with
+  ## `xschem update_op`, which is one of this hook's own doors, so without this
+  ## latch a hand-driven `opdump_read <some other dump>` would additionally pull
+  ## in the CURRENT raw's sidecar behind the caller's back, and the ordinary
+  ## path would parse its own sidecar twice.
+  if {[info exists opdump_merging] && $opdump_merging} { return {} }
+  set ty {}
+  if {[catch {xschem raw sim_type} ty]} { return {} }
+  if {$ty ne {op} && $ty ne {dc}} { return {} }
+  set npts {}
+  if {[catch {xschem raw points} npts]} { return {} }
+  if {![string is integer -strict $npts] || $npts != 1} { return {} }
+  set rf {}
+  if {[catch {xschem raw rawfile} rf]} { return {} }
+  if {[string trim $rf] eq {}} { return {} }
+  set path {}
+  if {[catch {file normalize $rf} path]} { return {} }
+  if {$path eq {}} { return {} }
+  set r {}
+  if {[catch {::op_annot::opdump_merge $path} r]} { return {} }
+  return $r
+}
+
+proc op_annot::opdump_read {path} {
+  set path [string tolower $path]
+
+  ## G1 -- THE FILE THAT IS NOT THERE. This is hazard 1 arriving: ngspice
+  ## exited 0 and the raw is perfectly good, so nothing upstream of here knows
+  ## anything went wrong.
+  if {![file exists $path]} {
+    return -code error "op_annot: no operating-point dump at '$path'. ngspice\
+ exits 0 when `show >` cannot write its file, so a green run proves nothing\
+ here -- check that the simulation directory exists and is writable, and note\
+ that ngspice lowercases the whole redirect path including directories."
+  }
+  if {[file size $path] == 0} {
+    return -code error "op_annot: the operating-point dump at '$path' is empty.\
+ The run reached `show` but wrote nothing."
+  }
+
+  set fh [open $path r]
+  set body [read $fh]
+  close $fh
+
+  ## G3 -- THE LEGACY FORMAT. Hazard 2 arriving. The old layout has no
+  ## `<name>:` block headers at all; it emits column rows led by the word
+  ## `device`. Detect it on the shape, not on a version guess.
+  if {![regexp -line {^[^ ][^:]*:$} $body] && [regexp -line {^ +device } $body]} {
+    return -code error "op_annot: '$path' is in ngspice's LEGACY `show` format,\
+ whose device names are truncated to 21 characters and are unusable. The deck\
+ must contain a bare `set altshow` before `show` -- note that `set altshow=1`\
+ does NOT work, because the variable is read as CP_BOOL and any assigned value\
+ is rejected."
+  }
+
+  set dev {}
+  set ndev 0
+  set nparam 0
+  set nskip 0
+  set ndup 0
+  array set seen {}
+
+  foreach line [split $body "\n"] {
+    ## A block header: `<hierarchical.device.name>:` in column 0.
+    if {[regexp {^([^ ][^:]*):$} $line -> d]} {
+      set dev $d
+      incr ndev
+      continue
+    }
+    if {$dev eq {}} { continue }
+    set kv [op_annot::_opdump_kv $line]
+    if {$kv eq {}} { continue }
+    lassign $kv k v
+
+    ## Non-numeric bodies are real and frequent, and they are NOT errors:
+    ## measured on tb_bandgap, 445 `-` placeholders (an exhausted vector
+    ## element), 109 model-name strings, plus `?????????` (the parameter is not
+    ## valid for this device class) and `---------` (valid but unset). They are
+    ## counted so a caller can say how much of the file it declined, rather
+    ## than dropping them the way a throwaway parser would.
+    if {![string is double -strict $v]} { incr nskip; continue }
+
+    set name "@${dev}\[${k}\]"
+    ## Duplicate keys are real too: a vector-valued parameter emits one line
+    ## per coefficient under ONE name, so a PWL source prints `pwl` six times.
+    ## FIRST WINS -- last-wins would silently store a coefficient as if it were
+    ## the parameter.
+    if {[info exists seen($name)]} { incr ndup; continue }
+    set seen($name) 1
+
+    xschem raw add $name $v
+    incr nparam
+  }
+
+  ## Publish. See the note above: without this the accessors read zeros.
+  ##
+  ## ⚠ AND IT IS LATCHED SINCE ISSUE 1364. `xschem update_op` is now the door
+  ## the blanket dump is merged through, so this republish lands back in
+  ## op_annot::opdump_autofill. Left unlatched it would parse this very sidecar
+  ## a second time on the ordinary path, and on a hand-driven call -- a caller
+  ## naming a dump that is NOT the current raw's -- it would silently merge the
+  ## current raw's sidecar as well. The latch is cleared before the error is
+  ## re-raised so a failed republish cannot leave the door bolted.
+  variable opdump_merging
+  set opdump_merging 1
+  set _uprc [catch {xschem update_op} _uperr]
+  set opdump_merging 0
+  if {$_uprc} { return -code error $_uperr }
+
+  return [dict create devices $ndev params $nparam skipped $nskip \
+                      dups $ndup path $path]
 }

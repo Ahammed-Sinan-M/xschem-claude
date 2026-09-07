@@ -177,12 +177,24 @@ consequences of two changes the suites were written around rather than against.
   backend**, which is unusable the moment it is picked. The sentence exists; the
   list never asks for it.
 
-* **The bottom bar still reads `Simulator: ngspice`** — the backend name, never
-  the program that will start. Deliberately out of this item's scope; the
-  dialog's status line is the surface that names the program.
+* ~~**The bottom bar still reads `Simulator: ngspice`** — the backend name,
+  never the program that will start. Deliberately out of this item's scope; the
+  dialog's status line is the surface that names the program.~~
+  **OVERTURNED BY THE USER, issue 1370** (2026-09-06): *"in ASE-L, in status
+  bar, Simulator: \<name\> should show the correct name. If user has designated
+  (registered) a new instance of ngspice named ngspice-ver50, and the 'use this
+  one:' field shows that, then the status bar in ASE-L should show that."* The
+  bar is now `ase::sim_label`, and marks the arms in which the named simulator
+  will not start. Note the interaction with 0944 above, which is still OPEN:
+  the bar now marks a wrong-backend entry `— will not run` while that entry's
+  Problem column in this dialog is still blank, so **the bar is the more
+  truthful of the two surfaces** until 0944 lands.
 * **The registry is process-global while the dialog is per-session.** With two
   ASE-L windows open, a change made in one window's dialog is not reflected in
-  the other's open dialog until it is reopened.
+  the other's open dialog until it is reopened. *Half closed by issue 1370: the
+  bottom BAR of every open session window now follows a gesture made in any of
+  them (`ase::ui::refresh_status_all`). The other window's open DIALOG is still
+  a stale view.*
 * **The file browser is modal and no suite can press OK in it.**
   `tk_getOpenFile` grabs the display and waits for a human. Row S14a asserts the
   proc body and the wiring and says so out loud rather than faking the click.

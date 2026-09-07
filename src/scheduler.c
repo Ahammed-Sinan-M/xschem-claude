@@ -4318,6 +4318,21 @@ static int xschem_cmds_g(Tcl_Interp *interp, int argc, const char *argv[], int *
             my_snprintf(b, S(b), "%u", annot_overlay_flushes);
             Tcl_SetResult(interp, b, TCL_VOLATILE);
           }
+          /* (xschem get annot_declutter_count) monotonic count of texts the 1244
+           * declutter rung actually removed (issue 1257). The THIRD seam of this
+           * family and not a duplicate of either: the two above say how much the
+           * annotation overlay painted, this one says how much was taken away.
+           * A Tcl status-line producer brackets one `update_all_sym_bboxes` +
+           * `redraw` with two reads and believes the DELTA -- so "decluttering is
+           * on, so other device text is hidden" is said only where the renderer
+           * really hid something, instead of wherever the mask happened to carry
+           * two bits. See actions.c for why the answer is a measurement and not a
+           * second copy of the gate. */
+          else if(!strcmp(argv[2], "annot_declutter_count")) {
+            char b[32];
+            my_snprintf(b, S(b), "%u", annot_declutter_count);
+            Tcl_SetResult(interp, b, TCL_VOLATILE);
+          }
           /* the sibling of `get rects` / `get lines` / `get polygons`, which existed;
            * `get arcs` did not, so a Tcl caller asking for an arc count got the empty
            * string with rc 0 (an unknown `get` does not error). Added for the issue-0172
@@ -4999,6 +5014,43 @@ static int xschem_cmds_g(Tcl_Interp *interp, int argc, const char *argv[], int *
           if(!strcmp(argv[2], "modified")) { /* schematic is in modified state (needs a save) */
             if(!xctx) {Tcl_SetResult(interp, not_avail, TCL_STATIC); return TCL_ERROR;}
             Tcl_SetResult(interp, my_itoa(xctx->modified),TCL_VOLATILE);
+          }
+          /* 1245 (item B4, issue 1303) -- THE UNSNAPPED PAIR, AND WHY IT HAD TO EXIST.
+           * Until 2026-09-04 this dispatcher exposed ONLY mousex_snap/mousey_snap,
+           * while every C click path reads the UNSNAPPED xctx->mousex/mousey
+           * (callback.c:520, :530, :4305, :4471, and :4664's own read-only
+           * find_closest_instance). So a Tcl canvas pick had no way to resolve the
+           * point the user's click actually resolved: it had to snap, and snapping
+           * moves the point up to half a grid step in each axis -- which is exactly
+           * the distance that crosses an instance boundary, because instance bbox
+           * edges are not on grid.
+           *
+           * MEASURED on the shipped xschem_library/examples/cmos_inv.sch, after an
+           * update_all_sym_bboxes, one pixel apart:
+           *     exact   175.175 -199.612  ->  'M1'
+           *     snapped 180     -200      ->  'R1'
+           * Swept over every instance bbox on that sheet at the default snap:
+           * 23725 points, 1513 (6.4%) miss the device entirely and 129 (0.5%)
+           * resolve to a DIFFERENT device -- silently, with nothing on screen
+           * saying which happened. That is invariant I3's failure one object out:
+           * a results window headed R1 for a click on M1.
+           *
+           * ⚠ NOT A REPLACEMENT. The snapped pair is correct for everything that
+           * PLACES or MOVES geometry -- that is what snapping is for -- and is
+           * still what new_arc/new_rect/new_polygon and the move/copy arms read.
+           * The unsnapped pair is for asking "what is under the pointer", which is
+           * a different question. Both are now askable and neither is a default.
+           *
+           * ⚠ src/ase_window.tcl HAS THE SAME DEFECT and is NOT fixed here: this
+           * commit adds the accessor that makes fixing it possible. Issue 1303
+           * carries the site. */
+          if(!strcmp(argv[2], "mousex")) { /* last mouse x, UNSNAPPED, schematic coords */
+            if(!xctx) {Tcl_SetResult(interp, not_avail, TCL_STATIC); return TCL_ERROR;}
+            Tcl_SetResult(interp, dtoa(xctx->mousex),TCL_VOLATILE);
+          }
+          if(!strcmp(argv[2], "mousey")) { /* last mouse y, UNSNAPPED, schematic coords */
+            if(!xctx) {Tcl_SetResult(interp, not_avail, TCL_STATIC); return TCL_ERROR;}
+            Tcl_SetResult(interp, dtoa(xctx->mousey),TCL_VOLATILE);
           }
           if(!strcmp(argv[2], "mousex_snap")) { /* last snapped mouse x, schematic coords */
             if(!xctx) {Tcl_SetResult(interp, not_avail, TCL_STATIC); return TCL_ERROR;}
@@ -10635,6 +10687,24 @@ static int xschem_cmds_r(Tcl_Interp *interp, int argc, const char *argv[], int *
     if(!strcmp(argv[1], "recompute_inst_bbox"))
     {
       if(!xctx) {Tcl_SetResult(interp, not_avail, TCL_STATIC); return TCL_ERROR;}
+      /* 1252 (item A5-c): the OTHER Tcl-reachable symbol_bbox() door. symbol_bbox()
+       * consults the declutter's per-instance gate (ruling D-6), which reads the overlay
+       * cache -- and item A3 wired that cache's epoch sync into `update_all_sym_bboxes`
+       * and the three draw/export entry points, NOT here. Measured: warm at mask 9, move
+       * the epoch with no draw and no export, and this door answered a box 173 units
+       * narrower in x2 than `update_all_sym_bboxes` did, with `xschem instance_at
+       * 430 -245` returning EMPTY where the fresh door returned the instance --
+       * findnet.c's find_closest_element uses POINTINSIDE against exactly that box as its
+       * candidate gate, so it is a PICK that disagrees, not merely a number. Row A40
+       * drives both doors, stale one first (any sync repairs the cache, so order is
+       * load-bearing). Deliberately NOT inside symbol_bbox() itself -- 39 callers, six in
+       * save.c, and the re-entrancy guard exists because filling the cache evaluates
+       * ::op_annot::text, which re-enters that machinery. And deliberately WITHOUT
+       * annot_show_sync_cache() beside it: that one ends in the 0688 mask backstop, which
+       * can CLEAR the mask, and this verb is documented as not redrawing or pushing undo.
+       * A sync only flushes when the epoch actually moved, so this costs a struct compare
+       * on every other call. */
+      annot_overlay_sync();
       if(argc > 2) {
         int i = get_instance(argv[2]);
         if(i < 0) { Tcl_SetResult(interp, "xschem recompute_inst_bbox: instance not found",
@@ -11008,7 +11078,22 @@ static int xschem_cmds_r(Tcl_Interp *interp, int argc, const char *argv[], int *
          * answered with the cursor's value wearing the label of a point that
          * does not exist. The guard blanks it wherever nothing was published;
          * that it still answers where something was is its own defect, filed
-         * and left open as issue 0920. */
+         * and left open as issue 0920.
+         *
+         * ⚠ THE SECOND TERM, raw_vector_absent(), IS ISSUE 1259 AND IT IS THE SAME
+         * SENTENCE ONE STEP FURTHER. annot_p answers "was anything published at
+         * all"; this answers "did the simulator actually compute THIS column".
+         * ngspice writes a `.save` card the model cannot satisfy as a `dims=0`
+         * column of 0.0 and says nothing on stderr, so without it the verb -- and
+         * therefore ::op_annot::raw_or_blank, and therefore the schematic --
+         * reported a confident 0 for a number nothing measured, and the D-6
+         * declutter then traded the user's own W/L and pin labels for it. A
+         * genuinely computed 0.0 is NOT absent and still answers 0: a transistor
+         * that is off has id = 0 and that is a measurement. The predicate lives at
+         * the raw reader (src/save.c), where the distinction is written, and this
+         * is its ONE consumer. ⚠ It belongs on THIS arm for the same reason the
+         * annot_p term does -- the numbered-point read above is data inspection
+         * and must keep answering 0 for a dims=0 column. */
         else if(argc > 4 && !strcmp(argv[2], "value")) {
           int dataset = -1;
           int point = argv[4][0] ? atoi(argv[4]) : -1;
@@ -11023,7 +11108,8 @@ static int xschem_cmds_r(Tcl_Interp *interp, int argc, const char *argv[], int *
               ) {
               val = get_raw_value(dataset, idx, point);
               Tcl_SetResult(interp, dtoa(val), TCL_VOLATILE);
-            } else if(raw->cursor_b_val && raw->annot_p >= 0) {
+            } else if(raw->cursor_b_val && raw->annot_p >= 0 &&
+                      !raw_vector_absent(raw, idx)) {
               val = raw->cursor_b_val[idx];
               Tcl_SetResult(interp, dtoa(val), TCL_VOLATILE);
             }
