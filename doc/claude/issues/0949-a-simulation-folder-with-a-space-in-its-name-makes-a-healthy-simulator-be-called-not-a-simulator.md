@@ -146,6 +146,11 @@ so a location written `./ng` takes the carve-out, is not made absolute, and is
 then resolved against the probe's own folder, where it is not. Measured:
 `./fast` -> `failed to run command './fast': No such file or directory`;
 `bin/fast` -> ran. The example in the bullet, `./build/ngspice`, is unaffected —
-it is the single-segment form that breaks. Latent (`ase::sim_register` normalizes,
-so nothing reachable from the Simulators window gets there) and filed as
-**issue 0961** with the one-line fix.
+it is the single-segment form that breaks. Filed as **issue 0961** with the
+one-line fix. ⚠ **This paragraph originally called it latent** — "`ase::sim_register`
+normalizes, so nothing reachable from the Simulators window gets there".
+The parenthetical is true; the word "latent" was not, and was corrected
+2026-09-07. The Simulators window is not the only door: with nothing in force,
+`ase::sim_status` hands the probe `auto_execok`'s own answer, and that is a
+relative `./ngspice` whenever `$PATH` carries an empty element or a literal `.`.
+See issue 0961's "How it is reached".

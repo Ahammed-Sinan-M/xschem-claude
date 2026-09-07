@@ -108,6 +108,16 @@ namespace eval ase {
   # Counter behind the per-measurement scratch directory name (issue 0951).
   # Two probes in ONE process must not be handed the same place either.
   variable cap_seq 0
+  # WHY THERE WAS NOWHERE TO WORK, the last time there was nowhere (issue
+  # 0960). Written by ase::cap_workdir at the moment it finds out and read one
+  # line later by ase::sim_capabilities_at, which puts it in the answer -- so
+  # the one place that KNOWS which of the THREE shapes it hit is the only place
+  # that works it out. Empty until something goes wrong.
+  variable cap_noplace [dict create]
+  # The places the user has already been told about, so the sentence is said
+  # once for a place and not again on every Run (issue 0960's acceptance).
+  # Cleared by ase::sim_caps_clear along with every measured answer.
+  variable cap_noplace_said [dict create]
   # most recent completed run: {results <dict> exitcode <n> log <path> }
   variable last_run [dict create]
   # session registry (item 03): key ("lib/cell/view") -> entry dict
@@ -268,23 +278,84 @@ proc ase::state_get {state key {dflt {}}} {
 # Expand Tcl variable references in a path coming from a state file (model
 # files store the portable form `$::SKYWATER_MODELS/sky130.lib.spice` — the
 # workarea rc sets the variable; a literal absolute path would break other
-# checkouts). Variables-ONLY: no command execution from state files
-# (-nocommands) and backslashes are kept verbatim for Windows paths
-# (-nobackslashes). Substitutes at global level so unqualified names resolve
-# like the rc wrote them. Clean error when a referenced variable is unset.
-# WARNING, pre-existing and NOT closed here (casemode batch item 6 found it while
-# fixing the same defect in its own field expansion): `-nocommands` does NOT stop
-# a command substitution that sits inside the ARRAY INDEX of a variable
-# reference. MEASURED on 8.6.14 --
+# checkouts). The same contract carries the `.include` paths, the `pre_` command
+# text, and — since the registry became the only route from a configured
+# simulator to a run — the SIMULATOR's own location out of ase::sim_register.
+# Resolved at global level so unqualified names mean what the rc wrote, and a
+# referenced variable that is unset is a clean error.
+#
+# VARIABLES ONLY, AND THAT IS NOW ENFORCED BY A PARSER INSTEAD OF BY A FLAG
+# (issue 1239). This proc used to say `subst -nocommands -nobackslashes`, and
+# ⚠ `-nocommands` IS NOT A SANDBOX. MEASURED on Tcl 8.6.14 --
 #   set ::RAN 0 ; subst -nocommands -nobackslashes {$A([set ::RAN 1])/x}
-# leaves ::RAN at 1. So a model path of the form `$env([exec ...])/models` in a
-# STATE FILE runs that command when the path is expanded. `::sim_profile_expand_vars`
-# (src/xschem.tcl) is the variables-only expander written for the profile fields
-# and is what this should use; it is left alone here because model paths are not
-# item 6's to change and every consumer of this proc is another item's. Recorded
-# in doc/claude/specs/simulator_profiles.md section 5.
+# leaves ::RAN at 1: Tcl still evaluates a `[...]` sitting inside the ARRAY
+# INDEX of a variable reference, because the index is parsed as a script word
+# before the (suppressed) command-substitution pass ever applies. Driven end to
+# end on this tree — an `exe` of `$env([exec touch .../PWNED])/ngspice` created
+# the file during a pure STALENESS query.
+#
+# ⚠ THE ROUTE THIS CLOSES IS THE DATA ONE, AND SAYING "INCLUDING sim_load_conf
+# AT STARTUP" OVERSTATED IT. `ase::sim_load_conf` does
+# `uplevel #0 [list source $path]` on `$USER_CONF_DIR/ase_simulators`: a
+# hand-written hostile conf is a Tcl SCRIPT with unrestricted execution at
+# global level long before any expander sees a string, and this change buys
+# nothing against it. What is actually closed is:
+#   * a `.state` file, which is DATA — ase::state_load parses a flat Tcl list
+#     and merges a dict, sourcing nothing — whose `models` file, `includes`
+#     file and `pre_commands` cmd reach here when the deck is composed. Opening
+#     someone else's testbench ran what their state file said;
+#   * the LOCATION field of `Setup > Simulators…`, which FOUR procs expand
+#     under a `catch` merely to RENDER status — ase::casemode_status,
+#     ase::casemode_report, ase::sim_caps_have_path and
+#     ase::sim_capabilities_path. Text that has only been typed, never run, was
+#     executed. (This list named three and omitted ase::casemode_report until
+#     the close-out round. ⚠ AND THE COUNT BESIDE IT WAS WRONG TWICE OVER: it
+#     said "five callers", prefixed "measured, not recited", and was neither.
+#     `grep -n expand_path src/ase.tcl` finds EIGHT call sites, and it found
+#     eight at HEAD too: the four render-only procs above, ase::sim_register,
+#     and THREE in ase::render_deck — the `.include` card, the `.lib` card and
+#     `pre_commands` — which are exactly the deck-time route this same comment
+#     names two bullets up. Re-measured 2026-09-07.)
+# What sim_load_conf does contribute is REACH, not privilege: it replays the
+# saved `ase::sim_register` lines at startup, so a location recorded earlier is
+# re-expanded with nobody present — which is why the thing on that path has to
+# be a parser and not an evaluator.
+#
+# ::sim_expand_vars (src/xschem.tcl) is the expander that is not an evaluator:
+# `$name`, `${name}` and `$name(index)`, literal index characters only, and an
+# index carrying `[`, `$` or a backslash REFUSED rather than resolved. It keeps
+# both properties `-nobackslashes` was here for — a backslash is verbatim, so
+# Windows paths survive, and a `$` that Tcl itself leaves literal (`$/x`, `$$V`,
+# a trailing `$`) is a literal `$` here too.
+#
+# ⚠ AND IT RAISES WHERE TCL WOULD HAVE RAISED, WHICH IS THE SECOND HALF OF 1239
+# AND WAS NOT IN THE FIRST PASS. A differential fuzz over 54,240 strings found
+# 4,186 of them in ONE family running the OPPOSITE way from the refusal above:
+# `$(V)/x`, `${}/x`, an unterminated brace form, `$::/x`, `$V::/x`, `$V(/x` —
+# every one an ERROR under
+# `subst -nocommands`, every one coming back from the new parser SILENTLY, as a
+# literal, with the dollar still in the path (or, for `$V::`, half-expanded).
+# A model path that failed loudly at load became a filename with a `$` in it,
+# which fails later, somewhere else, with a worse message. ::sim_expand_vars now
+# refuses at both seams — a `$` it declined that Tcl would have read, and a name
+# it stopped short of that Tcl would have continued. Re-measured after the fix:
+# 200,000 random bracket-free strings, ZERO shapes where the old expander raised
+# and the new one returns a value. Rows: CS157w..CS157ab.
+#
+# ⚠ A REFUSED INDEX IS AN ERROR, ON PURPOSE, AND THAT WAS SURVEYED BEFORE IT
+# LANDED. Every one of the 104 committed `.state` files was expanded through
+# both forms: 22 distinct strings, none refused, none expanding differently —
+# including the mixed-signal `pre_commands` whose ngspice auto_bridge cards
+# carry LITERAL `[ %s ]`. Brackets outside an index are ordinary text, which is
+# why the refusal is scoped to the index and not to the character; "refuse any
+# bracket" would have passed every row in the suite and broken those benches.
+# The callers for which a bad location is a fact about the user's disk rather
+# than a defect — registration and the two capability peeks — already catch this
+# and fall back to the literal (issues 0938 and 0945); the model, include and
+# pre_command callers raise, exactly as they already did for an unset variable.
+# Rows: tests/headless/test_sim_casemode_registry.tcl CS157n..CS157ab.
 proc ase::expand_path {p} {
-  if {[catch {uplevel #0 [list subst -nocommands -nobackslashes $p]} out]} {
+  if {[catch {::sim_expand_vars $p} out]} {
     return -code error "ase: cannot expand model path '$p': $out"
   }
   return $out
@@ -800,6 +871,14 @@ proc ase::sim_why {kind name path {extra {}}} {
     nowrite {
       return "Your simulator list could not be saved to $path, so the simulators you added will be gone when xschem closes. Check that the folder exists and that you can write to it. The system said: $extra"
     }
+    conf_isdir {
+      set what $path
+      if {$extra ne {} && $extra ne $path} { append what " (which is really $extra)" }
+      return "Your simulator list could not be saved to $what, because it is a folder, not a settings file. Nothing was put inside it, and the list you already had is untouched."
+    }
+    conf_linkloop {
+      return "Your simulator list could not be saved to $path, because it is a chain of symbolic links more than 16 deep, which is what a loop looks like from here. The list you already had is untouched."
+    }
     badconf {
       return "Your saved simulator list in $path could not be read, so no simulators were restored from it. Fix or delete that file. The system said: $extra"
     }
@@ -832,6 +911,63 @@ proc ase::sim_why {kind name path {extra {}}} {
     }
     cap_no_answer {
       return "$path, which is the program the simulator you picked will start, was given a tiny test circuit to try and had still not finished with it after $extra seconds, so there was no way to find out what it can do. It may simply be slow to start. Your run is going ahead anyway, and this will be tried again the next time you press Run."
+    }
+    cap_noplace {
+      ## ISSUE 0960 -- THE STATE THAT SAID NOTHING AT ALL. Measured, both
+      ## shapes, three presses each: caps={known 0 unmeasured noplace},
+      ## kind='', said={}. The FOLDER is at fault, so the folder or the file
+      ## is what the sentence names; accusing the user's program here is issue
+      ## 0949's category error, and it is what the silence was the price of.
+      ##
+      ## EVERY ARM PUTS `$path` FIRST INSIDE `$what`, and that is not a style
+      ## choice: the sentence is composed from two source strings, and row N6
+      ## of tests/headless/test_ase_simcaps_0948.tcl takes it apart at its own
+      ## sentence endings and then at the substituted path. A `$what` that
+      ## opened with words would leave a fragment spanning the join that no
+      ## source line can ever match.
+      switch -- $extra {
+        occupied {
+          set what "$path is a file, and a folder of that name is where a test result has to go. Delete or rename that file"
+        }
+        notdir {
+          ## THERE IS NO FOLDER. Kept apart from `readonly` because the fix is
+          ## a different one: no permission change can help, the setting itself
+          ## is pointing at a file. Reached through ::netlist_dir naming an
+          ## existing regular file -- see ase::cap_noplace_at. Row N17.
+          set what "$path is a file, not a folder, and a folder is where the simulation has to work. Point your simulation folder at a directory"
+        }
+        readonly {
+          ## THE FOLDER WILL NOT TAKE A NEW ENTRY, and ase::cap_noplace_at
+          ## found that out by TRYING to make one. The old words were "nothing
+          ## can be written into it. Make it writable, or choose another one",
+          ## which is exact for a mount that came up `ro` and misleading for
+          ## the commonest shape on a developer's box: mode 0600, where the
+          ## write bit IS set and the missing SEARCH bit is what refuses the
+          ## create. `chmod u+w` on such a folder changes nothing. Rows N14
+          ## and N15 of tests/headless/test_ase_simcaps_0948.tcl.
+          set what "$path is your simulation folder, and nothing new can be made in it. Give it write and search permission, or pick another folder"
+        }
+        default {
+          ## THE CATCH-ALL. It is reached only after ase::cap_noplace_at has
+          ## MADE a new entry in the simulation folder and removed it again,
+          ## which is why this sentence may assert that the folder can be
+          ## written into: that clause is a measurement, not an inference.
+          ##
+          ## ⚠ IT WAS AN INFERENCE ONCE AND THE SENTENCE WAS FALSE. The test
+          ## above read `file writable`, which on a DIRECTORY is POSIX
+          ## access(W_OK) and ignores the search bit, so mode 0600 and mode
+          ## 0200 folders -- every create refused -- arrived here and were
+          ## told their folder could be written into and offered a
+          ## `.ase_probe` to delete that did not exist. Rows N14 and N15.
+          ##
+          ## The shapes that legitimately land here, all driven live on the
+          ## built binary: a dangling .ase_probe symbolic link, a .ase_probe
+          ## directory with no write permission, and 64 name collisions.
+          ## Rows N9-N11.
+          set what "$path is where a test result has to go, and it could not be made or used. Your simulation folder itself can be written into, so delete $path or make it writable"
+        }
+      }
+      return "Nothing could be found out about the program that will run your simulation, because $what. Until then nothing will warn you about what that program cannot do, including a build that keeps only the last analysis of a run."
     }
     casemode_measuring {
       return "Trying $path now, to find out which spellings of a net name it can hand back."
@@ -1442,9 +1578,16 @@ proc ase::sim_clear {} {
 #             cannot be honoured
 #   exe       argv0, exactly as it will be handed to `execute`
 #   args      the extra arguments that go before the deck
-#   resolved  the absolute file this names, or auto_execok's answer when the
-#             PATH is what is in charge. This is the field a caller asking
-#             "is a simulator available" wants.
+#   resolved  the absolute file a registered entry names, or auto_execok's
+#             answer when the PATH is what is in charge. This is the field a
+#             caller asking "is a simulator available" wants. ⚠ IT IS NOT
+#             ALWAYS ABSOLUTE: only the registry arm normalizes. auto_execok
+#             answers a RELATIVE `./ngspice` when $PATH carries an empty
+#             element -- a leading, doubled or trailing `:` -- or a literal
+#             `.`, and the program is in the current directory. Every consumer
+#             that changes folder before using it has to resolve it first;
+#             ase::cap_run does, and issue 0961 is what it cost when it did
+#             not.
 #   source    `registry` when a registered entry answered, `path` when the
 #             program on the PATH did
 #   entry     the registered name that answered, or empty
@@ -1710,7 +1853,12 @@ proc ase::cap_key {resolved eargs} { return [list $resolved $eargs] }
 # same one-second file-time hole is recorded at src/op_annot.tcl:843-847.
 proc ase::sim_caps_clear {} {
   variable sim_caps
+  variable cap_noplace_said
   set sim_caps [dict create]
+  # THE NOTICE ABOUT A PLACE IS FORGOTTEN WITH THE MEASUREMENTS (issue 0960).
+  # This is the lever for a user who knows something changed, and a folder
+  # they have just fixed -- or just broken -- is exactly such a change.
+  set cap_noplace_said [dict create]
   return {}
 }
 
@@ -1746,6 +1894,8 @@ proc ase::sim_caps_clear {} {
 # user's program, which is issue 0949's category error wearing other clothes.
 proc ase::cap_workdir {} {
   variable cap_seq
+  variable cap_noplace
+  set cap_noplace [dict create]
   set tries 0
   set base [set_netlist_dir 0]
   # set_netlist_dir answers empty when the simulation folder could not be made
@@ -1753,8 +1903,10 @@ proc ase::cap_workdir {} {
   # and the user has a larger problem than tidiness at that point.
   if {$base eq {}} { set base [pwd] }
   set parent [file normalize [file join $base .ase_probe]]
-  if {[catch {file mkdir $parent}]} { return {} }
-  if {![file isdirectory $parent]} { return {} }
+  if {[catch {file mkdir $parent}] || ![file isdirectory $parent]} {
+    set cap_noplace [ase::cap_noplace_at $parent]
+    return {}
+  }
   while {$tries < 64} {
     incr tries
     incr cap_seq
@@ -1778,7 +1930,213 @@ proc ase::cap_workdir {} {
     }
     return $d
   }
+  set cap_noplace [ase::cap_noplace_at $parent]
   return {}
+}
+
+# WHAT WAS IN THE WAY, worked out where it was found out and nowhere else
+# (issue 0960). ase::cap_workdir answering empty used to be the whole of what
+# anybody downstream knew, and the THREE shapes a user actually meets need
+# different sentences and different fixes. All three are ordinary, all three
+# have been driven live through ase::sim_capabilities + ase::cap_report on the
+# built binary, and all three have rows:
+#
+#   occupied  something that is not a folder is sitting at the name the probe
+#             needs. THE USER HAS DONE NOTHING WRONG -- a leftover from a
+#             crashed run, a .ase_probe that was a directory yesterday -- and
+#             deleting one file fixes it, so the sentence has to name it.
+#   readonly  the simulation folder WILL NOT TAKE A NEW ENTRY, measured by
+#             trying to make one: a shared project area, a mount that came up
+#             `ro`, and -- the shape `file writable` cannot see -- a folder
+#             with the write bit and no SEARCH bit, mode 0600 or 0200.
+#             The name of this arm is older than that last shape and is kept
+#             so the answer's `noplace_why` value does not move under a
+#             reader; what it MEANS is the sentence above it.
+#   other     the folder took a new entry a moment ago and the probe place
+#             still could not be made or used. NOT A LEFTOVER CATEGORY: a
+#             DANGLING SYMBOLIC LINK
+#             at .ase_probe lands here, because `file exists` follows the link
+#             and answers 0 so the `occupied` test cannot see it, and so does
+#             a .ase_probe DIRECTORY WITH NO WRITE PERMISSION, where all 64
+#             attempts to make a place inside it fail. 64 name collisions in a
+#             row land here too. It shipped with no row on it at all, which is
+#             how it could have regressed to this issue's original defect --
+#             silence -- with the suite green.
+#
+# ⚠ THE FOLDER TEST RUNS FIRST, AND ONE SHAPE IN FOUR IS WHY. Only a folder
+# that refuses a new entry AND has something sitting at that name can answer
+# both tests, and there the file is NOT the one to name: deleting it needs
+# write permission on the folder holding it, so "delete or rename that file"
+# is a fix the user cannot carry out. Say the folder's sentence; the other
+# shape reports itself on the next Run, once the folder takes entries again.
+# Every other shape answers one test or neither, so the order cannot show -- a
+# sabotage pass that swapped these two reddened NOTHING until row N8 of
+# tests/headless/test_ase_simcaps_0948.tcl was written for exactly this shape.
+#
+# ⚠ WHAT THIS ORDER DOES NOT LICENCE. It says the catch-all is reached only
+# after the folder HAS TAKEN a new entry, and that is worth something only
+# because the first test now TRIES. While it inferred creatability from
+# `file writable` the same order licensed nothing at all, and the catch-all's
+# sentence -- which asserts the folder can be written into -- was false on
+# every mode-0600 and mode-0200 folder. Rows N14 and N15.
+#
+# ⚠ NOTHING HERE IS A FACT ABOUT THE PROGRAM. Every arm names a folder or a
+# file, and issue 0949's category error is the reason: a place the probe
+# cannot use says nothing whatever about the simulator the user registered.
+proc ase::cap_noplace_at {parent} {
+  set folder [file dirname $parent]
+  ## NOT A FOLDER AT ALL, AND IT IS REACHABLE -- measured, not guarded against
+  ## on principle. `set_netlist_dir` (src/xschem.tcl) creates the directory
+  ## only `if {![file exist $netlist_dir]}`, so a `::netlist_dir` that already
+  ## exists AS A REGULAR FILE is handed back verbatim and arrives here. Without
+  ## this arm the read-only arm answers, and the user is told a regular file
+  ## "is your simulation folder" and asked to give it search permission -- the
+  ## "names the wrong object and gives advice that cannot help" defect that the
+  ## whole of issue 0960 exists to remove, shipped inside 0960's own fix. Row
+  ## N17 of tests/headless/test_ase_simcaps_0948.tcl drives it end to end.
+  if {![file isdirectory $folder]} {
+    return [dict create noplace_why notdir noplace_at $folder]
+  }
+  ## TESTED BY TRYING, NEVER BY `file writable` -- see ase::cap_dir_takes_entry
+  ## for the two modes that made the difference visible.
+  if {![ase::cap_dir_takes_entry $folder]} {
+    return [dict create noplace_why readonly noplace_at $folder]
+  }
+  if {[file exists $parent] && ![file isdirectory $parent]} {
+    return [dict create noplace_why occupied noplace_at $parent]
+  }
+  ## THE PROBE PLACE, NOT THE FOLDER. The folder took a new entry a moment ago
+  ## -- the test above MADE one and removed it -- so it is not the thing the
+  ## user can act on; `<folder>/.ase_probe` is. Every shape this arm meets is
+  ## about that path: a dangling symbolic link `file exists` cannot see, a
+  ## directory that exists and cannot be written into, and 64 name collisions
+  ## inside it.
+  return [dict create noplace_why other noplace_at $parent]
+}
+
+# WILL THIS FOLDER TAKE A NEW ENTRY? Answered by MAKING one and removing it,
+# and by nothing else.
+#
+# ⚠ `file writable` ON A DIRECTORY IS THE WRONG TEST, AND INFERRING FROM IT
+# WAS A REGRESSION THIS PROC EXISTS TO UNDO (issue 0960, close-out round). It
+# is POSIX access(W_OK): it answers about the WRITE bit and says not one word
+# about the SEARCH (x) bit, and a create needs both. So a simulation folder at
+# mode 0600 -- what `chmod -R 600 project/` leaves behind, the reflex after a
+# leaked secret -- ANSWERS `file writable` 1 AND REFUSES EVERY CREATE.
+# Measured on this box, in one tclsh, both modes:
+#
+#   mode 0600 : file writable = 1 | mkdir "permission denied" | touch the same
+#   mode 0200 : file writable = 1 | mkdir "permission denied" | touch the same
+#
+# Both fell past the read-only arm into the catch-all, which then told the
+# user their simulation folder could be written into and offered them a
+# `.ase_probe` to delete that does not exist. Rows N14 and N15 of
+# tests/headless/test_ase_simcaps_0948.tcl.
+#
+# NOTHING IS LEFT BEHIND, and row N16 is the guard: the entry is a dot-name
+# with the process number in it, and it is removed in this proc.
+#
+# ⚠ THE COST IS PER RUN, NOT PER SENTENCE, AND AN EARLIER VERSION OF THIS
+# PARAGRAPH SAID OTHERWISE. It claimed the trial "is only ever made on a path
+# where the probe has ALREADY failed -- so its whole cost falls on a run that
+# is about to say something to the user anyway". The first half is true; the
+# second is false from the second Run onward, because ase::cap_noplace_once
+# deliberately silences repeats. Measured, three presses of one broken folder:
+# said=1 trials=1, said=0 trials=1, said=0 trials=1. So a session with a broken
+# simulation folder makes and removes one entry in it per Run, silently, for the
+# rest of the session. That is judged acceptable -- one mkdir and one rmdir of a
+# dot-name against a run that is already about to launch a simulator -- but it
+# is a cost, and it is written here rather than argued away. On the folder arm
+# the trial fails instead, which is up to four refused mkdirs and no rmdir.
+#
+# A NAME SOMETHING IS ALREADY SITTING AT IS SKIPPED, NOT DELETED. `file mkdir`
+# succeeds silently on a directory that already exists, and a delete after
+# that would remove somebody else's -- which is issue 0951's mistake in
+# miniature. Four tries, then the honest answer is no.
+#
+# TWO LIMITS, BOTH UNMEASURED AND BOTH SAID OUT LOUD RATHER THAN ASSUMED AWAY:
+#   * a $dir that is not a directory at all answers 0. That USED to fall
+#     through to the folder's sentence, which called a regular file "your
+#     simulation folder" and asked for search permission on it. An earlier
+#     version of this comment called the shape unreachable, reasoning that
+#     ase::cap_workdir's base is set_netlist_dir 0 "which creates the folder".
+#     IT IS REACHABLE: set_netlist_dir creates it only when it does not exist,
+#     so a ::netlist_dir naming an existing regular file comes back verbatim.
+#     ase::cap_noplace_at now answers `notdir` before asking this proc at all,
+#     and row N17 drives it through the real seam.
+#   * the delete is a `catch`, so a measurement that succeeded is never turned
+#     into an error by a failing tidy-up. A delete that fails therefore leaves
+#     the trial entry behind and still answers 1. Row N16 measures the ordinary
+#     path; that one is not measured.
+proc ase::cap_dir_takes_entry {dir} {
+  if {![file isdirectory $dir]} { return 0 }
+  set n 0
+  while {$n < 4} {
+    incr n
+    set t [file join $dir .ase_probe_try_[pid]_[clock clicks]_$n]
+    if {[file exists $t]} { continue }
+    if {[catch {file mkdir $t}]} { continue }
+    if {![file isdirectory $t]} { continue }
+    catch {file delete -force -- $t}
+    return 1
+  }
+  return 0
+}
+
+# IS THIS THE FIRST TIME THE USER IS BEING TOLD ABOUT THIS PLACE? Answers 1
+# once per place and 0 for ever after, and marks the place as told in the same
+# breath, so no caller can ask without recording.
+#
+# ONCE PER PLACE, NOT ONCE PER RUN, AND NOT ONCE PER SESSION. Nothing about
+# the state clears itself -- a folder that cannot be written into stays that
+# way until the user does something -- so a sentence on every Run is a
+# sentence on every Run for the rest of the session, which is the nag issue
+# 0960 says not to write. Keyed on the place AND the reason rather than on the
+# session, because a user who changes simulation folder, or fixes one shape and
+# meets another, is meeting a different fact and has not been told it yet.
+#
+# ⚠ READ "ONCE PER PLACE" AS "ONCE PER PLACE PER REGISTRY GENERATION", because
+# that is what it measures out at. ase::sim_caps_clear empties this dict (see
+# its own comment: forgetting the notice with the measurements is deliberate),
+# and it is called on every registry edit that CHANGES an entry --
+# ase::sim_register and ase::sim_unregister, which `grep -n sim_caps_clear
+# src/ase.tcl` shows are its only two call sites.
+#
+# ⚠ ase::sim_clear DOES NOT CALL IT, and an earlier version of this paragraph
+# said it did. Measured three ways on 2026-09-07: the source (ase::sim_clear
+# has no such call), the built binary in one process (ask 1, ask 0,
+# sim_register -> ask 1, then ase::sim_clear -> ask 0, NOT cleared), and this
+# batch's own isolate helper (tests/headless/scratch.tcl), which calls the two
+# separately and would not need to if the claim were true. It costs nothing
+# today because ase::sim_clear has NO production caller -- it is a test lever --
+# so the only readers that can see the divergence are suites, and the helper
+# already handles it. Left as it is rather than "fixed" into a behaviour change
+# with no user on the other end of it.
+#
+# So a user who registers three simulators in one
+# sitting, on an unusable folder, hears the sentence three times. MEASURED
+# 2026-09-07 on the built binary, one process, one `occupied` place:
+# ask -> 1, ask -> 0, ase::sim_register -> ask -> 1, ask -> 0,
+# ase::sim_register -> ask -> 1. That is the lever working as designed, not a
+# leak, but "once per place" on its own over-promises and a reader should not
+# be surprised by the repeat.
+#
+# ⚠ THE KEY CARRIES WHAT WAS WRONG AS WELL AS WHERE, AND THE PLACE ALONE WAS
+# ISSUE 0960's OWN DEFECT SURVIVING INSIDE ITS FIX. Two arms can answer with
+# one path -- `readonly` and the catch-all both used to answer with the
+# folder, and `occupied` and the catch-all both answer with the probe place --
+# so a key that is only the place fuses two different facts into one. Measured
+# live on the built binary, one process, no registry edit and no
+# ase::sim_caps_clear: a read-only folder said its sentence, the user made the
+# folder writable, met the catch-all, and got rv={} said={}. That is the
+# silence this issue was filed about, reached through its own fix. Rows N12
+# and N13 of tests/headless/test_ase_simcaps_0948.tcl.
+proc ase::cap_noplace_once {at {why {}}} {
+  variable cap_noplace_said
+  set k [list $at $why]
+  if {[dict exists $cap_noplace_said $k]} { return 0 }
+  dict set cap_noplace_said $k 1
+  return 1
 }
 
 # Give back a place ase::cap_workdir handed out. Never raises, and is called on
@@ -2007,8 +2365,43 @@ proc ase::cap_plot {plots want} {
 #
 # A PROGRAM NAMED BY A RELATIVE LOCATION IS RESOLVED BEFORE THE MOVE, or the
 # user who registered their simulator as ./build/ngspice would stop being able
-# to run it. A bare name with no folder in it is left alone: that is a PATH
-# lookup, which the move cannot affect.
+# to run it. What is left alone is a name with NO SEPARATOR IN IT AT ALL --
+# `ngspice` -- because that one is a PATH lookup, which the move cannot affect.
+#
+# ⚠ THE TEST IS THE SEPARATOR, NOT THE DIRNAME (issue 0961). This carve-out
+# used to be spelled `[file dirname $prog] ne {.}`, which READS as "has a
+# folder in it" and is not: [file dirname ./ng] is ALSO {.}. So `./ng` was
+# left relative and then looked for inside the probe's own folder, where it
+# does not exist -- while `bin/ng`, the same program named differently, ran.
+# Measured before the fix, same session, same folder: `./fast` came back rc=1
+# "failed to run command './fast': No such file or directory" against
+# `bin/fast` rc=0. Nor is `./ng` a PATH lookup that the carve-out could be
+# excused for: Tcl treats ANY name carrying a separator as a path.
+#
+# ⚠ AND A RELATIVE NAME GETS HERE BY AN ORDINARY ROUTE, NOT ONLY FROM A DIRECT
+# CALLER. The first write-up of 0961 said this branch was reachable only by
+# calling ase::cap_run directly, which nothing in the tree does; that was
+# WRONG. Registration does normalize, so nothing added in Setup > Simulators
+# reaches it -- but with NOTHING IN FORCE (nothing registered, or the choice
+# deliberately cleared) ase::sim_status takes its PATH arm and puts
+# `[lindex [auto_execok $backend] 0]` in `resolved`, and ase::sim_capabilities
+# hands that straight to the probe. auto_execok answers a RELATIVE `./ngspice`
+# whenever $PATH carries an EMPTY element -- a leading, doubled or trailing
+# `:` -- or a literal `.`, and the program is in the current directory; all
+# four spellings measured on tcl 8.6.17. Driven live on this tree with the old
+# predicate put back, that gesture answered `known 1 usable 0 appendwrite 0
+# blanket_op_save 0 hier_op_names 0` with the program STARTED ZERO TIMES: a
+# verdict about a simulator nobody ran, which is issue 0929's symptom arriving
+# through the PATH door. Row K5e of tests/headless/test_ase_simcaps_0948.tcl
+# is that route.
+#
+# THE BACKSLASH COUNTS ONLY ON WINDOWS, where it is a separator; on Unix it is
+# an ordinary character in a file name and a name built from it is still bare
+# and still a PATH lookup. That platform test was defended in a write-up and
+# guarded by nothing -- deleting it reddened no row -- so it now has two:
+# K5h drives a Unix program whose NAME carries a backslash and must still be
+# found on the PATH, and K5i STRUCTURAL requires the one backslash test to sit
+# under the platform gate, which K5h cannot see being deleted outright.
 #
 # STDIN IS REDIRECTED AWAY, AND THAT IS NOT A DETAIL. A program handed a deck
 # it does not understand may drop into its own interactive prompt and sit
@@ -2026,7 +2419,11 @@ proc ase::cap_plot {plots want} {
 proc ase::cap_run {exe exeargs workdir secs} {
   set nul [expr {$::tcl_platform(platform) eq {windows} ? {NUL} : {/dev/null}}]
   set prog $exe
-  if {[file pathtype $prog] eq {relative} && [file dirname $prog] ne {.}} {
+  set sepd [expr {[string first / $prog] >= 0}]
+  if {!$sepd && $::tcl_platform(platform) eq {windows}} {
+    set sepd [expr {[string first \\ $prog] >= 0}]
+  }
+  if {[file pathtype $prog] eq {relative} && $sepd} {
     set prog [file normalize $prog]
   }
   set cap [ase::cap_timeout_cmd]
@@ -2097,12 +2494,25 @@ proc ase::sim_capabilities {backend} {
 # refused" is a fact about the IN-FORCE choice and has no meaning for a caller
 # that already knows which file it is asking about.
 #
-# ⚠ THE PATH MUST NEVER COME FROM auto_execok ON THIS ROUTE. That is the whole
-# of issue 0935: a refused resolution still carries a `resolved` naming the
+# ⚠ WHAT MUST NEVER BE MEASURED IS A **REFUSED** RESOLUTION'S `resolved`. That
+# is the whole of issue 0935: a refusal still carries a `resolved` naming the
 # file a WRONG choice would have started, and measuring it would attribute the
-# answer to a simulator the user is not running. Every caller of this proc
-# hands it a path the user themselves named -- a registered entry's own
-# `path`, or what they typed in the Program field.
+# answer to a simulator the user is not running. Guard 1, in the wrapper
+# above, is what stops that, and it is the only thing that does.
+#
+# ⚠ THE PATH DOES COME FROM auto_execok WHENEVER
+# nothing is in force -- nothing registered, or the choice deliberately
+# cleared. An earlier revision of this note claimed the opposite, that no
+# caller could arrive here with anything but a location the user had typed or
+# registered, and it was FALSE: on that arm ase::sim_status puts
+# `[lindex [auto_execok $backend] 0]` in `resolved`, and ase::sim_capabilities
+# hands it straight here. Which is RIGHT -- there, auto_execok's answer is the
+# file that will really start, and that is exactly what 0935 wants measured.
+# What it also means is that the name reaching ase::cap_run can be RELATIVE:
+# auto_execok answers `./ngspice` when $PATH carries an empty element or a
+# literal `.` and the program is in the current directory. That is issue 0961,
+# and it is why 0961 was never latent. See ase::cap_run's own header, and row
+# K5e of tests/headless/test_ase_simcaps_0948.tcl.
 proc ase::sim_capabilities_at {backend resolved eargs} {
   variable sim_caps
   variable backends
@@ -2125,7 +2535,16 @@ proc ase::sim_capabilities_at {backend resolved eargs} {
   # build be reported as producing no results at all, and -- before the rule
   # below -- that accusation was then remembered for the whole session.
   set wd [ase::cap_workdir]
-  if {$wd eq {}} { return [dict create known 0 unmeasured noplace] }
+  if {$wd eq {}} {
+    # AND WHICH PLACE, AND WHAT WAS WRONG WITH IT (issue 0960). Silence here
+    # switched every capability warning off for the rest of the session with
+    # nothing said -- the one about a build that keeps only the last analysis
+    # included, which is the one that costs the user their results. The answer
+    # carries the diagnosis so ase::cap_report can say it without working out
+    # a second time what only ase::cap_workdir was in a position to know.
+    variable cap_noplace
+    return [dict merge [dict create known 0 unmeasured noplace] $cap_noplace]
+  }
   # THE PLACE IS GIVEN BACK ON EVERY PATH, INCLUDING THE ONE WHERE THE PROBE
   # BLEW UP -- and the failure is then RE-RAISED, so a defect in a probe stays
   # as loud as it was. Tidying up must not swallow it.
@@ -2516,6 +2935,19 @@ proc ase::cap_report {backend nwrites} {
       ase::sim_say cap_no_answer $backend $path [dict get $c secs]
       return cap_no_answer
     }
+    # A PLACE THE PROBE COULD NOT USE GETS ITS OWN SENTENCE TOO (issue 0960),
+    # and it is the folder's name in it, never the program's: the fault is the
+    # folder's. Silence here is what switched the whole feature off for the
+    # rest of the session, without a word, for a user whose only mistake was a
+    # leftover file. Said ONCE for the place -- see ase::cap_noplace_once.
+    if {[dict exists $c unmeasured] && [dict get $c unmeasured] eq {noplace}} {
+      set at {} ; set why {}
+      if {[dict exists $c noplace_at]}  { set at  [dict get $c noplace_at] }
+      if {[dict exists $c noplace_why]} { set why [dict get $c noplace_why] }
+      if {![ase::cap_noplace_once $at $why]} { return {} }
+      ase::sim_say cap_noplace {} $at $why
+      return cap_noplace
+    }
     return {}
   }
   if {[dict exists $c usable] && [dict get $c usable] == 0} {
@@ -2536,6 +2968,103 @@ proc ase::sim_conf_file {} {
   return [file join $::USER_CONF_DIR ase_simulators]
 }
 
+# WHERE A SAVE ACTUALLY LANDS, RESOLVED ONCE (issue 1286). Lifted in shape
+# from op_param_lists::_resolve_target / _target_why, which is itself a copy of
+# the writer below -- so the copy and the original say the same thing about
+# the same two holes rather than drifting one more time.
+#
+# ⚠ NEITHER `file rename -force` NOR `open` COMPLAINS ABOUT ANY OF THIS, and
+# `file normalize` does NOT resolve a path's final component, so it cannot do
+# the job either. Measured on this writer before this proc existed:
+#   the path is a DIRECTORY -> rc 1, ZERO reports, the new list lands at
+#                              <dir>/<name>.new INSIDE the directory, a name no
+#                              reader looks at, and the user's Save line names
+#                              a path it did not write;
+#   the path is a SYMLINK   -> rc 1, ZERO reports, the LINK is REPLACED by a
+#                              regular file and the real file is left as it
+#                              was. Symlinking a shared list into a dotfiles
+#                              repo is the obvious use of a file whose whole
+#                              point is that it is a plain script you can keep.
+# There is nothing to check afterwards, so the guard has to be a PRECONDITION.
+#
+# ⚠ AND IT HAS TO RUN FIRST. A symlink to a DIRECTORY answers `file
+# isdirectory` 1, so the chain must be resolved BEFORE the directory guard; a
+# DANGLING symlink answers exists=0 / isfile=0 / isdirectory=0 while `file
+# link` still succeeds, so resolution must also precede the permission capture
+# and the temp name.
+#
+# ⚠ THE RELATIVE-TARGET CORRECTION. Issue 1276's own recommended one-liner,
+# `file normalize [file link $path]`, resolves a relative target against the
+# CURRENT WORKING DIRECTORY: for a link at <d>/sub/link -> real it answers
+# <d>/real, not <d>/sub/real, so a fix built on it writes the user's list into
+# whatever directory xschem was started from. Join against the LINK's own
+# directory. A relative target is the natural spelling of the shared case
+# (`ln -s ../dotfiles/ase_simulators ~/.xschem/ase_simulators`).
+#
+# Answers the file the write should land on, or empty for a chain deeper than
+# 16 links, which is what a loop looks like from here.
+proc ase::sim_conf_target {path} {
+  set p $path
+  ## ONE PASS PER LINK, PLUS ONE MORE to see that the last thing is not a link
+  ## at all. A loop of exactly 16 passes refuses a chain of exactly 16, which
+  ## the sentence beside it calls "more than 16" -- measured: 15 saved, 16 was
+  ## refused. The bound and the sentence have to name the same number.
+  for {set i 0} {$i <= 16} {incr i} {
+    if {[catch {file link $p} tgt]} { return $p }
+    if {$tgt eq {}} { return $p }
+    ## ⚠ THE TILDE. `file join` and `file normalize` EXPAND a leading tilde;
+    ## THE KERNEL DOES NOT. A stored target of `~/notes` is a link into a
+    ## folder NAMED `~` beside the link -- readlink says `~/notes` and, with no
+    ## such folder there, the link reads as DANGLING. Without the `./` this
+    ## resolver answered a path in the user's HOME and the writer OVERWROTE AN
+    ## UNRELATED FILE THERE while reporting success, which is the very symptom
+    ## issues 1276 and 1286 exist about, arriving through their own fix.
+    ## Measured in tclsh: [file join /a/b {~/x}] -> `~/x`, normalized ->
+    ## `/home/<you>/x`; with the `./` -> `/a/b/~/x`, kernel-identical. The
+    ## other shapes are untouched: `sub/y` -> /a/b/sub/y, `/abs/z` -> /abs/z
+    ## (an absolute target still wins), `../up` -> /a/up.
+    if {[string index $tgt 0] eq "~"} { set tgt ./$tgt }
+    ## ⚠ A MEASURED RESIDUAL THAT NO ROW PINS. `file normalize` collapses `..`
+    ## LEXICALLY across a component that DOES NOT EXIST; the kernel does not.
+    ## Measured here (tclsh 8.6.17): with `sub` a link to <d>/elsewhere,
+    ## [file normalize <base>/./sub/../x] answers <d>/x -- the same as
+    ## `readlink -f`, so an EXISTING component, directory or link, is resolved
+    ## first and there is no divergence at all. With no `~` beside the link,
+    ## [file normalize <base>/./~/../x] answers <base>/x while the kernel
+    ## refuses <base>/~/../x with ENOENT. Left as it is, on purpose: in that
+    ## state the link is BROKEN, this writer writes through broken links by
+    ## design (rows R11d / W7b), and <base>/x is exactly the path the kernel
+    ## names once the missing component is created as an ordinary directory
+    ## (measured). What is NOT covered, and no row says anything about it: the
+    ## missing component later appearing as a link to somewhere else.
+    ## ⚠ AND `file normalize` RAISES on a `~user` no password entry matches
+    ## (measured: `user "nosuchuser_xschem" doesn't exist`), out of a proc
+    ## whose caller's doc comment promises it never raises. A path that cannot
+    ## even be named is not a path this may write, so it is refused.
+    ## ⚠ NO ROW REACHES THIS CATCH and none can: after the `./` above a tilde
+    ## can only reach `file normalize` from the CALLER's own path, and `file
+    ## link` raises on that first and returns above. It is insurance, not a
+    ## covered arm -- do not read the suite as proving it.
+    if {[catch {file normalize [file join [file dirname $p] $tgt]} p]} { return {} }
+  }
+  return {}
+}
+
+# THE TARGET'S OWN PRECONDITIONS, NAMED ONCE, in the same shape as
+# ase::sim_check: the `kind` that names what is wrong, or empty when the
+# resolved target may be written. One place to disable, so a reviewer can flip
+# it and watch the suite say which promise broke.
+#
+# THE EMPTY PATH IS NOT A LINK LOOP. `ase::sim_conf_file` answers empty when
+# there is no USER_CONF_DIR at all; that path falls through to the writer's own
+# reporting exactly as it did before, rather than being described to the user
+# as a chain of symbolic links.
+proc ase::sim_conf_target_why {path target} {
+  if {$path ne {} && $target eq {}} { return conf_linkloop }
+  if {[file isdirectory $target]}   { return conf_isdir }
+  return {}
+}
+
 # Save the simulator list so it survives a restart. Returns 1 on success, 0
 # with a report on failure; never raises.
 #
@@ -2549,6 +3078,18 @@ proc ase::sim_write_conf {{path {}}} {
   variable simulators
   variable sim_use
   if {$path eq {}} { set path [ase::sim_conf_file] }
+  # WHERE THE SAVE LANDS IS DECIDED FIRST, BEFORE THE TEMP NAME AND BEFORE THE
+  # PERMISSION CAPTURE (issue 1286) -- see ase::sim_conf_target for why the
+  # order is the subject and not a detail. The temp is then built beside the
+  # REAL file rather than beside the link, which is also what keeps the move
+  # atomic when the link crosses a filesystem.
+  set target [ase::sim_conf_target $path]
+  set why [ase::sim_conf_target_why $path $target]
+  if {$why ne {}} {
+    ase::sim_say $why {} $path $target error
+    return 0
+  }
+  set path $target
   # WRITTEN BESIDE THE REAL FILE AND MOVED OVER IT, NEVER STRAIGHT INTO IT
   # (issue 0937). `open <path> w` TRUNCATES before a single line is written,
   # so a failure anywhere after that -- a full disk, a close that reports the
@@ -2561,7 +3102,34 @@ proc ase::sim_write_conf {{path {}}} {
   set tmp $path.new
   set mode {}
   if {[file exists $path]} { catch {set mode [file attributes $path -permissions]} }
-  if {[catch {open $tmp w} fp]} {
+  # THE TEMP IS PART OF THE TARGET (issue 1378), AND THE RESOLVER ABOVE ONLY
+  # GUARDS `$path`. The temp name is deterministic, `open <tmp> w` FOLLOWS a
+  # symbolic link and `file rename` does NOT, so a stale `<conf>.new` left
+  # behind as a link wrote the list THROUGH the link into an unrelated file and
+  # then moved the LINK ITSELF onto the user's list. Measured on this writer
+  # before this pair of lines: rc 1, zero reports, the list is now a `link`, and
+  # the bystander lost its own content and gained the simulator list -- the same
+  # family as the two holes the resolver closes, one step further down.
+  #
+  # ⚠ `file delete` HERE, NEVER `file delete -force`. The temp name is also the
+  # one rows R11/R11l use as a DIRECTORY on purpose, and a directory a user put
+  # there is not this writer's to remove: `file delete -force` deletes a whole
+  # tree and a plain `file delete` still removes an EMPTY directory (both
+  # measured, tclsh 8.6.17). `file type` is the probe rather than `file exists`
+  # because a DANGLING link answers exists=0 and type=link.
+  #
+  # ⚠ THE UNLINK/CREATE WINDOW IS REAL AND ORDERING DOES NOT CLOSE IT. What
+  # closes it is CREAT|EXCL, which POSIX requires to fail on an existing path
+  # INCLUDING a symbolic link, dangling or not -- measured here: `open <link>
+  # {WRONLY CREAT EXCL} 0666` raises `file already exists` over a link to a real
+  # file, over a dangling link and over a directory, and leaves the link's
+  # target untouched, while `open <path> w` over a dangling link CREATES the
+  # target. Anything planted in the window therefore makes the create FAIL and
+  # the user is told, instead of the write being followed somewhere else.
+  # The explicit 0666 is what Tcl's `w` already used: both land at 00644 under
+  # this shell's umask 0022 (measured), so R12's permissions row does not move.
+  if {![catch {file type $tmp} tkind] && $tkind ne {directory}} { catch {file delete $tmp} }
+  if {[catch {open $tmp {WRONLY CREAT EXCL} 0666} fp]} {
     ase::sim_say nowrite {} $path $fp error
     return 0
   }

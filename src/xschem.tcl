@@ -2625,13 +2625,15 @@ proc sim_casemode_valid {mode} {
 # `$env([exec touch /tmp/.../PWNED])/ngspice` created the file during a pure
 # STALENESS query.
 #
-# ⚠ ITS LAST CALLER WENT WITH THE PROFILE LAYER AND IT IS KEPT ANYWAY, on
-# purpose. `ase::expand_path` (src/ase.tcl) expands MODEL paths, and now
-# SIMULATOR paths out of ase::sim_register, with the identical unsafe
-# `subst -nocommands -nobackslashes`. Deleting the one hardened expander in the
-# tree at the same commit that made the registry the only path to a simulator
-# would be moving the hole somewhere more reachable and throwing away the fix.
-# Wiring ase::expand_path to it is filed, not done here.
+# ⚠ IT SPENT ONE COMMIT CALLERLESS, ON PURPOSE, AND `ase::expand_path` IS THE
+# CALLER IT WAS KEPT FOR (issue 1239, closed). Its last caller went with the
+# profile layer; deleting the tree's one hardened expander at the same commit
+# that made the registry the only path to a simulator would have been moving the
+# hole somewhere more reachable and throwing away the fix. `ase::expand_path`
+# (src/ase.tcl) — model paths, `.include` paths, `pre_` command text and the
+# SIMULATOR location out of ase::sim_register — now routes through here, so this
+# is the ONE expander those strings meet. It is on a startup path
+# (ase::sim_load_conf), so keep it a parser and never an evaluator.
 proc sim_expand_vars {s} {
   set out {}
   set i 0
@@ -2643,6 +2645,7 @@ proc sim_expand_vars {s} {
     set hasidx 0
     set idx {}
     set matched 0
+    set braced 0
     # NOTE, and it cost a defect in this proc's first draft: `regexp -start` does
     # NOT move the `^` anchor -- with `-start 5`, `^` still means "beginning of the
     # string", so an anchored pattern silently fails for every reference that is
@@ -2653,6 +2656,7 @@ proc sim_expand_vars {s} {
         && [lindex $whole 0] == $d} {
       set name [string range $s [lindex $nmi 0] [lindex $nmi 1]]
       set matched 1
+      set braced 1
     } elseif {[regexp -start $d -indices -- \
                 {\$([A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*|::[A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*)(\(([^()]*)\))?} \
                 $s whole nmi pari idxi]
@@ -2667,10 +2671,55 @@ proc sim_expand_vars {s} {
       }
     }
     if {!$matched} {
-      # a `$` that starts no variable reference is a literal `$` to Tcl too
+      # A `$` that starts no variable reference is a literal `$` to Tcl too:
+      # `$/x`, `$$V`, `$V-2` and a trailing `$` all pass straight through, and
+      # must keep doing so -- both expanders always accepted them.
+      #
+      # ⚠ BUT NOT EVERY `$` THIS PARSER DECLINES IS ONE TCL DECLINES, and that
+      # was the second half of issue 1239, found by a differential fuzz after
+      # the first pass landed. Tcl reads `$(idx)` (a variable whose NAME is
+      # empty), `${}`, an unterminated brace form and a bare `$::` as
+      # references and RAISES on every one of them, so leaving them a literal
+      # turned a path that failed loudly at load into a filename with a `$` in
+      # it -- which fails later, somewhere else, with a worse message. Refuse
+      # at the seam instead. Rows: test_sim_casemode_registry CS157w/CS157aa.
+      set c1 [string index $s [expr {$d + 1}]]
+      set frag {}
+      if {[string range $s [expr {$d + 1}] [expr {$d + 2}]] eq {::}} {
+        # a colon RUN. `$::name` matched above; a bare `$::`, or three or more
+        # colons (`$:::V` is `::V` to Tcl's namespace lookup) reaches here. ONE
+        # colon ends a name for Tcl too, so `$V:x` is not this case.
+        set frag "\$::"
+      } elseif {$c1 eq "\{" || $c1 eq "("} {
+        set frag "\$$c1"
+      }
+      if {$frag ne {}} {
+        return -code error "sim_expand_vars: refusing a variable reference this\
+                            expander would read differently from Tcl: $frag"
+      }
       append out "\$"
       set i [expr {$d + 1}]
       continue
+    }
+    # ...AND THE SAME HOLE FROM THE OTHER END: a match SHORTER than Tcl's. The
+    # bare-name pattern stops at `V` in `$V::` and in `$V(`, where Tcl reads the
+    # name `V::` and an unterminated index and raises on both; the remainder
+    # became literal text, so `$V::/x` came back as `<value>::/x`. A completed
+    # `(idx)` and the braced form are whole references to Tcl as well -- `${V}::`
+    # and `$A(k)(j)` mean the same to both expanders -- so the check is scoped to
+    # the bare name with no index. Row: CS157x.
+    if {!$braced && !$hasidx} {
+      set e [expr {[lindex $whole 1] + 1}]
+      if {[string range $s $e [expr {$e + 1}]] eq {::}} {
+        return -code error "sim_expand_vars: refusing a variable reference this\
+                            expander would read differently from Tcl:\
+                            [string range $s $d [expr {$e + 1}]]"
+      }
+      if {[string index $s $e] eq "("} {
+        return -code error "sim_expand_vars: refusing a variable reference this\
+                            expander would read differently from Tcl:\
+                            [string range $s $d $e]"
+      }
     }
     if {$hasidx} {
       if {[regexp {[\[\]\$\\]} $idx]} {
@@ -2706,6 +2755,561 @@ proc sim_netlist_casemode {tool} {
   if {[catch {ase::sim_casemode_requested ngspice} m]} { return {} }
   return $m
 }
+
+# =========================================================================
+# THE PLAIN Simulate PATH, COMPOSED FROM THE REGISTRY (issue 1238)
+# =========================================================================
+#
+# `proc simulate` -- stock xschem's own Simulation menu, the button most users
+# press -- ran `sim($tool,$def,cmd)` VERBATIM. So a user could register a
+# case-capable ngspice, set its Case field, press Test, read "delivers fold
+# preserve distinguish", press Simulate, and get a different binary at `fold`.
+# Issue 0506 closed that against the old per-row simulator PROFILE; the
+# `annotate` merge retired that store for the ASE-L registry and the bridge went
+# with it (issue 1238). These procs are 0506's composer re-pointed at the
+# registry, on the user's ruling -- option 1 of the three 1238 offered.
+#
+# THE SHAPE MISMATCH, AND HOW IT IS ANSWERED. `sim()` is per-TOOL with N rows and
+# a default radio; the registry is ONE IN-FORCE ENTRY for one backend. So the
+# registry is asked about exactly the rows it can be speaking about, and every
+# other row runs byte-for-byte as it does on stock xschem:
+#   * `spice` only -- a `vhdl`, `verilog` or `tedax` row is none of ngspice's
+#     business, and neither is a `spicewave` viewer row;
+#   * NOT a Xyce row. `-D casemode=` is an ngspice spelling that means nothing to
+#     Xyce, and -- new here, because the store is no longer per-row -- an
+#     `ngspice` registry entry has nothing to say about `Xyce "$N"` at all. Under
+#     0506 an `exe` typed onto the Xyce row meant "this row's simulator is this
+#     program", so DECLINING it and saying so was the right answer. Today the
+#     same decline would put a sentence about a program the user never pointed at
+#     that row on every press of Simulate. Xyce rows compose untouched and
+#     unremarked.
+#   The gate is NEGATIVE (not-Xyce), never a positive "is this ngspice?": a
+#   positive test would silently drop the flag for a case-capable binary someone
+#   installed as `spice-dev`, which is the defect class this is about.
+#
+# STOCK XSCHEM MUST STILL RUN, and that is most of the contract. With `ase.tcl`
+# sourced, NOTHING registered and no session anywhere, every proc below answers
+# "no answer" and the command line is BYTE-IDENTICAL. Two things make that hold
+# rather than merely be intended: the exe is taken only from a `source registry`
+# resolution (a PATH resolution is what a user with nothing registered gets, and
+# rewriting `ngspice` to `/usr/bin/ngspice` would move a command line nobody
+# configured), and every call into `ase::` is catch'd, so a tree without ASE-L
+# composes verbatim instead of failing to simulate.
+
+# The words of a command template that can name a PROGRAM: the first word, and
+# the words a wrapper hands on (`mpirun /path/to/Xyce ...`, `nice Xyce ...`), up
+# to the FIRST OPTION. A `cmd` is free text a user may hand-edit in a simrc and
+# is not required to be a valid Tcl list, so the split is by whitespace, not
+# `lindex`.
+#
+# ⚠ THIS SCAN IS DELIBERATELY NOT sim_cmd_run_words. That proc models Tcl's
+# quoting because its subject is where a stage SEPARATOR falls in the string
+# `open` receives; this one reads the RAW template (a `$terminal` row, a
+# half-written simrc line) and its subject is the leading program words, which
+# quoting does not group. Not measured: whether any real row needs quoting here.
+proc sim_cmd_program_words {cmd} {
+  set out {}
+  foreach w [regexp -all -inline {[^ \t\n]+} $cmd] {
+    if {[string index $w 0] eq {-}} { break }
+    lappend out $w
+  }
+  return $out
+}
+
+# Is this word the Xyce program? `file tail`, so a directory called `xyce` on
+# the way to something else does not count, and the `.exe` a Windows row may
+# carry is stripped.
+#
+# ⚠ `file tail` RAISES, and this is reached from `proc simulate` with no catch.
+# MEASURED 2026-09-07, Tcl 8.6: `file tail ~nosuchuser` -> `user "nosuchuser"
+# doesn't exist`. A tilde followed by a PATH is fine (`file tail ~nosuch/bin/Xyce`
+# is `Xyce`); only a BARE `~name` raises. A word whose tail cannot be taken is
+# not Xyce -- CS226f.
+proc sim_cmd_is_xyce_word {w} {
+  if {[catch {file tail $w} t]} { return 0 }
+  set t [string trim $t {"'}]
+  if {[catch {string equal -nocase [file extension $t] .exe} isexe]} { return 0 }
+  if {$isexe} { catch {set t [file rootname $t]} }
+  return [string equal -nocase $t xyce]
+}
+
+# Can the ngspice registry be speaking about this command line at all?
+#
+# ⚠ THE Xyce GATE READS PROGRAM WORDS, NOT THE STRING. It used to be
+# `regexp {[xX]yce} $rawcmd` over the WHOLE raw template, and that is a defect,
+# not a shorthand: MEASURED 2026-09-07, an ngspice row whose output path merely
+# CONTAINS the word -- `ngspice -b -r "/home/u/xyce/out.raw" "$N"`, or a log
+# under a directory called `xyce` -- composed `exe_status none flag_status none
+# mode {}`, i.e. the user's registered case-capable ngspice was silently not
+# applied. That IS issue 1238's own defect, reached through its own gate.
+#
+# WHAT THE RULE REALLY IS, and its limit, stated because the headline
+# justification for the gate is narrower than it reads. The gate recognises a row
+# that SPELLS xyce in a program word: word 0, or a word a wrapper hands on before
+# the first option. So `Xyce "$N"` and `mpirun /path/to/parallel/Xyce "$N"` --
+# both shipped -- are none of the ngspice registry's business, and are left
+# untouched and unremarked. But a Xyce row spelled through a VARIABLE that does
+# not end in the name (`$XYCE_HOME/bin/simulator "$N"`) is NOT recognised: it is
+# DECLINED, and its user does get an error line on every press of Simulate. The
+# gate therefore buys silence for a literally-spelled xyce only -- row CS226d
+# pins that limit so it cannot be quoted as more than it is.
+#
+# The gate errs toward ASKING on purpose. A row wrongly gated OFF loses the
+# user's registered simulator silently (the defect above); a row wrongly gated ON
+# earns a truthful, actionable error line. `mpirun -np 4 /opt/Xyce "$N"` -- an
+# option before the program -- is the known case of the second kind.
+proc sim_registry_row_asks {tool rawcmd} {
+  if {$tool ne {spice}} { return 0 }
+  # On the row's OWN `cmd`, not through a global `netlist_type`: this proc is
+  # called from `proc simulate`, which works from a LOCAL of that name.
+  foreach w [sim_cmd_program_words $rawcmd] {
+    if {[sim_cmd_is_xyce_word $w]} { return 0 }
+  }
+  return 1
+}
+
+# The in-force registry resolution for this row, or {} when there is none.
+#
+# ⚠ `source registry` IS THE WHOLE TEST. `ase::sim_status` ALWAYS answers: with
+# nothing registered it answers about the program on the PATH -- `ok 1`, `entry`
+# empty, `exe` the bare backend name. MEASURED by deleting this line: the command
+# line stays byte-identical (the bare name is already the row's first word), but
+# every CLAIM the composer makes about it becomes false. `exe_status` reads
+# `applied` -- "the user's registered simulator is what starts" -- for a user who
+# registered nothing, and any row whose first word is not `ngspice` then earns a
+# `declined` report naming a registered program that does not exist. Rows CS204,
+# CS212 and CS215 all move on that one line.
+#
+# `ok 0` is refused for the same reason it is in ase::sim_casemode_requested: it
+# still carries the `entry` the user chose, whose program has since gone, and a
+# command line composed from a program that is not there is worse than the one
+# the user typed.
+proc sim_registry_answer {tool rawcmd} {
+  if {![sim_registry_row_asks $tool $rawcmd]} { return {} }
+  if {[catch {ase::sim_status ngspice} s]} { return {} }
+  if {[catch {dict get $s ok} ok] || !$ok} { return {} }
+  if {[catch {dict get $s source} src] || $src ne {registry}} { return {} }
+  return $s
+}
+
+proc sim_registry_exe {tool rawcmd} {
+  set s [sim_registry_answer $tool $rawcmd]
+  if {$s eq {}} { return {} }
+  return [dict get $s exe]
+}
+
+# The extra arguments the registry entry carries. This path does NOT place them
+# (see sim_compose_report); it reads them so it can say so.
+proc sim_registry_args {tool rawcmd} {
+  set s [sim_registry_answer $tool $rawcmd]
+  if {$s eq {}} { return {} }
+  return [dict get $s args]
+}
+
+# The case mode this row's run is being asked for. Unlike the exe, this one
+# honours the GLOBAL FLOOR with nothing registered -- because the C netlister
+# already does (sim_netlist_casemode, and save.c's sim_case_mode_floor()), so the
+# deck is already being WRITTEN in that mode and the run must ask for the same
+# one. `fold` -- the shipped floor -- emits nothing at all.
+proc sim_registry_casemode {tool rawcmd} {
+  if {![sim_registry_row_asks $tool $rawcmd]} { return {} }
+  if {[catch {ase::sim_casemode_requested ngspice} m]} { return {} }
+  if {![sim_casemode_valid $m]} { return {} }
+  return $m
+}
+
+# The extra argv words this path appends. {} -- the byte-identical answer -- for
+# every configuration that has not explicitly asked for something.
+#
+# `casemodewrite` RIDES ALONG WITH THE MODE, never alone and never for `fold`.
+# ngspice stamps the self-describing `Option: casemode=<mode>` raw header only
+# when that variable is set (outitf.c:994), so the header parser -- mode SOURCE
+# 2, the second-strongest of four -- could never fire on a file this tool caused
+# to be written if nothing here ever set it.
+#
+# MEASURED 2026-08-18, and it is what makes appending safe at all: the flags MAY
+# FOLLOW THE DECK FILENAME (`ngspice -b -r q1.raw deck.cir -D casemode=preserve
+# -D casemodewrite` gives rc 0, the header and `v(EN)`), so nothing here parses a
+# template looking for an insertion point; and a released ngspice ignores both IN
+# SILENCE.
+proc sim_run_flags {tool rawcmd} {
+  set m [sim_registry_casemode $tool $rawcmd]
+  if {$m eq {} || $m eq {fold}} { return {} }
+  return [list -D casemode=$m -D casemodewrite]
+}
+
+# Can the registered executable be applied to this command template, and to which
+# word? Returns a dict: `status` none|applied|declined, `exe` the resolved path,
+# `word` the template's first word (recorded even when nothing was registered,
+# because the report needs to name it).
+#
+# RULING -- the FIRST WORD, a bare LITERAL, and a matching `file tail`. Three
+# conditions, each load-bearing against a SHIPPED row:
+#   * first word -- the only position in a shell-ish template whose meaning is
+#     fixed. Anywhere else needs a parser, and there is none.
+#   * bare literal (no `$`, no `[`) -- row 0 is `$terminal -e {ngspice ...}`: a
+#     VARIABLE first word, with the simulator nested two levels in.
+#   * matching tail -- a wrapper (`mpirun`, `nice`, `time`, `flatpak-spawn`) is a
+#     literal first word that is NOT the simulator.
+#
+# The DECISION is taken on the RAW template, before `subst`, because that is the
+# only place a `$terminal` is still distinguishable from what it expands to. The
+# SUBSTITUTION is performed on the substituted string -- safe precisely BECAUSE
+# the word passed these tests: a literal carrying no `$` and no `[` is what
+# `subst` leaves alone, so it is still the first word afterwards.
+#
+# A first word is taken by regexp, not `lindex`: a `cmd` template is free text a
+# user may hand-edit in a simrc and is not required to be a valid Tcl list.
+proc sim_cmd_exe_plan {tool cmd} {
+  set word {}
+  regexp {^[ \t]*([^ \t\n]+)} $cmd -> word
+  set exe [sim_registry_exe $tool $cmd]
+  if {$exe eq {}} { return [dict create status none exe {} word $word] }
+  if {$word eq {}} { return [dict create status declined exe $exe word {}] }
+  if {[string first {$} $word] >= 0 || [string first {[} $word] >= 0} {
+    return [dict create status declined exe $exe word $word]
+  }
+  # `file tail` on a bare `~nosuchuser` RAISES (see sim_cmd_is_xyce_word), and
+  # `proc simulate` does not catch this proc. A word we cannot take the tail of
+  # is not the registered executable -- CS226f.
+  if {[catch {expr {[file tail $word] eq [file tail $exe]}} same] || !$same} {
+    return [dict create status declined exe $exe word $word]
+  }
+  return [dict create status applied exe $exe word $word]
+}
+
+# Do words APPENDED to this template reach the simulator's argv unchanged, or
+# does the template's own shape take them somewhere else? Returns the reason it
+# cannot, or {} when nothing is in the way.
+#
+# ⚠ THIS IS THE HALF `sim_cmd_takes_flags` CANNOT SEE. That proc answers about
+# the FIRST word; a template whose first word is the simulator can still hand
+# trailing words to something else, and `proc execute` opens the whole string as
+# a Tcl PIPELINE (`open "|$args"`).
+#
+# MEASURED 2026-09-07, Tcl 8.6, through `open "|..."` exactly as `proc execute`
+# does it, with two argv-echoing shell scripts A and B:
+#   `A one | B two -D casemode=preserve`   -> B_ARGV[3]: two -D casemode=preserve
+#   `A one |& B two -D casemode=preserve`  -> B_ARGV[3]: two -D casemode=preserve
+#   `A one -D casemode=preserve`           -> A_ARGV[3]: one -D casemode=preserve
+#   `A one & -D casemode=preserve`         -> A_ARGV[4]: one & -D casemode=preserve
+#   `A one|B two -D casemode=preserve`     -> A_ARGV[4]: one|B two -D casemode=...
+#   `A one > f -D casemode=preserve`       -> A_ARGV[3]: one -D casemode=preserve
+# and, added in the close-out round because the rule below claimed them without
+# ever having driven them:
+#   `A one "a | b" -D casemode=preserve -D casemodewrite`
+#                                          -> A_N=6, A_ARGV[2]: <a | b>,
+#                                             A_ARGV[3..6]: -D casemode=preserve
+#                                             -D casemodewrite
+#   `A one {a | b} -D casemode=preserve -D casemodewrite`  -> identical
+#   `A -b deck -c "run | wrdata out v(a)" -D casemode=preserve`
+#                                          -> A_N=6, A_ARGV[4]: <run | wrdata
+#                                             out v(a)>, A_ARGV[5..6]: the flags
+# So:
+#   * a `|` or `|&` WORD is a stage separator and trailing words go to the LAST
+#     stage -- `tee`, `grep`, whatever the user piped into. Appending there does
+#     not merely fail; it puts ngspice's flags on another program's command line
+#     and reports "appending -D casemode=preserve" while doing it;
+#   * a GLUED `a|b` is ONE literal argument to Tcl, so the flags DO reach the
+#     simulator. A row like that is broken by its own author, and declining it
+#     would be a second defect wearing the first one's clothes;
+#   * a QUOTED or BRACED `|` is likewise not a separator -- the last three
+#     measurements above -- and `-c "run | wrdata out"` is not a hypothetical
+#     shape, it is how an ngspice control line is spelled. Answering `pipeline`
+#     there loses the registered case mode on a WELL-FORMED row and tells the
+#     user their one-stage command is a pipeline. That was live until the
+#     close-out round;
+#   * a `&` that is not the LAST word stops backgrounding the run AND is handed
+#     to the simulator as a stray argv word, so appending after one changes the
+#     run in two ways at once;
+#   * a redirection is fine: `>` eats its filename and the rest still lands on
+#     the program.
+
+# The words `open "|..."` will actually see. THIS IS Tcl's OWN SPLIT, not a
+# whitespace scan: `proc execute` collects its `args` as a LIST, `open "|$args"`
+# re-parses that list's string form with LIST rules, so braces and double quotes
+# group -- which is why the three quoted measurements above land on the
+# simulator. An earlier revision scanned whitespace and claimed to be "Tcl's
+# rule, word for word"; it was not, and the claim cost a well-formed row its
+# case mode.
+#
+# THE FALLBACK IS NOT A SECOND OPINION. A `cmd` is free text a user may hand-edit
+# in a simrc and is not required to be a well-formed list (an unbalanced quote or
+# brace). Such a string cannot reach `open` at all -- `eval execute $st $cmd`
+# raises on it first -- so the whitespace scan here is only about answering
+# SOMETHING rather than raising inside `proc simulate`, which does not catch this.
+proc sim_cmd_run_words {cmd} {
+  if {[catch {lrange $cmd 0 end} words]} {
+    return [regexp -all -inline {[^ \t\n]+} $cmd]
+  }
+  return $words
+}
+
+proc sim_cmd_trailing_reason {cmd} {
+  set words [sim_cmd_run_words $cmd]
+  foreach w $words {
+    if {$w eq {|} || $w eq {|&}} { return pipeline }
+  }
+  if {[lindex $words end] eq {&}} { return background }
+  return {}
+}
+
+# Is this template's first word the simulator itself, so that appended words land
+# on ITS argv? See sim_compose_cmd's placement ruling. NOTE this is only the
+# FIRST-word half of the placement question; sim_cmd_trailing_reason is the other.
+proc sim_cmd_takes_flags {plan} {
+  if {[dict get $plan status] eq {applied}} { return 1 }
+  if {[dict get $plan status] ne {none}} { return 0 }
+  set word [dict get $plan word]
+  if {$word eq {}} { return 0 }
+  if {[string first {$} $word] >= 0 || [string first {[} $word] >= 0} { return 0 }
+  # `file tail` can raise -- see sim_cmd_is_xyce_word.
+  if {[catch {file tail $word} t]} { return 0 }
+  return [string match -nocase {ngspice*} $t]
+}
+
+# Compose the command the plain Simulate path will actually run. A PURE FUNCTION
+# of the two strings and the registry, so the whole wiring is driveable without
+# launching a simulator.
+#
+# `rawcmd` is the template as stored; `subcmd` is that template after
+# `proc simulate`'s own `subst`. They are separate arguments because the exe
+# decision may only be taken on the first and the edit may only be applied to the
+# second (see sim_cmd_exe_plan).
+#
+# Returns a dict: `cmd` the composed string, `exe_status`/`exe`/`word` from the
+# plan, `mode` the requested case mode, `args`/`args_status` the registry's extra
+# arguments, `flags` the words appended ({} when none) and `flag_status`:
+#   none         nothing was requested (the `fold` default -- the usual answer)
+#   appended     the flags are on the command line
+#   template     the template names `casemode` itself, so it was left alone
+#   unplaceable  a mode WAS requested and there is nowhere safe to put it
+# and `flag_reason`, which is {} unless the status is `unplaceable`:
+#   word         the first word is not the simulator (a terminal, a wrapper, a
+#                shell, a variable)
+#   pipeline     the first word IS the simulator, but the template is a Tcl
+#                pipeline and trailing words go to its LAST stage
+#   background   the template ends in `&`
+#
+# RULING -- the flags are appended ONLY where the first word is known to be the
+# simulator, and this was a DEFECT in 0506's first revision, caught by driving
+# row 0. `$terminal -e {ngspice -i "$N" -a || sh}` had the exe correctly declined
+# and the flags appended anyway, producing `xterm -e {ngspice ...} -D
+# casemode=preserve` -- flags for the TERMINAL EMULATOR, two levels out from the
+# simulator they were meant for. The measurement that licenses appending is about
+# a DIRECT ngspice invocation and says nothing about a wrapped one.
+#
+# Two routes to that confidence, and no third:
+#   * `exe_status` is `applied` -- the first word's tail matched the registered
+#     executable, so the first word IS the simulator, definitively;
+#   * nothing is registered and the first word's tail matches `ngspice*` -- the
+#     convenience route for a user who moved only the global floor.
+# Everything else -- a shell (`sh -c "..."`), a terminal, a launcher, an `mpirun`
+# -- is `unplaceable`, because trailing words on those do not reach the
+# simulator's argv and appending anyway is how a configuration starts lying.
+#
+# ⚠ AND THE FIRST WORD IS NOT ENOUGH, which is what the first revision of this
+# proc got wrong a second time. A template can BEGIN with the simulator and still
+# send trailing words elsewhere: `ngspice -b "$N" | tee sim.log` starts with
+# ngspice, and `proc execute`'s `open "|$args"` gives `-D casemode=preserve` to
+# `tee`. Measured, with the rest of the pipeline evidence, above
+# sim_cmd_trailing_reason. So a pipeline (and a trailing `&`) is `unplaceable`
+# too, and the report says WHICH of the two reasons it was -- `flag_reason`
+# `word` or `pipeline`/`background`.
+#
+# ⚠ THE TWO DECISIONS READ DIFFERENT STRINGS, ON PURPOSE, AND THE PLACEMENT ONE
+# READS THE SUBSTITUTED FORM. This is not symmetry that was overlooked; each
+# question has exactly one string that can answer it.
+#   * THE EXE decision (sim_cmd_exe_plan, and the first-word half of the
+#     placement question, through the plan it returns) reads `rawcmd`, because
+#     the RAW template is the only place `$terminal` is still distinguishable
+#     from what it expands to. Taken on the substituted string, row 0 would be
+#     `xterm -e {ngspice ...}` -- declined for a different reason -- and
+#     CS202b's `$SIMDIR/ngspice`, whose SUBSTITUTED first word does have a
+#     matching tail, would be applied to a string in which one word may have
+#     become several.
+#   * THE TRAILING decision reads the COMPOSED, SUBSTITUTED `cmd`, because
+#     `proc simulate` runs `eval execute $st $cmd` on exactly that string and
+#     `open "|$args"` is what decides where a trailing word lands. Taking it on
+#     `rawcmd` was a live hole until the close-out round: MEASURED 2026-09-07,
+#     registry ngspice at `-casemode preserve`, raw
+#     `ngspice -b -r "$n.raw" "$N" $env(NGPOST)` with substituted form
+#     `ngspice -b -r /tmp/x.raw /tmp/x.spice | tee sim.log` composed
+#     `flag_status appended` and the note "Case mode: appending -D
+#     casemode=preserve -D casemodewrite" -- with the flags on `tee`'s argv.
+#     `$env(...)`, `$terminal` and a `$::name` from the user's simrc all resolve
+#     in `proc simulate`'s scope, so this is a user-reachable route and not a
+#     contrivance. Rows CS228/CS228b.
+#     ⚠ AND IT IS NOT MERELY A SUPERSET, which is what a first draft of this
+#     comment claimed. A `$var` cannot delete a `|` that is already in the
+#     template, but a COMMAND SUBSTITUTION can -- MEASURED 2026-09-07, Tcl 8.6:
+#     `subst -nobackslashes {ngspice -b [lindex {a | b} 0]}` is `ngspice -b a`.
+#     A raw-string test calls that a pipeline; the string that runs has one
+#     stage, so the raw answer was a false positive and losing it is the point.
+#     Not measured: whether any shipped or user row spells a `[...]` that way.
+#
+# THE TWO REASONS ARE ORDERED, first word first, and the order is a live
+# user-visible choice rather than a tie-break: on `cat "$N" | ngspice -b` the
+# LAST stage of the pipeline IS the simulator, so the `pipeline` sentence
+# ("trailing words go to its LAST stage, not to the simulator") would be FALSE
+# there.
+#
+# ⚠ AND THE `word` SENTENCE WAS NOT TRUE THERE EITHER, WHICH THIS COMMENT
+# CLAIMED UNTIL THE CLOSE-OUT ROUND. It said "there is nowhere to put -D
+# casemode= where the simulator would see it"; on that shape the end of the
+# command is exactly such a place, measured through the real
+# `open "|$args"` path. Both sentences were false and the arm order merely
+# chose which falsehood shipped. The `word` sentence now says what is really
+# so -- the command does not START with the simulator, so xschem will not guess
+# -- which is true on every shape that reaches it, including this one. That a
+# last-stage simulator COULD take the flags is a real opening and is left
+# unfixed on purpose: it is a behaviour change, not a wording one. Row 0 --
+# `$terminal -e {ngspice ... || sh}` -- is NOT what pins this: `||` is not a Tcl
+# stage separator, and since sim_cmd_run_words models Tcl's quoting the braced
+# `||` is not even a candidate, so row 0 answers `word` whichever way the arms
+# are ordered (MEASURED 2026-09-07: swapping only the two elseif arms left the
+# whole suite ALL PASS at 47). CS225b is the row that moves on the order alone;
+# CS225 pins row 0's answer.
+#
+# THE EXE IS NOT AFFECTED BY ANY OF THIS. Word 0 of a pipeline is still the first
+# stage's program (measured: the leading words reach A), so a registered exe is
+# still applied to a piped row -- only the trailing FLAGS are unplaceable. Row
+# CS223d pins that, because it is the half that already worked.
+#
+# RULING -- `unplaceable` is REPORTED, never silent, and so is a DECLINED exe and
+# a dropped `-args`. The user configured something and is not getting it;
+# swallowing that would be this issue's own defect one layer along.
+#
+# RULING -- an already-hand-written `casemode` in the template WINS, and nothing
+# is appended. A user who typed `-D casemode=distinguish` into their `cmd` has
+# stated a preference at the same level of explicitness as the Case field, and
+# two contradictory `-D casemode=` words on one command line is a coin toss
+# dressed as a configuration.
+#
+# ⚠ THE REGISTRY'S `-args` IS NOT PLACED, ONLY REPORTED, and `-nospiceinit` is
+# not read at all. `-n` is already ruled ASE-L-only in
+# doc/claude/specs/simulator_profiles.md 18.5 (ASE-L probes the binary
+# immediately beforehand; the plain path runs no probe, so suppressing a user's
+# init file here would happen with nothing watching the result). `-args` has no
+# such ruling: carrying it would make stock Simulate a second implementation of
+# ase::run_cmd, so it is reported at tag `error` rather than carried or
+# swallowed, and the placement question is on the owed ledger as rule
+# `1238_args_placement`.
+proc sim_compose_cmd {tool rawcmd subcmd} {
+  set plan [sim_cmd_exe_plan $tool $rawcmd]
+  set cmd $subcmd
+  if {[dict get $plan status] eq {applied}} {
+    # `[list $exe]` and not a bare interpolation: `proc simulate` runs this
+    # string through `eval execute $st $cmd`, which re-parses it as a Tcl
+    # command line, and a registered path with a space in it would otherwise
+    # split into two words and run neither.
+    if {[regexp {^([ \t]*)([^ \t\n]+)(.*)$} $cmd -> lead word rest]} {
+      set cmd $lead[list [dict get $plan exe]]$rest
+    }
+  }
+  set flags [sim_run_flags $tool $rawcmd]
+  set fstatus none
+  set freason {}
+  if {[llength $flags]} {
+    if {[regexp {casemode} $rawcmd]} {
+      set fstatus template
+      set flags {}
+    } elseif {![sim_cmd_takes_flags $plan]} {
+      set fstatus unplaceable
+      set freason word
+    } elseif {[set tr [sim_cmd_trailing_reason $cmd]] ne {}} {
+      set fstatus unplaceable
+      set freason $tr
+    } else {
+      set fstatus appended
+      append cmd { } [join $flags { }]
+    }
+  }
+  set eargs {}
+  set astatus none
+  # Only worth saying when the registered program IS what is about to run: a
+  # declined exe already carries its own sentence, and repeating it about the
+  # arguments of a program that is not starting is noise.
+  if {[dict get $plan status] eq {applied}} {
+    set eargs [sim_registry_args $tool $rawcmd]
+    if {[llength $eargs]} { set astatus dropped }
+  }
+  return [dict create tool $tool cmd $cmd \
+              mode [sim_registry_casemode $tool $rawcmd] \
+              exe_status [dict get $plan status] \
+              exe [dict get $plan exe] word [dict get $plan word] \
+              args $eargs args_status $astatus \
+              flags $flags flag_status $fstatus flag_reason $freason]
+}
+
+# Say what the composition did, once, at run time. Returns the lines so the
+# behaviour is testable without a CIW (`ciw_echo` is silent with no window).
+#
+# RULING -- a DECLINED exe, a DROPPED `-args` and an UNPLACEABLE mode are all
+# reported at tag `error`, not `note`. In each case the user configured
+# something, the dialog measured it, and the run is not honouring it. A quiet
+# note would leave them with a measurement of one binary and the results of
+# another -- the defect this whole issue is about. Only a successful append is a
+# `note`, and only because a user who asked for a mode and got it is entitled to
+# see that on the record without it reading as a problem.
+proc sim_compose_report {c} {
+  set out {}
+  if {[dict get $c exe_status] eq {declined}} {
+    lappend out [list error "Registered simulator '[dict get $c exe]' NOT used:\
+      this command starts with '[dict get $c word]'. Edit it in Simulation >\
+      Configure simulators and tools, or run from ASE-L. The Test button\
+      measured the registered program, not this one."]
+  }
+  if {[dict get $c args_status] eq {dropped}} {
+    lappend out [list error "Registered simulator arguments\
+      '[join [dict get $c args] { }]' NOT used: plain Simulate composes the\
+      program and the case mode only. Put them in the command, or run from\
+      ASE-L."]
+  }
+  switch -- [dict get $c flag_status] {
+    appended {
+      lappend out [list note "Case mode: appending\
+        [join [dict get $c flags] { }]"]
+    }
+    unplaceable {
+      switch -- [dict get $c flag_reason] {
+        pipeline {
+          lappend out [list error "Case mode '[dict get $c mode]' requested, but\
+            this command is a pipeline, so trailing words go to its LAST stage,\
+            not to the simulator. The run uses whatever mode that command\
+            produces. Put -D casemode= on the first stage yourself, or run from\
+            ASE-L."]
+        }
+        background {
+          lappend out [list error "Case mode '[dict get $c mode]' requested, but\
+            this command ends in '&', so appending would stop it running in the\
+            background and hand the simulator a stray '&'. The run uses whatever\
+            mode that command produces. Put -D casemode= before the '&'\
+            yourself, or run from ASE-L."]
+        }
+        default {
+          ## ⚠ THIS SENTENCE USED TO CLAIM "there is nowhere to put -D
+          ## casemode= where the simulator would see it", AND THAT IS FALSE ON
+          ## THE COMMONEST SHAPE THAT REACHES IT. On `cat "$N" | ngspice -b`
+          ## the simulator is the pipeline's LAST stage, so trailing words DO
+          ## reach it -- measured through the real `open "|$args"` path with an
+          ## argv-echoing stub: `cat deck | A -b -D casemode=preserve` gives A
+          ## four extra argv words. What is actually true is narrower and is
+          ## what the code does: the command does not START with the simulator,
+          ## so xschem will not GUESS where the flags belong.
+          lappend out [list error "Case mode '[dict get $c mode]' requested, but\
+            this command starts with '[dict get $c word]', not the simulator, so\
+            xschem cannot tell where -D casemode= belongs. The run uses whatever\
+            mode that command produces. Put -D casemode= in the command\
+            yourself, or run from ASE-L."]
+        }
+      }
+    }
+  }
+  foreach l $out { catch {ciw_echo [lindex $l 1] [lindex $l 0]} }
+  return $out
+}
+
 
 # =========================================================================
 # THE PROBE (casemode batch item 7; doc/claude/specs/simulator_profiles.md 11)
@@ -5258,25 +5862,20 @@ proc simulate {{callback {}}} {
     }
     set cmd [subst -nobackslashes $sim($tool,$def,cmd)]
 
-    ## ⚠ ISSUE 0506's COMPOSER IS GONE, AND THIS IS THE ONE USER-VISIBLE LOSS OF
-    ## THE `annotate` MERGE. 0506 had taught this proc -- stock xschem's own
-    ## Simulation menu, the button most users actually press -- to compose its
-    ## command from the simulator profile, so that the executable a user
-    ## configured and the case mode item 13's Test button had PROVED the binary
-    ## could deliver reached the run instead of stopping at the dialog. Without
-    ## it a user can once again probe one binary and simulate with another, at
-    ## `fold`.
-    ##
-    ## It is gone because the store it read is gone: the profile fields moved
-    ## onto the ASE-L registry entry, and this proc knows nothing about ASE-L.
-    ## Re-teaching it to ask ase::sim_status is real work with real questions in
-    ## it -- `sim()` is per-TOOL with N rows and the registry is one in-force
-    ## entry, and stock xschem must still run with no ASE-L session anywhere --
-    ## so it is filed rather than smuggled into a merge.
-    ##
-    ## ASE-L's own run path lost NOTHING: ase::run_cmd composes exe, args, `-n`
-    ## and `-D casemode=` from the registry entry, and ase::run_precheck still
-    ## refuses a `distinguish` request the binary cannot deliver.
+    ## COMPOSE FROM THE SIMULATOR REGISTRY -- issues 0506 and 1238.
+    ## Until 0506 landed, everything the Simulators dialog measured about a
+    ## registered simulator -- its executable, and the case mode its Test button
+    ## proved it could deliver -- stopped at the dialog: this proc ran `cmd`
+    ## verbatim, so a user could probe one binary and simulate with another, at
+    ## `fold`. The `annotate` merge moved the store onto the ASE-L registry and
+    ## the bridge went with it; 1238 is the user's ruling to rebuild it there.
+    ## Nothing registered and the shipped `fold` floor -- stock xschem, ase.tcl
+    ## sourced, no ASE-L session anywhere -- composes a BYTE-IDENTICAL command
+    ## line. See sim_compose_cmd for the rulings that keep the rewrite narrow
+    ## enough to be sound, and for the two shipped templates it must DECLINE.
+    set compose [sim_compose_cmd $tool $sim($tool,$def,cmd) $cmd]
+    set cmd [dict get $compose cmd]
+    sim_compose_report $compose
 
     # window interface       tabbed interface
     # -----------------------------------------

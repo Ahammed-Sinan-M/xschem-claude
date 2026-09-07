@@ -68,6 +68,43 @@ source [file join $here ase_design_window.tcl]  ;# ase_bind_design_window (issue
 source [file join $here sharefarm.tcl]
 set scratch [test_scratch ase_core]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## src/xschem.tcl loads the registry once at startup, so without this row and
+## the call above it every expectation below that touches the run command, the
+## save tier or the case of a vector name is really an expectation about the
+## developer's own machine. Measured before the fix: 7 FAILED here under the
+## developer's HOME, ALL PASS under a HOME with no registry.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
+## ISO1377b -- THE HELPER'S OWN ROUND TRIP, and it is here because the row above
+## cannot fence the whole helper. MEASURED on this box: at the instant a suite's
+## first line runs the capability cache is EMPTY (0 entries) and the rc seeds
+## ::ASE_SIMULATORS / ::ASE_SIMULATOR are both {}, so two of
+## test_sim_registry_isolate's three clears are unreachable from any HOME anyone
+## can construct -- they are defence in depth against a WORKAREA rc (layer 1 of
+## the registry design, one line away in sky130A/cadence_style_rc) and against a
+## suite that probes before it isolates. Lines nothing can red are lines that
+## quietly stop working, so this row makes the dirty precondition ITSELF and
+## then demands the helper undo all three: an entry in force, a primed
+## capability answer for it, and both rc seeds set.
+set iso_caps_before [dict size $::ase::sim_caps]
+ase::sim_register iso1377fake /bin/sh
+ase::sim_select   iso1377fake
+dict set ::ase::sim_caps [list /bin/sh {}] {known 1 usable 1}
+set ::ASE_SIMULATORS [list [dict create name iso1377fake path /bin/sh]]
+set ::ASE_SIMULATOR  iso1377fake
+check "ISO1377b the dirty precondition is really dirty (non-vacuity guard)" \
+  [list [test_sim_registry_state] [dict size $::ase::sim_caps] \
+        $::ASE_SIMULATOR] \
+  [list {1 iso1377fake iso1377fake registry} [expr {$iso_caps_before + 1}] iso1377fake]
+test_sim_registry_isolate
+check "ISO1377b the helper clears the registry, the measured capabilities and both rc seeds" \
+  [list [test_sim_registry_state] [dict size $::ase::sim_caps] \
+        $::ASE_SIMULATORS $::ASE_SIMULATOR] \
+  {{0 {} {} path} 0 {} {}}
+
 # --- scratch lib/cell/view fixture + registry --------------------------------
 # clean nfet schematic: nfet_test_claude minus corner + simulator_commands_shown
 set sch_text {v {xschem version=3.4.7RC file_version=1.2}

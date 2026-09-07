@@ -1357,6 +1357,465 @@ check {R12 saving the list again keeps whatever permissions you had put on your 
   [list 1 0600 1 0600 1]
 
 ## ===========================================================================
+## R11b-R11e: ISSUE 1286 -- A SAVE THAT WENT SOMEWHERE ELSE MUST NOT REPORT
+## SUCCESS.
+## ===========================================================================
+## R11 above proves an interrupted save does not empty the list you had. It
+## says nothing about the save that SUCCEEDS INTO THE WRONG PLACE, which is
+## worse: the writer returns 1, the dialog's Save line names a path it did not
+## write, and there is no sentence anywhere. Measured on this writer before
+## these rows:
+##   the path is a DIRECTORY -> rc 1, ZERO reports, the new list lands at
+##                              <dir>/<name>.new INSIDE the directory, where no
+##                              reader ever looks
+##   the path is a SYMLINK   -> rc 1, ZERO reports, the LINK is REPLACED by a
+##                              regular file and the real file stays as it was
+## Both come from `file rename -force`, which succeeds in both cases, so there
+## is nothing to check afterwards and the guard has to be a PRECONDITION.
+## Symlinking a shared list into a dotfiles repo is the obvious use of a file
+## whose whole point is that it is a plain script you can keep and share.
+##
+## ⚠ THE RELATIVE-TARGET CORRECTION IS THE POINT OF R11c. Issue 1276's own
+## recommended one-liner, `file normalize [file link $path]`, resolves a
+## RELATIVE link target against the CURRENT WORKING DIRECTORY: for a link at
+## <d>/sub/link -> real it answers <d>/real, not <d>/sub/real. R11c makes
+## exactly that link and calls the writer FROM A DIFFERENT DIRECTORY, so a fix
+## built on that one-liner writes the user's list into the cwd and reds both
+## the "the real file has the new entry" term and the stray-file term beside
+## it. Join against the LINK's own directory instead.
+##
+## ⚠ AND THE ORDER IS PART OF THE SUBJECT. A symlink to a DIRECTORY answers
+## `file isdirectory` 1, so the chain has to be resolved BEFORE the directory
+## guard; a DANGLING symlink answers exists=0 / isfile=0 / isdirectory=0 while
+## `file link` still succeeds, so resolution has to precede the permission
+## capture and the temp name too.
+
+set W11BDIR [file join $scratch w11b_target]
+file mkdir $W11BDIR
+a_reset
+a_ans ase::sim_register dir11b $STUB
+a_ans ase::sim_said_clear
+set R11BR [a_ans ase::sim_write_conf $W11BDIR]
+set R11BSAID [a_ans ase::sim_said]
+## ⚠ THE SENTENCE IS A TERM, NOT DECORATION. Without it a build that merely
+## FAILED somewhere further down -- an open that could not open a directory,
+## say -- would satisfy "returns 0" and "left nothing inside" while telling the
+## user something that does not name the actual problem.
+check {R11b a path that is an existing FOLDER is refused before anything is opened -- the save returns failure, puts nothing at all inside the folder, and says in plain English that it is a folder rather than reporting some error from further down} \
+  [list $R11BR [expr {[a_count $R11BSAID {a folder, not a settings file}] >= 1}] \
+        [llength [glob -nocomplain -directory $W11BDIR *]] \
+        [expr {[file isdirectory $W11BDIR] ? 1 : 0}]] \
+  [list 0 1 0 1]
+
+set W11CDIR [file join $scratch w11c sub]
+file mkdir $W11CDIR
+set W11CREAL [file join $W11CDIR real_simulators]
+set W11CLINK [file join $W11CDIR link_simulators]
+catch {file delete -force $W11CLINK}
+a_wr $W11CREAL "# the simulator list the user really keeps here\n" 0644
+set R11CMK [catch {file link -symbolic $W11CLINK real_simulators}]
+a_reset
+a_ans ase::sim_register link11c $STUB
+a_ans ase::sim_said_clear
+## Saved FROM the link's PARENT's parent, so the wrong resolution has a
+## different, visible answer to the right one.
+set R11CCWD [pwd]
+cd [file join $scratch w11c]
+set W11CSTRAY [file join [pwd] real_simulators]
+catch {file delete -force $W11CSTRAY}
+set R11CR [a_ans ase::sim_write_conf $W11CLINK]
+set R11CSTRAY [expr {[file exists $W11CSTRAY] ? 1 : 0}]
+cd $R11CCWD
+set R11CTYPE [expr {[catch {file type $W11CLINK} R11CT] ? {RAISED} : $R11CT}]
+set R11CTXT [a_slurp $W11CREAL]
+check {R11c saving THROUGH a symbolic link whose target is written the relative way writes the real file and leaves your link a link -- it does not replace the link with a regular file, and it does not resolve the relative target against whatever directory xschem happened to be started from} \
+  [list $R11CMK $R11CR $R11CTYPE \
+        [expr {[a_count $R11CTXT {link11c}] >= 1}] $R11CSTRAY] \
+  [list 0 1 link 1 0]
+
+## A TWO-HOP CHAIN, A DANGLING LINK, AND A CHAIN TOO DEEP TO BE ANYTHING BUT A
+## LOOP. A dangling link is the ordinary shape of `ln -s ase_simulators
+## ~/dotfiles/...` made before the file exists; it must WRITE THE TARGET, not
+## replace the link. ⚠ `file link` REFUSES to create a dangling link (measured:
+## `could not create new link ...: target "..." doesn't exist`), so that one is
+## made with `ln -s`.
+set W11D [file join $scratch w11d]
+file mkdir $W11D
+set W11DREAL [file join $W11D hopreal]
+a_wr $W11DREAL "# two hops away\n" 0644
+catch {file delete -force [file join $W11D hop1]}
+catch {file delete -force [file join $W11D hop0]}
+set R11DMK1 [catch {file link -symbolic [file join $W11D hop1] hopreal}]
+set R11DMK2 [catch {file link -symbolic [file join $W11D hop0] hop1}]
+a_reset
+a_ans ase::sim_register hop11d $STUB
+a_ans ase::sim_said_clear
+## ⚠ SAVED FROM SOMEWHERE THAT IS NOT THE LINKS' OWN FOLDER, for the same
+## reason as R11c and for one more: a build that resolves a relative target
+## against the CWD writes the user's list to a file named after the LINK's
+## target in whatever directory xschem was started from. Measured while
+## sabotaging this very fix -- `hop1`, `dangreal` and `l1` appeared in the
+## REPO ROOT. Doing it from the scratch tree keeps that debris out of the
+## developer's working tree.
+set R11DCWD [pwd]
+cd $scratch
+set R11DR1 [a_ans ase::sim_write_conf [file join $W11D hop0]]
+set R11DT1 [expr {[catch {file type [file join $W11D hop0]} R11DTT1] ? {RAISED} : $R11DTT1}]
+set R11DTXT1 [a_slurp $W11DREAL]
+
+set W11DDANG [file join $W11D dangreal]
+catch {file delete -force $W11DDANG}
+catch {file delete -force [file join $W11D dang]}
+set R11DMK3 [catch {exec ln -s dangreal [file join $W11D dang]}]
+a_reset
+a_ans ase::sim_register dang11d $STUB
+a_ans ase::sim_said_clear
+set R11DR2 [a_ans ase::sim_write_conf [file join $W11D dang]]
+set R11DT2 [expr {[catch {file type [file join $W11D dang]} R11DTT2] ? {RAISED} : $R11DTT2}]
+set R11DTXT2 [a_slurp $W11DDANG]
+
+set W11DDEEP [file join $W11D deepreal]
+a_wr $W11DDEEP "# twenty hops away\n" 0644
+set R11DMK4 0
+for {set a_i 19} {$a_i >= 0} {incr a_i -1} {
+  catch {file delete -force [file join $W11D l$a_i]}
+  set a_tgt [expr {$a_i == 19 ? {deepreal} : "l[expr {$a_i + 1}]"}]
+  if {[catch {file link -symbolic [file join $W11D l$a_i] $a_tgt}]} { set R11DMK4 1 }
+}
+a_reset
+a_ans ase::sim_register deep11d $STUB
+a_ans ase::sim_said_clear
+set R11DR3 [a_ans ase::sim_write_conf [file join $W11D l0]]
+set R11DSAID3 [a_ans ase::sim_said]
+cd $R11DCWD
+set R11DTXT3 [a_slurp $W11DDEEP]
+## Nothing named after a link TARGET may appear where the save was made from.
+set R11DSTRAY 0
+foreach a_n {hop1 hopreal dangreal l1 deepreal} {
+  if {[file exists [file join $scratch $a_n]]} { incr R11DSTRAY }
+}
+check {R11d a two-hop chain and a link made before its file exists both resolve to the real file and stay links, while a chain more than sixteen deep is refused with a sentence and writes nothing at all} \
+  [list $R11DMK1 $R11DMK2 $R11DMK3 $R11DMK4 \
+        $R11DR1 $R11DT1 [expr {[a_count $R11DTXT1 {hop11d}] >= 1}] \
+        $R11DR2 $R11DT2 [expr {[a_count $R11DTXT2 {dang11d}] >= 1}] \
+        $R11DR3 [expr {[a_count $R11DSAID3 {more than 16}] >= 1}] \
+        [a_count $R11DTXT3 {deep11d}] \
+        [llength [glob -nocomplain -directory $W11D *.new]] $R11DSTRAY] \
+  [list 0 0 0 0 1 link 1 1 link 1 0 1 0 0 0]
+
+## R11e IS THE COUNTERWEIGHT, and it is green before the fix on purpose: a
+## guard that refuses the two shapes above is worthless if it also refuses the
+## ordinary one. Its second half pins E4's promise unchanged -- a path whose
+## FOLDER does not exist is still refused with a sentence, and no folder is
+## made behind the user's back -- so the fix cannot quietly grow a `file mkdir`
+## that the sibling writer in op_param_lists.tcl has and this one never had.
+set W11E [file join $W11DIR plain_new_list]
+catch {file delete -force $W11E}
+a_reset
+a_ans ase::sim_register plain11e $STUB
+a_ans ase::sim_said_clear
+set R11ER [a_ans ase::sim_write_conf $W11E]
+set R11ESAID [a_ans ase::sim_said]
+set R11ETXT [a_slurp $W11E]
+set R11ETYPE [expr {[catch {file type $W11E} R11ETT] ? {RAISED} : $R11ETT}]
+set W11ENODIR [file join $scratch w11e_nodir]
+catch {file delete -force $W11ENODIR}
+a_ans ase::sim_said_clear
+set R11ER2 [a_ans ase::sim_write_conf [file join $W11ENODIR deeper conf]]
+set R11ESAID2 [a_ans ase::sim_said]
+check {R11e an ordinary save into a folder that exists still works -- the file is a real file at the path that was named, with the entry in it -- and a path whose folder does not exist is still refused with a sentence instead of the folder being made behind your back} \
+  [list $R11ER $R11ETYPE [expr {[a_count $R11ETXT {plain11e}] >= 1}] $R11ESAID \
+        $R11ER2 [expr {[string length $R11ESAID2] > 0}] \
+        [expr {[file exists $W11ENODIR] ? 1 : 0}]] \
+  [list 1 file 1 {} 0 1 0]
+
+## ---------------------------------------------------------------------------
+## R11f-R11i: THE TILDE, THE BOUND, AND THE ARM NOTHING PROVED.
+## Repair round, 2026-09-07 -- issues 1286 AND 1276, because this resolver and
+## op_param_lists::_resolve_target are copies of each other and the hole is in
+## both.
+## ---------------------------------------------------------------------------
+## ⚠ `file join` AND `file normalize` EXPAND A LEADING TILDE; THE KERNEL DOES
+## NOT. A symlink whose stored target is literally `~/notes` is, to the
+## operating system, a link into a folder NAMED `~` beside the link: readlink
+## says `~/notes`, and with no such folder there the link reads as DANGLING.
+## Measured in tclsh: [file join /a/b {~/x}] answers `~/x`, and `file normalize`
+## then answers `/home/<you>/x`. So the resolver turned such a link into a path
+## in the user's HOME and the writer OVERWROTE WHATEVER FILE WAS ALREADY THERE
+## while reporting success -- issue 1276's own headline symptom (bytes
+## somewhere else, rc still 1) arriving through issue 1276's own fix.
+##
+## THE REMEDY IS MEASURED, NOT INVENTED: put a `./` in front of the target
+## before joining. [file normalize [file join /a/b ./~/x]] answers `/a/b/~/x`,
+## kernel-identical, and the other four target shapes are unchanged --
+## `sub/y` -> /a/b/sub/y, `/abs/z` -> /abs/z (absolute still wins),
+## `../up.conf` -> /a/up.conf.
+##
+## R11f overrides HOME for the duration of the call, so the row neither depends
+## on nor writes into the developer's real home folder.
+set W11F [file join $scratch w11f]
+file delete -force $W11F
+file mkdir $W11F
+## A folder literally named ~, which is what the kernel makes of `~/...` in a
+## stored link target. ⚠ `file join` CANNOT BUILD THIS PATH -- it treats a bare
+## ~ as absolute and throws the prefix away -- so it is spelled with a slash.
+file mkdir $W11F/~
+set W11FHOME [file join $scratch w11f_home]
+file delete -force $W11FHOME
+file mkdir $W11FHOME
+set W11FBYST [file join $W11FHOME w11f_notes]
+a_wr $W11FBYST "KEEP ME: an unrelated file that happens to share the name\n" 0644
+set W11FLINK [file join $W11F link_list]
+set R11FMK [catch {exec ln -s {~/w11f_notes} $W11FLINK}]
+a_reset
+a_ans ase::sim_register tilde11f $STUB
+a_ans ase::sim_said_clear
+set R11FHOME0 $::env(HOME)
+set ::env(HOME) $W11FHOME
+set R11FR [a_ans ase::sim_write_conf $W11FLINK]
+set ::env(HOME) $R11FHOME0
+set R11FTYPE [expr {[catch {file type $W11FLINK} R11FT] ? {RAISED} : $R11FT}]
+set R11FBYST [a_slurp $W11FBYST]
+check {R11f a link whose stored target starts with a tilde is followed the way the system follows it -- as an ordinary folder named ~ beside the link -- so the list lands there, and an unrelated file of the same name in your home folder is left exactly as it was} \
+  [list $R11FMK $R11FR $R11FTYPE \
+        [expr {[a_count [a_slurp $W11F/~/w11f_notes] {tilde11f}] >= 1}] \
+        [expr {[a_count $R11FBYST {KEEP ME}] >= 1}] \
+        [a_count $R11FBYST {tilde11f}] \
+        [llength [glob -nocomplain -directory $W11F *.new]]] \
+  [list 0 1 link 1 1 0 0]
+
+## R11g -- AND IT MUST NOT RAISE. `file normalize` RAISES on a `~nosuchuser`
+## no password entry matches (measured: `user "nosuchuser_xschem" doesn't
+## exist`), and ase::sim_write_conf's own doc comment says it NEVER raises.
+## Measured before this repair: the writer raised, so the caller got no return
+## value and the user got no sentence.
+set W11G [file join $scratch w11g]
+file delete -force $W11G
+file mkdir $W11G
+set W11GLINK [file join $W11G link_list]
+set R11GMK [catch {exec ln -s {~nosuchuser_xschem/list} $W11GLINK}]
+a_reset
+a_ans ase::sim_register tilde11g $STUB
+a_ans ase::sim_said_clear
+set R11GR [a_ans ase::sim_write_conf $W11GLINK]
+set R11GSAID [a_ans ase::sim_said]
+set R11GTYPE [expr {[catch {file type $W11GLINK} R11GT] ? {RAISED} : $R11GT}]
+## ⚠ AND IT MUST BE THE RIGHT SENTENCE. Measured in the close-out round: with
+## the `./` guard dropped but the catch kept, `file normalize` raises, the
+## catch answers empty, ase::sim_conf_target_why calls empty a link loop, and
+## this row's old "some sentence was said" term was SATISFIED BY THE WRONG
+## SENTENCE -- the user told about "a chain of symbolic links more than 16
+## deep" against a link that is one link long. The two terms below name the
+## sentence instead of counting it: it has to talk about the place the write
+## was actually refused at, and it must NOT be the link-loop sentence.
+check {R11g a link pointing into the home folder of a user who does not exist is refused with a sentence that names the folder beside the link -- not one about a chain of symbolic links, which this is not -- and does NOT raise, which is what this writer promises it never does, and your link is still a link} \
+  [list $R11GMK $R11GR \
+        [expr {[a_count $R11GSAID {~nosuchuser_xschem}] >= 1}] \
+        [a_count $R11GSAID {more than 16}] $R11GTYPE \
+        [llength [glob -nocomplain -directory $W11G *.new]]] \
+  [list 0 0 1 0 link 0]
+
+## R11h -- THE BOUND AND THE SENTENCE MUST NAME THE SAME NUMBER. The refusal
+## says "more than 16 deep". The resolver spends one pass per link and needs
+## one further pass to see that the last thing is not a link, so a loop of
+## exactly 16 passes refused a chain of exactly 16. Measured before this
+## repair: 15 saved, 16 was refused as "more than 16".
+proc a_mkchain {dir n leaf} {
+  file delete -force $dir
+  file mkdir $dir
+  a_wr [file join $dir $leaf] "# the real list\n" 0644
+  for {set i [expr {$n - 1}]} {$i >= 0} {incr i -1} {
+    set t [expr {$i == $n - 1 ? $leaf : "c[expr {$i + 1}]"}]
+    catch {file link -symbolic [file join $dir c$i] $t}
+  }
+  return [file join $dir c0]
+}
+set W11H16 [a_mkchain [file join $scratch w11h16] 16 realA]
+a_reset
+a_ans ase::sim_register bound16 $STUB
+a_ans ase::sim_said_clear
+set R11H16R [a_ans ase::sim_write_conf $W11H16]
+set R11H16TXT [a_slurp [file join $scratch w11h16 realA]]
+set W11H17 [a_mkchain [file join $scratch w11h17] 17 realB]
+a_reset
+a_ans ase::sim_register bound17 $STUB
+a_ans ase::sim_said_clear
+set R11H17R [a_ans ase::sim_write_conf $W11H17]
+set R11H17SAID [a_ans ase::sim_said]
+check {R11h a chain of exactly sixteen links still saves and only the seventeenth is refused -- the number the refusal names and the number the resolver allows are the same number} \
+  [list $R11H16R [expr {[a_count $R11H16TXT {bound16}] >= 1}] \
+        [expr {[file type $W11H16] eq {link}}] \
+        $R11H17R [expr {[a_count $R11H17SAID {more than 16}] >= 1}] \
+        [a_count [a_slurp [file join $scratch w11h17 realB]] {bound17}]] \
+  [list 1 1 1 0 1 0]
+
+## R11i -- THE ARM NOTHING PROVED. The empty-path qualifier on the link-loop
+## answer was defended by no row at all: last round's sabotage D DELETED it and
+## the suite stayed ALL PASS. ase::sim_conf_file answers empty when there is no
+## USER_CONF_DIR, and no path is not a chain of symbolic links -- that case has
+## to fall through to the writer's own reporting or the user is told about a
+## loop that does not exist.
+check {R11i asking why an EMPTY path could not be written answers nothing at all -- having no path is not the same as a chain of symbolic links -- while a real path that resolved to nothing is still named as a link chain} \
+  [list [a_ans ase::sim_conf_target_why {} {}] \
+        [a_ans ase::sim_conf_target_why [file join $scratch w11i nosuch] {}]] \
+  [list {} conf_linkloop]
+
+## ---------------------------------------------------------------------------
+## R11j-R11m: THE TEMPORARY FILE IS PART OF THE TARGET (issue 1378), AND THE
+## TILDE SHAPE THAT NEITHER DANGLES NOR RAISES.
+## Close-out round, 2026-09-07 -- issues 1286 AND 1276 again, because
+## ase::sim_write_conf and op_param_lists::write_conf are copies of each other
+## and issue 1378's hole is in BOTH. Fixed in both in one change.
+## ---------------------------------------------------------------------------
+## ⚠ THE RESOLVER ABOVE GUARDS `$path`. NOTHING GUARDED `$path.new`. The temp
+## name is deterministic, `open <tmp> w` FOLLOWS a symbolic link and
+## `file rename` does NOT, so a stale `<conf>.new` left behind as a link meant:
+## the bytes were written THROUGH the link into an unrelated file, and then the
+## LINK ITSELF was moved onto the user's simulator list. Measured on this
+## writer before the repair: rc 1, nothing said, the list is now a `link`, and
+## the bystander lost its own content and gained the simulator list. (All four
+## facts hold -- re-driven on the as-found writer in the close-out round -- but
+## this comment used to attribute them to "R11j's RED line", and R11j's tuple
+## carries neither a `said` term nor a term about the bystander's own text; its
+## fifth term says only "not byte-identical". The measurements are real; the row
+## is not where all of them come from.) It is the same family as the two holes above -- rc 1,
+## zero reports, bytes somewhere the user never named -- one step further down.
+##
+## THE REMEDY, AND WHAT IT DOES ABOUT THE RACE. A leftover temp of a kind this
+## writer could have left (a regular file, or a link) is REMOVED first, and the
+## temp is then created with CREAT|EXCL, which POSIX requires to FAIL on an
+## existing path including a symbolic link, dangling or not. Measured in tclsh
+## 8.6.17 on this tree: `open <link> {WRONLY CREAT EXCL} 0666` raises `file
+## already exists` over a link to a real file, over a DANGLING link and over a
+## directory, and the link's target is left untouched; `open <path> w` over a
+## dangling link CREATES the target. So the unlink/create window is still there
+## and is NOT closed by ordering -- what closes it is that anything planted in
+## it makes the create FAIL and the user is told, instead of the write being
+## followed somewhere else.
+##
+## ⚠ AND THE REMOVAL MUST NEVER BE `file delete -force`. Rows R11 above and W1
+## in tests/headless/test_op_param_store_1245.tcl make `<path>.new` a DIRECTORY
+## on purpose, and a user's directory at that name is not this writer's to
+## delete: `file delete -force` removes a directory tree, and `file delete`
+## with no -force removes an EMPTY one (measured, both). R11l below is the
+## fence: a NON-EMPTY directory at the temp name, with a file inside it that
+## must still be there afterwards.
+##
+## ⚠ THE PERMISSIONS DID NOT MOVE. `open <p> {WRONLY CREAT EXCL} 0666` and
+## `open <p> w` both land at 00644 under this shell's umask 0022 (measured), so
+## the explicit mode is the one Tcl was already using and R12 is unaffected.
+
+## R11j -- RED ON THE TREE AS FOUND. This is the row issue 1378 was filed for.
+set W11J [file join $scratch w11j]
+file delete -force $W11J
+file mkdir $W11J
+set W11JCONF [file join $W11J ase_simulators]
+set W11JBYST [file join $W11J unrelated_notes]
+a_wr $W11JCONF "# the simulator list the user has\n" 0644
+a_wr $W11JBYST "KEEP ME: an unrelated file the user also keeps in this folder\n" 0644
+set W11JBEFORE [a_slurp $W11JBYST]
+## The temp name is deterministic, so nothing has to be guessed to arrange this.
+set R11JMK [catch {exec ln -s unrelated_notes $W11JCONF.new}]
+a_reset
+a_ans ase::sim_register temp11j $STUB
+a_ans ase::sim_said_clear
+set R11JR [a_ans ase::sim_write_conf $W11JCONF]
+set R11JTYPE [expr {[catch {file type $W11JCONF} R11JT] ? {RAISED} : $R11JT}]
+set R11JAFTER [a_slurp $W11JBYST]
+check {R11j a stale temporary file left behind as a symbolic link is not written through -- your simulator list stays a real file of its own instead of quietly becoming a link, and the unrelated file that link pointed at keeps its own content byte for byte} \
+  [list $R11JMK $R11JR $R11JTYPE \
+        [expr {[a_count [a_slurp $W11JCONF] {temp11j}] >= 1}] \
+        [expr {$R11JAFTER eq $W11JBEFORE}] \
+        [a_count $R11JAFTER {temp11j}] \
+        [llength [glob -nocomplain -directory $W11J *.new]]] \
+  [list 0 1 file 1 1 0 0]
+
+## R11k IS THE COUNTERWEIGHT AND IT WAS GREEN ON THE TREE AS FOUND. A guard
+## that refuses a stale temp is worthless if it also refuses the ordinary
+## leftover this writer itself drops on a mid-save failure -- the user would
+## then have a Save that can never succeed again and no way to clear it from
+## inside xschem. Its sabotage is dropping the removal and keeping the
+## exclusive create.
+set W11K [file join $scratch w11k]
+file delete -force $W11K
+file mkdir $W11K
+set W11KCONF [file join $W11K ase_simulators]
+a_wr $W11KCONF "# the simulator list the user has\n" 0644
+a_wr $W11KCONF.new "ZZ_STALE_TEMP left behind by a save that was interrupted\n" 0644
+a_reset
+a_ans ase::sim_register temp11k $STUB
+a_ans ase::sim_said_clear
+set R11KR [a_ans ase::sim_write_conf $W11KCONF]
+set R11KSAID [a_ans ase::sim_said]
+set R11KTXT [a_slurp $W11KCONF]
+check {R11k an ordinary leftover temporary file from an earlier interrupted save is simply replaced -- the save still succeeds, says nothing, leaves no temporary behind and none of the stale text is in your list} \
+  [list $R11KR [expr {[catch {file type $W11KCONF} R11KT] ? {RAISED} : $R11KT}] \
+        [expr {[a_count $R11KTXT {temp11k}] >= 1}] \
+        [a_count $R11KTXT {ZZ_STALE_TEMP}] \
+        [llength [glob -nocomplain -directory $W11K *.new]] $R11KSAID] \
+  [list 1 file 1 0 0 {}]
+
+## R11l IS A FENCE AND IT WAS GREEN ON THE TREE AS FOUND. It forbids the
+## obvious wrong shape of R11j's fix -- an unconditional `file delete -force`
+## on the temp name -- from becoming a new hole of the very family this issue
+## is about. R11 above uses an EMPTY directory, which a plain `file delete`
+## also removes; this one has a file inside it that has to still be there.
+set W11L [file join $scratch w11l]
+file delete -force $W11L
+file mkdir $W11L
+set W11LCONF [file join $W11L ase_simulators]
+a_wr $W11LCONF "# keep11l the simulator list the user has\n" 0644
+set W11LBEFORE [a_slurp $W11LCONF]
+file mkdir $W11LCONF.new
+a_wr [file join $W11LCONF.new inside_the_folder] "DO NOT DELETE ME\n" 0644
+a_reset
+a_ans ase::sim_register temp11l $STUB
+a_ans ase::sim_said_clear
+set R11LR [a_ans ase::sim_write_conf $W11LCONF]
+set R11LSAID [a_ans ase::sim_said]
+check {R11l a folder sitting at the temporary name is never deleted to make room -- the save is refused with a sentence, the folder and the file inside it are still there, and the list you already had is untouched} \
+  [list $R11LR [expr {[string first {could not be saved} $R11LSAID] >= 0}] \
+        [expr {[catch {file type $W11LCONF.new} R11LT] ? {RAISED} : $R11LT}] \
+        [a_count [a_slurp [file join $W11LCONF.new inside_the_folder]] {DO NOT DELETE ME}] \
+        [expr {[a_slurp $W11LCONF] eq $W11LBEFORE}] \
+        [a_count [a_slurp $W11LCONF] {temp11l}]] \
+  [list 0 1 directory 1 1 0]
+
+## R11m -- THE TILDE SHAPE NO ROW COVERED, AND IT IS THE WORST OF THE THREE.
+## GREEN ON THE TREE AS FOUND: the `./` guard landed last round and this row
+## covers a shape that guard was never measured against. R11f uses `~/x`, which
+## DANGLES, and R11g uses `~nosuchuser/x`, which RAISES. Neither is the shape
+## that goes quietly wrong: `~<a user who really exists>/x` neither dangles nor
+## raises -- `file normalize` hands back that user's REAL home folder and the
+## writer would write there. Measured in tclsh: [file normalize [file join /a/b
+## {~root/x}]] -> /root/x, against /a/b/~root/x with the guard.
+##
+## `root` is used because it is the one account every one of these machines
+## has and the one no test may write into: if the guard is ever dropped the row
+## reds on the RETURN VALUE, because the save into /root is refused by the
+## operating system, rather than by actually putting a file there.
+set W11M [file join $scratch w11m]
+file delete -force $W11M
+file mkdir $W11M
+## The folder the kernel would traverse, named literally. `file join` cannot
+## build this -- it treats a leading ~ as absolute -- so it is spelled with a
+## slash, the same way R11f spells its `~`.
+file mkdir $W11M/~root
+set W11MLINK [file join $W11M link_list]
+set R11MMK [catch {exec ln -s {~root/list} $W11MLINK}]
+a_reset
+a_ans ase::sim_register tilde11m $STUB
+a_ans ase::sim_said_clear
+set R11MR [a_ans ase::sim_write_conf $W11MLINK]
+set R11MTYPE [expr {[catch {file type $W11MLINK} R11MT] ? {RAISED} : $R11MT}]
+check {R11m a link whose stored target names the home folder of a user who really does exist is still followed the way the system follows it -- into an ordinary folder named after that user beside the link -- and not into that user's real home folder} \
+  [list $R11MMK $R11MR $R11MTYPE \
+        [expr {[a_count [a_slurp $W11M/~root/list] {tilde11m}] >= 1}] \
+        [expr {[file exists /root/list] ? 1 : 0}] \
+        [llength [glob -nocomplain -directory $W11M *.new]]] \
+  [list 0 1 link 1 0 0]
+
+## ===========================================================================
 ## R13-R18: ISSUE 0938 -- A SIMULATOR THAT IS RUNNABLE MUST RUN.
 ## ===========================================================================
 ## The user keeps their PDK under a folder whose name has a dollar sign in it.

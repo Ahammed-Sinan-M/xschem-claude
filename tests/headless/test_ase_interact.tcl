@@ -91,6 +91,16 @@ set repo    [file normalize [file join $here .. ..]]           ;# repo root
 source [file join $here scratch.tcl]
 set scratch [test_scratch ase_interact]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## I2/I3/I5/I8 pin FOLDED expressions (`v(g)`, `v(d)`, `i(v1)`). MEASURED before
+## this line: 6 FAILED under the developer's HOME, ALL PASS (63) under a HOME with
+## no registry, and 13 FAILED under a registry naming a WORKING build -- the extra
+## seven are the whole `WF` Netlist-and-Run leg, which exits -1 and reports
+## `Status: Error` because the entry's own case mode reaches the deck.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 # model resolution exactly as sky130A/cadence_style_rc sets it (the
 # test_ase_final idiom)
 set ::SKYWATER_MODELS [file join $repo sky130A models libs.tech combined]

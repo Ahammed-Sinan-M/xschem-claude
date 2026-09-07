@@ -103,6 +103,13 @@ set repo    [file normalize [file join $here .. ..]]           ;# repo root
 source [file join $here scratch.tcl]
 set scratch [test_scratch ase_persist]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## G3s/G6/G7/G8/G10 pin FOLDED net names (`v(d)`); a registered
+## `-casemode preserve` build makes them `v(D)` and reds all five.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 # model resolution exactly as sky130A/cadence_style_rc sets it
 set ::SKYWATER_MODELS [file join $repo sky130A models libs.tech combined]
 

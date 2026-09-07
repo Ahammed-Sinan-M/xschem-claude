@@ -63,6 +63,21 @@ set no_recent_files 1                       ;# issue 0119: keep Open Recent clea
 
 set here   [file normalize [file dirname [info script]]]
 set fixdir [file join $here fixtures ase_hier]
+source [file join $here scratch.tcl]     ;# issue 1377: test_sim_registry_isolate
+
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## HP4/HP5/HP6/HP8/HP11/HP12/HP18b pin FOLDED names -- `v(topnet)`, `i(v9)`,
+## `i(v.x1.x2.v1)` -- and four of them say "(control)" in their own titles.
+## MEASURED before this line: 7 FAILED under the developer's own HOME and under a
+## hostile registry, ALL PASS (21) under a HOME with no registry.
+## ⚠ THIS SUITE WAS RED ON THE DEVELOPER'S BOX WHILE ISSUE 1377'S OWN TEXT QUOTED
+## HP4, HP5 and HP11 as evidence. It was missed because the first survey grepped
+## for registry CALLS and this file contains none: it reaches the entry in force
+## through ase::ui::sod_case_mode -> ase::sim_casemode_requested -> sim_status,
+## three hops away and not one of them spelled here.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
 
 # --- HP1-HP2  purity: sod_expr with NOTHING loaded (test_ase_interact H1) ------
 ## RESTATED, casemode batch item 9 (same ids, same expected strings): sod_expr's

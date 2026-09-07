@@ -78,6 +78,20 @@ source [file join $here scratch.tcl]
 source [file join $here sharefarm.tcl]
 set scratch [test_scratch ase_log_seam_0207]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## PS2/PS3/PS8 look for the PICK's own message in the CIW pane and in the log
+## file, and the message carries the composed expression -- so a registered entry's
+## case mode changes the text they search for. MEASURED before this line:
+## 3 FAILED under the developer's HOME and under a hostile registry, ALL PASS (48)
+## under a HOME with no registry.
+## ⚠ THIS SUITE NEEDS `--logdir <dir>`, NOT `--nolog` (row PS0 is "action log open
+## (needs --logdir)"). Run with --nolog it reads 19 FAILED under EVERY HOME and
+## looks like a registry-independent standing red; both the adversary and the
+## driver misclassified it that way once. Never --logdir /tmp (issue 1359).
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 proc wfile {p body} { set f [open $p w]; puts $f $body; close $f }
 
 # --- the two witnesses ----------------------------------------------------------

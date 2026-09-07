@@ -68,6 +68,14 @@ set repo    [file normalize [file join $here .. ..]]
 source [file join $here scratch.tcl]
 set scratch [test_scratch ase_locked_pick_0160]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## LK4/LK5/LK7/LK10/LK12 pin FOLDED net and source names (`v(locked)`, `i(v8)`).
+## MEASURED before this line: 5 FAILED under the developer's HOME and under a
+## hostile registry, ALL PASS (16) under a HOME with no registry.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 proc wfile {p body} { set f [open $p w]; puts $f $body; close $f }
 
 if {[catch {

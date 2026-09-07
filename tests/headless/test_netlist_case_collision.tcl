@@ -80,6 +80,18 @@ set repo    [file normalize [file join $here .. ..]]
 source [file join $here scratch.tcl]
 set scratch [test_scratch netlist_case_collision]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## The whole CS11x/CS12x/CS14x body sets the GLOBAL case floor and then asserts
+## what the netlister warns and emits. `sim_netlist_casemode` asks
+## `ase::sim_casemode_requested`, which answers the ENTRY IN FORCE and only falls
+## to the floor when there is none -- so the suite's own `set sim_case_mode fold`
+## is overruled by whatever is registered. MEASURED before this line: 12 FAILED
+## under the developer's HOME, ALL PASS (40) under a HOME with no registry, and
+## 20 FAILED under a registry naming a WORKING build.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 proc wfile {p body} { set f [open $p w]; puts $f $body; close $f }
 
 if {[catch {

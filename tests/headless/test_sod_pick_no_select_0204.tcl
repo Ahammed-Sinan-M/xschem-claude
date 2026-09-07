@@ -62,6 +62,14 @@ set repo    [file normalize [file join $here .. ..]]
 source [file join $here scratch.tcl]
 set scratch [test_scratch sod_pick_no_select_0204]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## SO1a/SO3a/SO7a/SO11b pin FOLDED names (`v(named)`, `i(v1)`). MEASURED before
+## this line: 4 FAILED under the developer's HOME and under a hostile registry,
+## ALL PASS (66) under a HOME with no registry.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 proc wfile {p body} { set f [open $p w]; puts $f $body; close $f }
 
 set MENUSTART      65536

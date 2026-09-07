@@ -124,6 +124,17 @@ set repo    [file normalize [file join $here .. ..]]           ;# repo root
 source [file join $here scratch.tcl]
 set scratch [test_scratch wviewer]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## V4 and everything below it run ngspice for real and read the raw back by
+## vector name. MEASURED before this line: ALL PASS (401) under the developer's
+## HOME and under a HOME with no registry, but under a registry naming a WORKING
+## build with `-casemode distinguish` the ASE-L preflight REFUSES the run
+## ("'-i(v1)' -- current 'v1' is not in the netlist") and the suite stops at
+## 1 FAILED (6 passed): 395 rows never run and nothing says so but the count.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 set cellroot  [file join $repo sky130A xschem_libs sky130_tests test_nfet_final]
 set statefile [file join $cellroot ngspice_state1 test_nfet_final.state]
 set schfile   [file join $cellroot schematic test_nfet_final.sch]

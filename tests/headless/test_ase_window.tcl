@@ -240,6 +240,22 @@ set models  [file join $repo sky130A models libs.tech combined sky130.lib.spice]
 source [file join $here scratch.tcl]
 set scratch [test_scratch ase_window]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## W6 and the run legs drive a real ngspice. MEASURED before this line:
+## ALL PASS (228) under the developer's HOME, 1 FAILED (227) under a HOME with no
+## registry, and 5 FAILED with 44 rows NEVER RUN under a registry naming a WORKING
+## build -- the W6 log window never appears and the suite dies on
+## `invalid command name ".ase7.logwin.t"`.
+## ⚠ READ THE MIDDLE COLUMN. This suite passed on this box ONLY because the
+## developer had a fast local build registered. Isolating it turned W7
+## ("simulator produced output before Stop") RED under every HOME -- 3/3, not a
+## flake -- because W7's 5 s bound was never enough for the ngspice an isolated
+## suite actually runs. W7 carries its own fix and its own measurements; the
+## isolate did not break it, it exposed it.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 # --- scratch lib/cell/view fixture + registry --------------------------------
 # clean nfet schematic (the test_ase_core fixture: nfet_test_claude minus its
 # corner + simulator_commands_shown instances)
@@ -2591,7 +2607,17 @@ Values:
       set id7 [ase::session_getattr $key run_id]
       check_true "W7 long tran started" [string is integer -strict $id7]
       set got 0
-      for {set i 0} {$i < 50} {incr i} {
+      ## 30 s, NOT 5 s, AND THE BOUND IS A MEASUREMENT (issue 1377).
+      ## This row waited 50 x 100 ms. It passed on the developer's box for one
+      ## reason only: his ~/.xschem/ase_simulators registered an ngspice-46 build
+      ## that reaches stdout inside 5 s. MEASURED on the ngspice this suite runs
+      ## once it is isolated -- /usr/bin/ngspice 45.2 -- first output arrives at
+      ## iterations 97, 99, 101, 105, 106 over five runs: 9.7-10.6 s, twice the
+      ## old bound every time. So isolating the registry did not break W7, it
+      ## REVEALED that W7 only ever passed on one machine's simulator. 300 is 3x
+      ## the measured worst case; the loop still breaks on the first byte, so a
+      ## fast simulator pays nothing for the headroom.
+      for {set i 0} {$i < 300} {incr i} {
         update
         if {[info exists ::execute(data,$id7)] && [string length $::execute(data,$id7)] > 0} {
           set got 1; break

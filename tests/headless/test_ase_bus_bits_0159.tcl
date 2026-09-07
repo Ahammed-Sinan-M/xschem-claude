@@ -51,6 +51,14 @@ set repo    [file normalize [file join $here .. ..]]
 source [file join $here scratch.tcl]
 set scratch [test_scratch ase_bus_bits_0159]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## BB29/BB31/BB33 pin FOLDED bit names (`v(a[1])`, `v(out)`). MEASURED before
+## this line: 3 FAILED under the developer's own HOME and under a hostile
+## registry, ALL PASS (39) under a HOME with no registry.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 if {[catch {
 
 # --- BB1-BB7  sod_bits: the pure split -----------------------------------------

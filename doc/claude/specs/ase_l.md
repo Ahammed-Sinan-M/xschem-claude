@@ -231,8 +231,32 @@ answer is a dict: `{known 0}`, `{known 0 unmeasured <reason> ...}`, or
 When `known` is 0 the capability keys are **absent, not 0**; absent means
 nobody measured, 0 means measured-and-no. `unmeasured` is a REASON, never a
 capability: `timeout` (the program had not finished inside the budget, and
-`secs` says how long the user waited) or `noplace` (the simulation folder could
-not be written into at all).
+`secs` says how long the user waited) or `noplace` (there was nowhere for the
+probe to work). A `noplace` answer carries **`noplace_why`** — `occupied` (a
+file is sitting where `.ase_probe` has to be), `readonly` (the simulation
+folder **will not take a new entry**, established by TRYING to make one) or
+`other` (the folder DID take a new entry and the probe place still could not
+be made or used: a dangling `.ase_probe` symlink, which `file exists` follows
+and so cannot see, a `.ase_probe` directory with no write permission, or 64
+name collisions in a row) — and **`noplace_at`**,
+the file or folder that is in the way: the probe place for `occupied` and
+`other`, the simulation folder for `readonly`. The say-site reads the
+diagnosis rather than working out a second time what only `ase::cap_workdir`
+was in a position to know (issue 0960).
+
+  ⚠ **`readonly` is decided by `ase::cap_dir_takes_entry`, which MAKES an
+  entry and removes it — never by `file writable`.** `file writable` on a
+  DIRECTORY is POSIX `access(W_OK)`: it answers about the write bit and says
+  nothing about the SEARCH (x) bit, and a create needs both. Measured, one
+  `tclsh`, both modes: a folder at **0600** and one at **0200** each answer
+  `file writable` **1** and refuse `mkdir` and `open …w` alike with
+  `permission denied`. For one round the test was `file writable` and those two
+  shapes fell into `other`, where the sentence told the user their simulation
+  folder could be written into and offered them a `.ase_probe` to delete that
+  did not exist — **both clauses false**. Rows **N14** and **N15** of
+  `test_ase_simcaps_0948` are those two modes through the real seam, **N16**
+  guards the trial against leaving litter in the user's folder, and **N6** now
+  takes all three sentences apart rather than two.
 
 * **The method is a PROBE RUN, never a version string.** Measured: a stock
   ngspice and one patched to ignore the add-each-analysis line print the
@@ -295,12 +319,22 @@ not be written into at all).
   target folder as its own current directory is the only form that survived a
   space, a dollar, a bracket, a single quote and a semicolon alike.
   `ase::cap_run` resolves a RELATIVE program location before the move, so a user
-  who registered `./build/ngspice` keeps working; a bare name with no folder in
-  it is left alone, because that is a PATH lookup the move cannot affect.
-  ⚠ That last clause describes the intent, not the code: the test is
-  `[file dirname $prog] ne {.}`, and `./ng` has dirname `.` too, so a
-  single-segment relative location is left alone and then fails. Latent — the
-  registry normalizes — and filed as **issue 0961**.
+  who registered `./build/ngspice` keeps working; a name with **no separator in
+  it at all** is left alone, because that one is a PATH lookup the move cannot
+  affect. The test is the separator, not the dirname (**issue 0961**, fixed):
+  it used to read `[file dirname $prog] ne {.}`, and `./ng` has dirname `.` too,
+  so a single-segment relative location was left alone and then failed while
+  `bin/ng` ran. Rows **K5b**, **K5c** and **K5d** of `test_ase_simcaps_0948`.
+  **A relative name reaches the runner by an ordinary route, not only from a
+  direct caller.** With nothing in force, `ase::sim_status` puts
+  `[lindex [auto_execok $backend] 0]` in `resolved` and `ase::sim_capabilities`
+  hands that to the probe; `auto_execok` answers `./ngspice` whenever `$PATH`
+  carries an empty element — a leading, doubled or trailing `:` — or a literal
+  `.`, and the program is in the current directory (measured, tcl 8.6.17). Row
+  **K5e** drives that route end to end. The backslash counts **only on
+  Windows**; on Unix it is an ordinary character in a file name, and that
+  platform gate — defended in a write-up and guarded by nothing until the repair
+  round — is held by row **K5h** behaviourally and row **K5i** structurally.
 * **`appendwrite` means the writes ADDED UP, and nothing else (issue 0952).**
   Deck A asks for two analyses and two writes into one file; two plots coming
   back in that one file is the answer, whatever the plots are called. It used to
@@ -318,7 +352,18 @@ not be written into at all).
 * **`ase::cap_report`, called once from `ase::run_deck`,** is the only say-site:
   a program that produced nothing is reported whatever the run looks like, and a
   build that keeps only the last analysis is reported when the run has more than
-  one. Both sentences are minted in `ase::sim_why` like every other one here.
+  one. **A place the probe could not use is reported too (issue 0960)** — in
+  the FOLDER's or the FILE's words, never the program's, in **three** sentences,
+  one per `noplace_why`, and **once per place AND per reason**
+  (`ase::cap_noplace_once`, keyed on `{at why}`, forgotten by
+  `ase::sim_caps_clear` with every measured answer), because nothing about that
+  state clears itself and a sentence per Run would be a sentence per Run for the
+  rest of the session. **The key carries the reason as well as the place** and
+  that is not tidiness: two reasons can answer with one path, and a key that is
+  only the path withholds the second fact from a user who has just fixed the
+  first -- issue 0960's own defect, reached through its own fix (rows N12 and
+  N13 of `test_ase_simcaps_0948`).
+  Every sentence is minted in `ase::sim_why` like every other one here.
   **The run, not the command builder** — building a command line happens in
   places that must stay silent, and `test_ase_simcaps_0948` row F8 pins both
   ends of that so the report cannot be refactored out of the one place the user
@@ -383,16 +428,47 @@ not be written into at all).
   * **0959** — the bound, the honest sentence and the never-cache rule all
     depend on `timeout(1)` being on the box, and evaporate together in silence
     when it is not.
-  * **0960** — the two states that answer `{known 0 unmeasured noplace}` say
-    NOTHING, on every Run, for good. A read-only simulation folder, or an
-    ordinary file sitting where `.ase_probe` needs to be, silently switches off
-    every warning this section exists to give — including the one about a build
-    that keeps only the last analysis, which is the one that costs the user
-    their results. This section's own rule for the sibling arm is "never a
-    silent failure".
-  * **0961** — a program location written `./name` is not made absolute before
-    the folder change and cannot then be started. Latent behind the registry's
-    own `file normalize`; the comment in `ase::cap_run` states the opposite rule.
+  * **0960 — FIXED 2026-09-07, in its first shape only; REPAIRED, then
+    REPAIRED AGAIN, the same day.** The states that answer
+    `{known 0 unmeasured noplace}` used to say NOTHING, on every Run, for good,
+    which switched off every warning this section exists to give — the one
+    about a build that keeps only the last analysis included. They now say
+    which folder or which file is in the way and what to do about it, once per
+    place and per reason (rows N1–N16 of `test_ase_simcaps_0948`). **Both
+    repair rounds are part of the record.** Round one: the first landing
+    shipped THREE sentences while its own write-ups said two, and the third —
+    the catch-all — had no row on it, named the simulation folder and told the
+    user to check that they could write into it; the once-per-place key also
+    fused two arms, so a user who fixed the read-only folder and then met the
+    catch-all was told nothing. Round two (the close-out): **that repair
+    shipped a regression and a false invariant.** It justified the catch-all's
+    new sentence with "`ase::cap_noplace_at` tests read-only first, so this arm
+    is only ever reached when the folder IS writable" — and the test it meant
+    was `file writable`, which on a DIRECTORY is `access(W_OK)` and ignores the
+    search bit. A folder at mode **0600** or **0200** answers `file writable` 1
+    and refuses every create, so both landed in the catch-all and were told
+    their folder could be written into and offered a `.ase_probe` to delete
+    that does not exist — **both clauses false, and worse than what stood
+    before the repair**, whose sentence at least named the folder. The folder
+    test now MAKES an entry and removes it (`ase::cap_dir_takes_entry`), those
+    two modes land in the folder's own arm, and that arm's advice changed from
+    "Make it writable" to "Give it write and search permission, or pick another
+    folder" because `chmod u+w` on a 0600 folder changes nothing. Rows N14–N16;
+    N6 now takes all three sentences apart rather than two. **What is still
+    open is the issue's fix shape 2:** falling back to a place the tree can
+    always write, and measuring there anyway, which would make the state
+    unreachable rather than merely audible. That is a product call and is on
+    the user's queue as rule debt `0960`; the catch-all and folder sentences
+    are rule debt `0960_catchall_sentence`.
+  * **0961** — FIXED 2026-09-07. A program location written `./name` was not
+    made absolute before the folder change and could not then be started, and
+    the comment in `ase::cap_run` stated the opposite rule as fact. Carve-out is
+    now "no separator in it at all". **⚠ THE FIRST WRITE-UP CALLED IT LATENT
+    AND THAT WAS WRONG**, corrected the same day: registration does normalize,
+    but the nothing-in-force route hands the probe `auto_execok`'s own answer,
+    which is a relative `./ngspice` on an ordinary `$PATH`. Measured on the
+    pre-fix predicate, that gesture answered `known 1 usable 0` with the program
+    started **zero** times — a verdict about a simulator nobody ran. Row **K5e**.
   * **0962** — a coverage gap, not a behaviour one: no committed row reproduces
     the CONCURRENT write that issue 0951 is actually about. Row I4's headline
     half passes on the defective tree, because the old delete-at-top destroyed a

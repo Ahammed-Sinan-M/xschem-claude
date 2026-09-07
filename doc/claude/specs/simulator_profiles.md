@@ -451,13 +451,77 @@ array-index case, asserting the refusal *and* the absence of the side effect —
 because `set` does not substitute inside a variable *name* either, so the side
 effect alone would not prove which mechanism refused.
 
-**The same hole is still open in `ase::expand_path`** (`src/ase.tcl`), which expands
-**model paths out of a state file** with the identical
-`subst -nocommands -nobackslashes`. It is pre-existing, its consumers are other
-items', and changing model-path semantics is not item 6's to do — so it is left in
-place, flagged in a comment at its own definition, and recorded here. Whoever owns
-model paths next should route it through `::sim_profile_expand_vars` (or its own
-equivalent) and can reuse `CS157l`'s shape as the check.
+**`ase::expand_path` carried the same hole and it is now CLOSED** (issue `1239`,
+2026-09-07). It expands **model paths, `.include` paths, `pre_` command text and —
+since the registry became the only route from a configured simulator to a run —
+the SIMULATOR's own location out of `ase::sim_register`**, and it used the
+identical `subst -nocommands -nobackslashes`. It now calls `::sim_expand_vars`
+(this proc, renamed from `sim_profile_expand_vars` at the `annotate` merge), so
+there is ONE expander for every string of this kind in the tree.
+
+The behavioural question that gated the change — *a refused index is an ERROR, and
+model paths in the wild may carry shapes this expander refuses* — was settled by
+**survey, not by argument**: all 104 committed `.state` files were expanded through
+both forms, giving 22 distinct strings, **none refused and none expanding
+differently**. Two findings from that survey are worth keeping:
+
+* the shipped mixed-signal `pre_commands` carry **literal `[ %s ]`** (ngspice
+  `auto_bridge` cards), so "refuse any bracket" would have passed every row in
+  `test_sim_casemode_registry` and broken those benches. The refusal is scoped to
+  the **index**, not to the character, and that is why;
+* `$::180MCU_MODELS/...` starts its variable name with a **digit**, which both
+  expanders accept — the hardened one's character class allows it.
+
+Landed plain, with no compatibility fallback: the callers for which a bad location
+is a fact about the user's disk rather than a defect (registration and the two
+capability peeks) already `catch` and fall back to the literal (issues `0938`,
+`0945`); the model/include/pre_command callers raise, exactly as they already did
+for an unset variable. Rows: `CS157n`..`CS157v`.
+
+**⚠ THE FIRST PASS CLOSED THE HOLE AND OPENED A DOOR THE OTHER WAY, AND A SECOND
+PASS THE SAME DAY CLOSED THAT** (issue `1239`, second pass; rows
+`CS157w`..`CS157ab`). The differential fuzz's divergences were all **one family
+running the opposite direction from the refusal above**: shapes the OLD
+`subst -nocommands` RAISED on came back from the new parser **silently, as a
+literal, with the dollar still in the path** — `$(V)/x`, `$()/x`, `${}/x`, an
+unterminated brace form, `$::/x` — or **half-expanded**, `$V::/x` → `<value>::/x`
+and `$V(/x` → `<value>(/x`. Two mechanisms, not a list of shapes: the parser
+either matched **nothing** where Tcl reads a reference (an empty variable name,
+a bare `$::`), or matched **less** than Tcl and let the remainder become literal
+text. A model path that failed loudly at load became a filename with a `$` in it,
+which fails later, somewhere else, with a worse message. `::sim_expand_vars` now
+refuses at both seams. **A `$` Tcl itself leaves literal is still literal here** —
+`$/x`, `$$V`, `$V:x` (one colon ends a name for Tcl too), a trailing `$` — and
+`CS157z` is the row that stops that over-reach. Measured: 54,240 strings, 4,186 in
+the family before, **0 after**; 200,000 random strings after, **0**; the `.state`
+survey re-run against the tightened parser, unchanged at 22 strings, 0 refused.
+One shape is now STRICTER than `subst` rather than equal to it — `$:::name`, a
+colon run of three or more, which Tcl's namespace lookup collapsed and this
+expander refuses (`CS157ab`). Both directions are on the ledger as rule debts
+`1239` and `1239_silent_literal`.
+
+**AND THE STARTUP FRAMING IS NARROWER THAN IT WAS WRITTEN.** Issue `1239` said
+the hole was reachable "including `ase::sim_load_conf` **at startup**, on a file
+that is a plain Tcl script in `$USER_CONF_DIR`". `ase::sim_load_conf` does
+`uplevel #0 [list source $path]`, so a hand-written hostile `ase_simulators`
+already has unrestricted execution at global level and this change buys nothing
+against it. What is actually closed is a **`.state` file — which is DATA**
+(`ase::state_load` parses a flat Tcl list into a dict and sources nothing), whose
+`models`/`includes`/`pre_commands` strings reach the expander at deck time; and
+the **LOCATION field of `Setup > Simulators…`**, which **four** procs expand
+under a `catch` merely to render status — `casemode_status`, `casemode_report`,
+`sim_caps_have_path` and `sim_capabilities_path`. (This sentence named three and
+omitted `ase::casemode_report` until the close-out round. ⚠ The count printed
+here was **five** and was wrong, under the words "Measured:" — re-measured
+2026-09-07, `grep -n expand_path src/ase.tcl` finds **eight** call sites, and
+found eight at HEAD as well: the four render-only procs, `ase::sim_register`,
+and **three inside `ase::render_deck`** — the `.include` card, the `.lib` card
+and `pre_commands` — which are the deck-time route named earlier in this very
+sentence.)
+`sim_load_conf` contributes **reach, not privilege**: it replays saved
+`ase::sim_register` lines at startup, so a recorded location is re-expanded with
+nobody present — a reason the thing on that path must be a parser, not a reason
+to call the conf file a closed hole.
 
 ## 6. RULING — `sim_is_xyce` does NOT consult `exe`
 
@@ -1204,9 +1268,10 @@ whatever it is really about to run (`CS170l`).
   profile's `args` (filtered, §11.2), `-n`, `-D casemode=<m>` and its own deck
   path.
 - **Any use of `ase::expand_path`.** Issue `0502` (a command substitution inside
-  an array index runs during a *path* expansion) is pre-existing and unfixed; no
-  probe path routes through it. `exe` is expanded by item 6's
-  `sim_profile_expand_vars`, which refuses that shape.
+  an array index runs during a *path* expansion) was pre-existing and unfixed at
+  this item's commit; no probe path routes through it. `exe` is expanded by item
+  6's `sim_profile_expand_vars`, which refuses that shape. (Closed since, by
+  issue `1239`: `ase::expand_path` calls that same expander — §5's ruling.)
 - **Windows.** The `taskkill` arm, the `NUL` null device and the
   `C:/Windows/Temp` fallback are written, not measured.
 - **The pipe transport is gone, not kept as a fallback.** A build too old to run
@@ -1551,9 +1616,10 @@ the log after a real `execute`, and `CS182b` is the control.
   is no longer part of that gap: both filters drop it, for different reasons.)
   Nothing about those options can change a case mode, so A2's "probe with the
   real argv" is honoured in substance; it is stated here rather than hidden.
-- **`ase::expand_path` is untouched** — issue `0502`, pre-existing. `exe` is
-  expanded by item 6's `sim_profile_expand_vars`, which refuses that shape; no
-  new path routes through `expand_path`.
+- **`ase::expand_path` is untouched** — issue `0502`, pre-existing at this
+  item's commit. `exe` is expanded by item 6's `sim_profile_expand_vars`, which
+  refuses that shape; no new path routes through `expand_path`. (Closed since, by
+  issue `1239` — §5.)
 - **The refusal does not delete the previous run's artefacts.** Deleting a user's
   results because a *new* run was refused would be worse, and item 10 owns
   recognising a bad artefact on read. What this item owes — writing nothing new —
@@ -3507,7 +3573,9 @@ recorded, and say when nothing was.
 - **Nothing touches `ase::expand_path`** (issue `0502`). The `Exe` field is
   expanded by item 6's `sim_profile_expand_vars`, which refuses the
   array-index shape; the dialog adds no new route to a path expander, and the
-  commit-time validation makes `0502` neither easier nor harder to trip.
+  commit-time validation makes `0502` neither easier nor harder to trip. (Issue
+  `1239` closed `0502`'s hole afterwards, by pointing `ase::expand_path` at that
+  same expander — §5.)
 
 ## 17.12 Checks that are NOT evidence, and declared holes
 
@@ -3683,6 +3751,15 @@ the waveform viewer as `v(EN)`"*. Issue:
 Checks: `CS200`–`CS221` in `tests/headless/test_sim_plain_run.tcl` — **27 of
 them**, counted from a run.
 
+⚠ **THE STORE THIS SECTION NAMES IS GONE, AND THE COMPOSER CAME BACK WITHOUT IT.**
+The `sim()` simulator PROFILE was retired at the `annotate` merge for the ASE-L
+simulator registry, the composer went with it, and eighteen of those checks were
+retired unmigrated. Issue **1238** rebuilt the composer against the registry on
+the user's ruling. **§18.6 is the current description**; §18.1–§18.5 below are
+kept because every RULING in them still stands word for word — only the store
+they read changed. Read "the profile row" as "the in-force registry entry", and
+read §18.6 for the two places the answer genuinely moved.
+
 ## 18.1 The gap
 
 Items 6, 7 and 13 built the profile and item 8 wired it into **ASE-L's** run.
@@ -3824,3 +3901,353 @@ then vanish.
 * **The dialog says nothing about any of this.** A row whose `cmd` cannot take the
   flags is discovered at run time, in the CIW, not at configure time in `simconf`.
   Surfacing it in item 13's status line is a real improvement and is not done here.
+
+---
+
+# 18.6 Rebuilt on the registry — issue 1238
+
+**Retired at the `annotate` merge, restored by the user's ruling.** The merge
+moved `exe` / `casemode` / `nospiceinit` off the `sim()` row and onto the ASE-L
+registry entry, because two stores describing one machine can disagree with
+themselves. `proc simulate` knew nothing about ASE-L, so it went back to running
+`sim($tool,$def,cmd)` verbatim and issue 0506's defect was reachable again. Issue
+**1238** offered three options; the user chose **option 1 — re-teach `simulate` to
+read the registry.** Issue:
+`doc/claude/issues/1238-stock-simulate-lost-its-exe-and-casemode-composer-at-the-annotate-merge.md`.
+
+**The procs.** `sim_registry_row_asks` / `sim_registry_answer` /
+`sim_registry_exe` / `sim_registry_args` / `sim_registry_casemode` /
+`sim_run_flags` / `sim_cmd_exe_plan` / `sim_cmd_takes_flags` / `sim_compose_cmd` /
+`sim_compose_report`, plus `sim_cmd_program_words` / `sim_cmd_is_xyce_word` /
+`sim_cmd_trailing_reason` from the repair round below and `sim_cmd_run_words`
+from the close-out round (§18.6.2), all in `src/xschem.tcl` beside
+`sim_netlist_casemode`, which is the registry bridge that survived the merge.
+Checks: `CS200`–`CS229c` in `tests/headless/test_sim_plain_run.tcl`,
+**53 of them**, counted from a run (2026-09-07, after §18.6.2).
+
+## The three answers to §18's shape question
+
+`sim()` is per-TOOL with N rows and a default radio; the registry is ONE IN-FORCE
+entry for one backend. So the registry is asked about exactly the rows it can be
+speaking about:
+
+| the row | answer | why |
+|---|---|---|
+| a `spice` row that is not Xyce | composed | this is what an `ngspice` entry is about |
+| `vhdl`, `verilog`, `tedax`, `spicewave` … | verbatim, unremarked | none of ngspice's business |
+| a **Xyce** row — one whose **program word** is `Xyce` (`Xyce "$N"`, `mpirun … Xyce "$N"`) | verbatim, unremarked | **this is the one answer that MOVED.** §18.2's tail test would DECLINE a Xyce row against a registered ngspice and §18.3 says a decline is reported. Under the per-row profile that was right: an `exe` typed onto the Xyce row meant "this row's simulator is this program". Against a single global registry entry the same decline puts a sentence about a program the user never pointed at that row on **every press of Simulate**. `CS203b` pins the new answer; `CS203` keeps §18.2's substance with a non-Xyce `mpirun` template. |
+
+## Stock xschem, byte for byte
+
+The compatibility contract of §18 is now most of the work, and two things make it
+hold rather than merely be intended:
+
+* **the exe is taken only from a `source registry` resolution.**
+  `ase::sim_status` ALWAYS answers — with nothing registered it answers about the
+  program on the `PATH`, `ok 1`, `entry` empty. MEASURED by deleting that one
+  line: the command line stays byte-identical (the bare backend name is already
+  the row's first word), but every CLAIM moves — `exe_status` reads `applied` for
+  a user who registered nothing, and any row whose first word is not `ngspice`
+  earns a `declined` report naming a registered program that does not exist.
+  `CS204`, `CS212` and `CS215` all move on that line.
+* **every call into `ase::` is caught**, so a tree with no ASE-L composes verbatim
+  instead of failing to simulate.
+
+`ok 0` — an entry whose program has gone since it was registered — is refused for
+the same reason `ase::sim_casemode_requested` refuses it: it still carries the
+`entry` the user chose, and a command line composed from a program that is not
+there is worse than the one the user typed (`CS204b`).
+
+## The case mode still honours the global floor
+
+Unlike the exe, `sim_registry_casemode` falls to `ase::sim_casemode_floor` with
+nothing registered — because `sim_netlist_casemode` already does, so the DECK is
+already being written in that mode and the run must ask for the same one
+(`CS212`). `fold`, the shipped floor, emits nothing at all.
+
+## What is still NOT here
+
+* **`-n` (`--no-spiceinit`)** — §18.5's ruling stands unchanged.
+* **The registry's `-args`** — not placed, but no longer swallowed: a registered
+  `-args` list on an entry whose exe was APPLIED is REPORTED at tag `error`, by
+  §18.3's own rule that a thing the user configured and is not getting is said out
+  loud (`CS222`). Whether the plain path should CARRY them — which would make it a
+  second implementation of `ase::run_cmd` — is a product call and is on the owed
+  ledger as rule `1238_args_placement`.
+
+---
+
+## 18.6.1 The repair round — two holes in the placement rule, and one disclosure
+
+Three defects were found in §18.6 by an adversary pass on 2026-09-07 and repaired
+the same day. All three were **claims that did not match the code**, which is why
+they are recorded here rather than quietly fixed.
+
+### The pipeline hole — the first word is not enough
+
+`sim_cmd_takes_flags` answered "yes" whenever the template's FIRST word was the
+simulator. `proc execute` opens the whole string as a **Tcl pipeline**
+(`open "|$args"`), and trailing words go to the **LAST stage**. So on
+`ngspice -b "$N" | tee sim.log` the flags went to `tee`, and
+`sim_compose_report` said *"Case mode: appending -D casemode=preserve"* — it told
+the user it had appended to the simulator while appending to a pipe. The comment
+above `sim_compose_cmd` already stated the correct rule ("trailing words on those
+do not reach the simulator's argv"); the code did not obey it.
+
+**MEASURED 2026-09-07, Tcl 8.6, through `open "|..."` exactly as `proc execute`
+does it, with two argv-echoing shell scripts A and B:**
+
+| the string handed to `open` | who got the trailing words |
+|---|---|
+| `A one \| B two -D casemode=preserve` | `B_ARGV[3]: two -D casemode=preserve` |
+| `A one \|& B two -D casemode=preserve` | `B_ARGV[3]: two -D casemode=preserve` |
+| `A one -D casemode=preserve` | `A_ARGV[3]: one -D casemode=preserve` |
+| `A one & -D casemode=preserve` | `A_ARGV[4]: one & -D casemode=preserve` |
+| `A one\|B two -D casemode=preserve` | `A_ARGV[4]: one\|B two -D casemode=preserve` |
+| `A one > f -D casemode=preserve` | `A_ARGV[3]: one -D casemode=preserve` |
+
+So a `|` or `|&` **word** is a stage separator; a **glued** `a|b` is one literal
+argument and the flags do reach the simulator (`CS223c` — that row is broken by
+its own author, and declining it would be a second defect wearing the first one's
+clothes); a redirection is harmless; and a **trailing `&`** both stops the run
+being backgrounded and is handed on as a stray argv word, so it is covered too
+(`CS224`).
+
+> ⚠ **THIS SECTION ORIGINALLY SAID "the rule is Tcl's rule, word for word". IT
+> WAS NOT.** The implementation split on whitespace with no quoting model, so a
+> `|` inside a quoted or braced argument answered `pipeline` — losing the case
+> mode on a well-formed row and telling its user their one-stage command was a
+> pipeline. Corrected in **§18.6.2**, which carries the measurements.
+
+`flag_status` stays `unplaceable`; the new `flag_reason` says which of
+`word` / `pipeline` / `background` it was, and `sim_compose_report` mints the
+matching sentence. **The two reasons are ORDERED, first word first.**
+
+> ⚠ **AND THIS SECTION ORIGINALLY CITED `CS225` FOR THAT ORDER, ON SHIPPED ROW
+> 0. `CS225` DOES NOT PIN IT** — measured 2026-09-07: swapping only the two
+> `elseif` arms of `sim_compose_cmd` on the tree as it then stood left the suite
+> **ALL PASS at 47**, not one row moved, while changing a live user-visible
+> answer. Row 0's `||` is not a `|` at the word level, so the pipeline arm never
+> fires on it whichever way the arms are ordered. `CS225b` is the row that pins
+> the order; see §18.6.2.
+
+**What was deliberately NOT changed:** the registered **exe** is still applied to
+a piped row. Word 0 of a pipeline is the first stage's program (measured: the
+leading words reach A), so that half already worked and keeps working — only the
+trailing FLAGS are unplaceable. `CS223d` pins it, and sabotaging the exe plan to
+decline pipelines reddens it by name.
+
+### The Xyce gate read the string, not the program
+
+`sim_registry_row_asks` matched `regexp {[xX]yce}` against the **entire** raw
+template. MEASURED: an ngspice row whose output path merely CONTAINS the word —
+`ngspice -b -r "/home/u/xyce/out.raw" "$N"`, or a log under a directory called
+`xyce` — composed `exe_status none flag_status none mode {}`. The user's
+registered case-capable ngspice was **silently not applied**, which is issue
+1238's own defect reached through its own gate (`CS226`, `CS226b`).
+
+**The rule now, stated exactly.** The gate reads the **leading run of non-option
+words** — word 0, and the words a wrapper hands on — and **stops at the first
+option**; a word counts when its `file tail` (minus `.exe`) is `xyce`,
+case-insensitively. So the two shipped Xyce rows and `nice /opt/Xyce/bin/Xyce`
+are still `none` (`CS203b`, `CS226c`), while an argument path **that follows an
+option** can never gate a row off (`CS226e` pins the option-stop with
+`-r /tmp/xyce`).
+
+> ⚠ **THIS SAID "an argument path can never gate a row off", FULL STOP, AND
+> THAT IS FALSE.** An argument that sits inside the **leading non-option run**
+> is read as a program word, because the scan cannot tell an argument from a
+> wrapper's payload — only an option boundary stops it. MEASURED 2026-09-07 on
+> the shipped procs, registry = ngspice at `-casemode preserve`:
+>
+> | raw template | program words | `asks` | `exe_status` | `flag_status` |
+> |---|---|---|---|---|
+> | `ngspice /home/u/xyce` | `ngspice /home/u/xyce` | 0 | `none` | `none` |
+> | `ngspice "$N" /home/u/xyce` | `ngspice "$N" /home/u/xyce` | 0 | `none` | `none` |
+> | `ngspice -b -r "/home/u/xyce/out.raw" "$N"` | `ngspice` | 1 | `applied` | `appended` |
+> | `ngspice -b "$N"` | `ngspice` | 1 | `applied` | `appended` |
+>
+> The first two are the user's registered case-capable ngspice **silently not
+> applied** — the same shape `CS226` was written about, one notch narrower, and
+> of the bad kind (nothing is said). **NOT FIXED**, and no row drives it: the
+> two shipped rows here are option-preceded. Whether the scan should stop at
+> the first word that is not a known wrapper is a design call, not a typo, so
+> it is left for the driver rather than freehanded in a close-out round.
+
+**And the limit, because the headline justification is narrower than it reads.**
+"Declining would put an error line on every press of Simulate for a Xyce user"
+holds only for a **literally-spelled** xyce. A Xyce row spelled through a variable
+that does not end in the name — `$XYCE_HOME/bin/simulator "$N"` — is **declined,
+not none**, and its user does get that error line. `CS226d` pins the limit so it
+cannot be quoted as more than it is. The gate errs toward ASKING on purpose: a row
+wrongly gated OFF loses the user's registered simulator silently; a row wrongly
+gated ON earns a truthful, actionable sentence. `mpirun -np 4 /opt/Xyce "$N"` —
+an option before the program — is the known case of the second kind.
+
+### A raise found while repairing — `file tail` on a bare `~name`
+
+Not one of the three refutations; found by inspection while widening the gate's
+word scan, and repaired in the same pass. **MEASURED 2026-09-07, Tcl 8.6:**
+`file tail ~nosuchuser` **raises** — `user "nosuchuser" doesn't exist`. A tilde
+followed by a path does not (`file tail ~nosuch/bin/Xyce` is `Xyce`); only a bare
+`~name` does. `sim_compose_cmd` is called from `proc simulate` with **no catch**,
+so a raise there aborts Simulate with a Tcl error and no run.
+
+The gate's word scan made this reachable from more words than before, and
+`sim_cmd_exe_plan`'s own `file tail` on word 0 could already do it before this
+repair. All three `file tail` calls in the composer are now guarded; a word whose
+tail cannot be taken is neither Xyce nor the registered executable nor `ngspice*`.
+`CS226f` drives word 0 with a registered simulator, `CS226g` drives the
+nothing-registered route through `sim_cmd_takes_flags`, and removing either guard
+reddens the matching row by name.
+
+### The undisclosed change off the shipped floor
+
+§18.6's "byte for byte" contract was stated for **stock xschem at the shipped
+floor** and is true there (`CS200`, `fold`, nothing registered: byte-identical and
+silent). It was **not** true off that floor and nobody had said so. With nothing
+registered and the global Case floor moved to `preserve`, `proc simulate` now
+does something it never did before issue 1238:
+
+| shipped row | before 1238 | now |
+|---|---|---|
+| 0 `$terminal -e {ngspice …}` — **the DEFAULT row** | verbatim, silent | verbatim, **error line on every press** |
+| 1 `ngspice "$N" -a` | verbatim, silent | `-D casemode=preserve -D casemodewrite` appended, note |
+| 2 `ngspice -b -r "$n.raw" "$N"` | verbatim, silent | appended, note |
+| 3 `Xyce "$N"` | verbatim, silent | verbatim, silent |
+| 4 `mpirun … Xyce "$N"` | verbatim, silent | verbatim, silent |
+
+That may well be right — the deck is already being WRITTEN in that mode, so a run
+that does not ask for it produces results the netlist does not describe. But it is
+a change to stock behaviour that nobody declared, and the row that is loudest
+about it is the **shipped default**. `CS227` pins the whole table, and the
+question is on the owed ledger as rule **`1238`**.
+
+---
+
+## 18.6.2 The close-out round — the placement rule read the wrong string, and claimed a model it did not have
+
+A second adversary pass on 2026-09-07 refuted §18.6.1 on three points. Again all
+three were **claims that did not match the code**, and the code half of two of
+them was a live user-visible defect.
+
+### The pipeline hole was still open, on the substituted command
+
+`proc simulate` calls
+
+```tcl
+set cmd [subst -nobackslashes $sim($tool,$def,cmd)]
+set compose [sim_compose_cmd $tool $sim($tool,$def,cmd) $cmd]
+```
+
+— the RAW template and the SUBSTITUTED one. §18.6.1's placement test read the
+**raw** string, so a `|` that arrives **through the subst** was invisible to it
+and perfectly visible to `open "|$args"`.
+
+**MEASURED 2026-09-07 against the shipped procs, registry = `ngspice` at
+`-casemode preserve`:**
+
+| | |
+|---|---|
+| raw | `ngspice -b -r "$n.raw" "$N" $env(NGPOST)` |
+| substituted | `ngspice -b -r /tmp/x.raw /tmp/x.spice \| tee sim.log` |
+| `flag_status` | `appended` |
+| composed `cmd` | `/usr/bin/ngspice -b -r /tmp/x.raw /tmp/x.spice \| tee sim.log -D casemode=preserve -D casemodewrite` |
+| CIW | `note: Case mode: appending -D casemode=preserve -D casemodewrite` |
+
+That is byte for byte the defect §18.6.1 claimed to close, with the same false
+note — flags on `tee`'s argv while the CIW says they went to the simulator.
+`$env(…)`, `$terminal` and a `$::name` from the user's own simrc all resolve in
+`proc simulate`'s scope, so the route is a user's `cmd` string, not a contrivance.
+
+**Repaired:** the trailing test now reads the **composed, substituted** command —
+the exact string `eval execute $st $cmd` hands to `open`. Rows `CS228` (the
+placement) and `CS228b` (the sentence).
+
+**WHY THE TWO DECISIONS READ DIFFERENT STRINGS**, which §18.6 explained three
+times for the exe and never once for the placement:
+
+| decision | reads | because |
+|---|---|---|
+| exe plan (`sim_cmd_exe_plan`), and the first-word half of placement through it | the **raw** template | it is the only string in which `$terminal` is still distinguishable from what it expands to; on the substituted string `CS202b`'s `$SIMDIR/ngspice` has a matching tail and would be rewritten in a string where one word may have become several |
+| trailing test (`sim_cmd_trailing_reason`) | the **composed, substituted** command | `open "|$args"` is what decides where a trailing word lands, and it sees only that string |
+
+**Not a strict superset, and the first draft of this section wrongly said it
+was.** A `$var` cannot delete a `|` already in the template, but a **command
+substitution** can — MEASURED 2026-09-07, Tcl 8.6:
+`subst -nobackslashes {ngspice -b [lindex {a | b} 0]}` → `ngspice -b a`. The raw
+test calls that a pipeline; the string that actually runs has one stage, so the
+raw answer was a false positive and losing it is the point. *Not measured:
+whether any shipped or user row spells a `[...]` that way.*
+
+### "The rule is Tcl's rule, word for word" was false
+
+`sim_cmd_trailing_reason` split with `regexp -all -inline` over whitespace — no
+quoting model at all — while `open "|$args"` splits with **Tcl list rules**
+(`proc execute` collects `args` as a list; `"|$args"` re-serialises it; `open`
+splits it again). A quoted or braced `|` is therefore **not** a stage separator.
+
+**MEASURED 2026-09-07, Tcl 8.6, through `open "|$args"` with `args` collected
+exactly as `proc execute` collects it:**
+
+| the words handed to `execute` | what the program got |
+|---|---|
+| `A one "a \| b" -D casemode=preserve -D casemodewrite` | `A_N=6`, `A_ARGV[2]=<a \| b>`, `A_ARGV[3..6]` = the four flag words |
+| `A one {a \| b} -D casemode=preserve -D casemodewrite` | identical |
+| `A -b deck -c "run \| wrdata out v(a)" -D casemode=preserve` | `A_N=6`, `A_ARGV[4]=<run \| wrdata out v(a)>`, `A_ARGV[5..6]` = the flags |
+
+So on all three the flags **do** reach the simulator, and the old test answered
+`pipeline` on all three — silently dropping the registered case mode and telling
+the user *"this command is a pipeline, so trailing words go to its LAST stage"*
+about a command with one stage. `-c "run | wrdata out"` is how an ngspice control
+line is spelled, so this is the mirror of the `a|b` case §18.6.1 was careful about.
+
+**Repaired:** `sim_cmd_run_words` parses the string with Tcl's own list rules and
+falls back to the whitespace scan only when the string is not a well-formed list —
+a string that cannot reach `open` at all, because `eval execute $st $cmd` raises
+on it first. Rows `CS229` (quoted), `CS229b` (braced), `CS229c` (a quoted pipe **and** a real
+one on the same line — `CS229`/`CS229b` alone are passed by any model that simply
+gives up early, and `CS229c` is what reds when it does: measured, a scan that
+breaks at the first grouped word keeps both green and reds this row).
+
+**Not changed:** `sim_cmd_program_words`, the Xyce gate's scan, still splits on
+whitespace. It reads the RAW template — which need not be a well-formed list — and
+its subject is the leading program words, which quoting does not group. *Not
+measured: whether any real row needs quoting there.*
+
+### `CS225` did not pin the order it was named for
+
+§18.6.1 said the two reasons are ordered first-word-first and cited `CS225`.
+**MEASURED 2026-09-07:** swapping **only** the two `elseif` arms of
+`sim_compose_cmd`, on the tree as it stood before this round, left
+`test_sim_plain_run` **ALL PASS (47)** — not one row moved — while changing a live
+user-visible answer:
+
+| template | shipped order | arms swapped |
+|---|---|---|
+| `cat "$N" \| ngspice -b` | `flag_reason word` | `flag_reason pipeline` |
+
+Shipped row 0 cannot see the order, because `||` is not `|` at the word level, and
+row 0 was the only row the suite drove for this. (§18.6.1's own sabotage reddened
+`CS225` by changing the trailing test to a SUBSTRING **and** the order in one
+edit, so the red was attributable to the substring change.)
+
+**And the order matters on the merits**, which is why it needed a row rather than
+a removal: on `cat "$N" | ngspice -b` the pipeline's **last stage IS the
+simulator**, so the `pipeline` sentence — "trailing words go to its LAST stage,
+not to the simulator" — would be **false** there, while "this command starts with
+`cat`, not the simulator" is true.
+
+**Repaired:** `CS225b` drives that template and moves on the order alone
+(sabotage: swapping the two arms reds `CS225b` and nothing else, 1 FAILED / 52
+passed). `CS225` was **renamed** —
+`CS225-the-first-word-reason-outranks-the-pipeline-reason` →
+`CS225-row0-is-a-first-word-refusal-not-a-pipeline-one` — because its old name was
+a claim it could not test. It keeps pinning row 0's answer.
+
+### Bookkeeping
+
+§18.6's check count and the issue file's disagreed with each other (45 in one
+place, 47 in two others). Measured after this round: **53**, `CS200`–`CS229c`, no
+duplicate names. `CS227`'s in-file comment also cited a ledger id that does not
+exist (`1238_floor_only_append`); the debt is filed as **`1238`**.

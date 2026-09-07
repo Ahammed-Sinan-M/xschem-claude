@@ -49,6 +49,15 @@ proc pcall {args} {
 }
 proc raises {args} { return [catch {uplevel 1 $args}] }
 proc slurp {p} { set f [open $p r] ; set d [read $f] ; close $f ; return $d }
+proc strip_tcl_comments {body} {
+  set out {}
+  foreach l [split $body "\n"] {
+    if {[regexp {^[ \t]*#} $l]} continue
+    regsub {;[ \t]*#.*$} $l {} l
+    lappend out $l
+  }
+  return [join $out "\n"]
+}
 
 set tmp [test_scratch sim_casemode_registry]
 set fixdir [file join [file dirname [info script]] fixtures]
@@ -170,11 +179,12 @@ reset
 # `$env([exec touch .../PWNED])/ngspice` created the file during a pure
 # STALENESS query. `sim_expand_vars` is the hardened answer.
 #
-# ⚠ ITS LAST CALLER WENT WITH THE PROFILE LAYER AND IT IS KEPT ANYWAY. It is the
-# only expander in the tree that refuses; `ase::expand_path` -- which now expands
-# SIMULATOR paths out of ase::sim_register as well as model paths -- still
-# carries the unsafe form. These rows are what stops the safe one being deleted
-# as dead code before that is fixed. Filed, not done here.
+# ⚠ THESE ROWS ARE WHAT KEPT IT ALIVE WHILE IT HAD NO CALLER. Its last caller
+# went with the profile layer, and it is the only expander in the tree that
+# refuses, so deleting it as dead code would have thrown away the fix. It has a
+# caller again as of issue 1239: `ase::expand_path` -- model paths, `.include`
+# paths, `pre_` command text and SIMULATOR paths out of ase::sim_register --
+# routes through it, and CS157n..CS157v below measure that end.
 set ::PWN [file join $tmp PWNED]
 catch {file delete -force $::PWN}
 set ::RAN 0
@@ -186,6 +196,211 @@ eqcheck CS157l-...and-a-command-inside-an-ARRAY-INDEX-does-not-run-either \
   [file exists $::PWN] 0
 eqcheck CS157m-an-ordinary-variable-still-expands \
   [pcall sim_expand_vars {$tcl_platform(platform)/x}] "$::tcl_platform(platform)/x"
+
+# ---------------------------------------------------------------------------
+# ISSUE 1239 -- THE CALLER. Everything above measures the safe expander in
+# isolation; these rows measure the proc that model paths, .include paths,
+# `pre_` command text and REGISTERED SIMULATOR PATHS actually go through.
+# `ase::sim_register` expands the exe, and `ase::sim_load_conf` runs at STARTUP
+# on a plain Tcl script in $USER_CONF_DIR, so the array-index hole was reachable
+# from a pure staleness query on a machine whose owner only ever registered a
+# simulator.
+#
+# ⚠ THE ATTACK IS DRIVEN, NOT DESCRIBED. CS157n watches a flag that the payload
+# would set, and CS157o watches for a FILE the payload would create -- a row
+# that only asserted "it raised" would stay green for an expander that ran the
+# command and then complained about the result.
+set ::PWN2 [file join $tmp PWNED_EXPAND_PATH]
+catch {file delete -force $::PWN2}
+set ::RAN2 0
+eqcheck CS157n-expand_path-refuses-a-command-substitution-in-an-ARRAY-INDEX \
+  "raised=[raises ase::expand_path {$env([set ::RAN2 1])/x}] ran=$::RAN2" \
+  {raised=1 ran=0}
+catch {ase::expand_path "\$env(\[exec touch $::PWN2\])/ngspice"}
+eqcheck CS157o-...and-the-command-in-that-index-really-did-not-run \
+  [file exists $::PWN2] 0
+
+# THE OTHER HALF OF THE SAME CHANGE, and the half a hardening is most likely to
+# break: ordinary paths must still expand, or every committed bench stops
+# netlisting. `$name`, `${name}`, `$::ns::name` and `$env(index)` are the four
+# spellings the tree actually contains.
+set ::CS157ROOT [file join $tmp pdkroot]
+set ::CS157SEC tt
+eqcheck CS157p-a-plain-name-still-expands \
+  [pcall ase::expand_path {$CS157ROOT/models/x.lib}] "$::CS157ROOT/models/x.lib"
+eqcheck CS157q-a-braced-name-and-a-namespaced-name-still-expand \
+  [pcall ase::expand_path {${CS157ROOT}/m/$::CS157SEC.lib}] "$::CS157ROOT/m/tt.lib"
+eqcheck CS157r-an-env-array-element-still-expands \
+  [pcall ase::expand_path {$env(HOME)/models/x.lib}] "$::env(HOME)/models/x.lib"
+eqcheck CS157s-a-plain-absolute-path-comes-back-verbatim \
+  [pcall ase::expand_path {/opt/pdk/models/sky130.lib.spice}] \
+  {/opt/pdk/models/sky130.lib.spice}
+eqcheck CS157t-an-unset-variable-is-still-an-ERROR-not-a-silent-empty-path \
+  [raises ase::expand_path {$CS157_no_such_variable_/x.lib}] 1
+
+# THE SURVEY, KEPT AS A ROW. Issue 1239 says this change may not land until
+# every committed `.state` fixture's expanded fields have been checked against
+# the refusing expander, because an index it refuses is an ERROR. The survey was
+# run over all 104 committed `.state` files (22 distinct strings, zero refused,
+# zero expanding differently); these are the SEVEN DISTINCT SHAPES that survey
+# found, so a future tightening that starts refusing one of them reddens here
+# instead of at a user's netlist.
+#
+# ⚠ THE LAST SHAPE IS WHY THIS IS NOT "REFUSE ANY BRACKET". The shipped
+# mixed-signal `pre_commands` carry LITERAL `[ %s ]` -- ngspice auto_bridge
+# cards -- and they go through this same proc. Refusing brackets outright would
+# have passed every other row in this file and broken those benches.
+set cs157had {}
+set cs157vars {MODELS_NGSPICE SG13G2_OSDI SKYWATER_MODELS 180MCU_MODELS
+               SKYWATER_STDCELLS PDK_ROOT PDK}
+foreach v $cs157vars {
+  if {[info exists ::$v]} { dict set cs157had $v [set ::$v] }
+  set ::$v "/CS157/$v"
+}
+set cs157bad {}
+foreach shape {
+  {$::SKYWATER_MODELS/sky130.lib.spice}
+  {$::MODELS_NGSPICE/cornerMOSlv.lib}
+  {$::180MCU_MODELS/sm141064.ngspice}
+  {$::SKYWATER_STDCELLS/sky130_fd_sc_hd.spice}
+  {$PDK_ROOT/$PDK/libs.ref/sky130_fd_sc_hvl/spice/sky130_fd_sc_hvl.spice}
+  {pre_osdi $::SG13G2_OSDI/psp103.osdi}
+  {pre_set auto_bridge_d_in = ( ".model auto_adc adc_bridge(in_low = 0.6 in_high = 1.2)" "auto_bridge%d [ %s ] [ %s ] auto_adc" )}
+} {
+  if {[catch {ase::expand_path $shape} r]} {
+    lappend cs157bad "REFUSED <$shape> -> $r" ; continue
+  }
+  if {[string first "\$" $r] >= 0} { lappend cs157bad "UNEXPANDED <$shape> -> $r" }
+}
+foreach v $cs157vars {
+  if {[dict exists $cs157had $v]} { set ::$v [dict get $cs157had $v] } \
+  else { unset -nocomplain ::$v }
+}
+eqcheck CS157u-every-shape-the-committed-state-fixtures-contain-still-expands \
+  $cs157bad {}
+
+# STRUCTURAL, because no behavioural row can see it. The hole is not "an unsafe
+# call somewhere"; it is that this proc reached for a general-purpose evaluator
+# at all. A reader who "fixes" it by blacklisting a few characters in front of
+# the same evaluator passes CS157n..o for as long as the blacklist happens to be
+# complete, and Tcl's parser is not a thing to be guessed at. So the row states
+# the invariant directly: ONE expander, and it is the refusing one. Comments are
+# stripped first, so a paragraph about it cannot satisfy the row.
+set cs157body [strip_tcl_comments [info body ase::expand_path]]
+set cs157deleg [expr {[string first {sim_expand_vars} $cs157body] >= 0}]
+set cs157subst [regexp {(^|[^a-zA-Z0-9_])subst([^a-zA-Z0-9_]|$)} $cs157body]
+set cs157eval  [regexp {(^|[^a-zA-Z0-9_])(eval|expr)([^a-zA-Z0-9_]|$)} $cs157body]
+eqcheck CS157v-STRUCTURAL-expand_path-delegates-to-the-refusing-expander-and-evaluates-nothing-itself \
+  "delegates=$cs157deleg subst=$cs157subst eval=$cs157eval" \
+  {delegates=1 subst=0 eval=0}
+
+# ---------------------------------------------------------------------------
+# ISSUE 1239, THE OTHER DIRECTION -- A `$` MUST NOT SURVIVE INTO A FILENAME.
+# ---------------------------------------------------------------------------
+# The rows above measure the LOOSENING the hardening was for: shapes the old
+# `subst -nocommands` accepted (and executed) are now refused. This block
+# measures the direction the first pass missed, and it was found by a
+# differential fuzz, not by reading: shapes the OLD expander RAISED on came back
+# from the new one SILENTLY, as a literal, with the dollar sign still in the
+# path. A model path that used to fail loudly at load became a filename with a
+# `$` in it, which fails later, somewhere else, with a worse message.
+#
+# TWO MECHANISMS, and both are in the parser rather than in any one shape:
+#
+#   M1 NO MATCH AT ALL -> the `$` was emitted as a literal and the scan moved on.
+#      Tcl's own parser, though, DOES read `$(idx)` (a variable whose name is
+#      empty), `${}`, an unterminated brace form, and a bare `$::` as
+#      references, and raises on every one of them.
+#   M2 A SHORTER MATCH THAN TCL'S -> the reference expanded and the REMAINDER
+#      became literal text. `$V::` gave `<value>::`, `$V(` gave `<value>(`,
+#      where Tcl read the name `V::` / an unterminated index and raised.
+#
+# So the expander now refuses at exactly the two seams: a `$` it declined that
+# Tcl would have read (a brace form, a `(`, or a `::` run), and a name it
+# stopped short of that Tcl would have continued (`::` or `(` right after).
+#
+# ⚠ `$` IS STILL A LITERAL WHERE TCL LEAVES IT ONE -- CS157z. `$/x`, `$$V`, a
+# trailing `$`, `$V:x` (ONE colon ends a name for Tcl too) all still pass
+# through, because tightening those would refuse paths that both expanders
+# always accepted and no defect was ever reported about.
+# Helpers for the block below. `cs157_refusals` names every shape that came back
+# with a VALUE where a refusal was wanted, so a red row says which shape and what
+# it returned instead of just "0 != 1".
+proc cs157_refusals {shapes} {
+  set bad {}
+  foreach sh $shapes {
+    if {![catch {ase::expand_path $sh} r]} { lappend bad "ACCEPTED <$sh> -> <$r>" }
+  }
+  return $bad
+}
+proc cs157_expansions {shapes} {
+  set out {}
+  foreach sh $shapes {
+    if {[catch {ase::expand_path $sh} r]} { lappend out "ERR:$r" } else { lappend out $r }
+  }
+  return $out
+}
+# The differential corpus: variable-reference shapes only, NO `[` (see the note
+# on CS157aa -- the old expander is the oracle and a bracket in an index is the
+# payload). ::CS157V is set; ::CS157W is deliberately never set.
+proc cs157_corpus {} {
+  return [list \
+    "\$CS157V/x" "\$\{CS157V\}/x" "\$::CS157V/x" "\$env(HOME)/x" "/plain/abs" \
+    "\$(V)/x" "\$()/x" "\$(CS157V)/x" "\$\{\}/x" "\$\{abc/x" "\$::/x" "\$:/x" \
+    "\$CS157V::/x" "\$CS157V:::W/x" "\$::CS157V::/x" "\$CS157V::W/x" \
+    "\$CS157V(/x" "\$CS157V(k" "\$CS157V()/x" "\$CS157V(a(b))/x" \
+    "\$CS157V(k)(j)/x" "\$env(HOME)(j)/x" "\$env(HOME/x" \
+    "\$/x" "\$\$CS157V/x" "\$CS157V:x" "\$CS157V-2/x" "\$CS157V.lib" "\$CS157V/a\$" \
+    "\$CS157W/x" "\$env(CS157_NO_SUCH_ENV_)/x" "\$1CS157V/x" \
+    "\$CS157V\\x" "a\\\$CS157V/x" "\$\{CS157V\}::/x" "\$\{CS157V\}(k)/x"]
+}
+proc cs157_loosened {} {
+  set bad {}
+  foreach sh [cs157_corpus] {
+    set orc [catch {uplevel #0 [list subst -nocommands -nobackslashes $sh]} oo]
+    set nrc [catch {ase::expand_path $sh} no]
+    if {$orc && !$nrc} { lappend bad "LOOSENED <$sh> old<$oo> new<$no>" }
+  }
+  return $bad
+}
+set ::CS157V /CS157/varset
+eqcheck CS157w-a-dollar-this-expander-cannot-read-is-an-ERROR-not-a-literal-in-a-path \
+  [cs157_refusals [list "\$(V)/x" "\$()/x" "\$\{\}/x" "\$\{abc/x" "\$::/x"]] {}
+eqcheck CS157x-a-reference-the-parser-stops-short-of-is-an-ERROR-not-a-half-expansion \
+  [cs157_refusals [list "\$CS157V::/x" "\$CS157V:::W/x" "\$::CS157V::/x" \
+                        "\$CS157V(/x" "\$CS157V(k" "\$CS157V(a(b))/x"]] {}
+eqcheck CS157y-...and-the-half-expansion-really-is-gone-not-merely-flagged \
+  [pcall ase::expand_path {$CS157V::/x}] "ERR:ase: cannot expand model path\
+'\$CS157V::/x': sim_expand_vars: refusing a variable reference this expander\
+would read differently from Tcl: \$CS157V::"
+eqcheck CS157z-a-dollar-Tcl-itself-leaves-literal-is-still-passed-through \
+  [cs157_expansions [list "\$/x" "\$\$CS157V/x" "\$CS157V:x" "\$CS157V-2/x" \
+                          "/plain/\$" "\$CS157V/a\$"]] \
+  [list "\$/x" "\$/CS157/varset/x" "/CS157/varset:x" "/CS157/varset-2/x" \
+        "/plain/\$" "/CS157/varset/a\$"]
+
+# THE DIFFERENTIAL, KEPT AS A ROW. This is the fuzz that found the family,
+# reduced to the corpus it found it with: every shape is expanded through BOTH
+# the old `subst -nocommands -nobackslashes` and `ase::expand_path`, and any
+# shape the OLD raised on while the NEW returned a value is reported by name.
+# The row is the invariant, not the list: a later loosening anywhere in the
+# parser reddens here even if nobody thought to write a row for its shape.
+#
+# ⚠ THE CORPUS CARRIES NO `[`, ON PURPOSE. The old expander is the oracle here
+# and it EXECUTES a command substitution sitting in an array index -- that is
+# the whole defect. Running the oracle over a payload would be running the
+# payload. The bracket direction is CS157n/CS157o's, driven there.
+eqcheck CS157aa-DIFFERENTIAL-no-shape-the-old-expander-refused-comes-back-as-a-literal \
+  [cs157_loosened] {}
+
+# THE STRICTER DIRECTION, PINNED SO IT IS NOT A SURPRISE. Two shapes went the
+# other way: `subst` resolved a colon run of three or more (`$:::V` is `::V` to
+# Tcl's namespace lookup), and this expander refuses it rather than growing a
+# second spelling of the separator. It is on the ledger with the rest of issue
+# 1239's residue; nothing in the tree, in any committed `.state` file or in any
+# shipped `xschemrc`, spells a variable that way.
+eqcheck CS157ab-a-colon-run-of-three-or-more-is-REFUSED-where-subst-resolved-it \
+  [cs157_refusals [list "\$:::CS157V/x" "\$::::CS157V/x"]] {}
 
 # ===========================================================================
 # E — PERSISTENCE: THE FIELDS SURVIVE A RESTART  (was CS158*)
@@ -292,15 +507,7 @@ if {![file isfile $sfix]} {
 # src/ase.tcl is sourced at startup and runs true-headless. SDG15 used to assert
 # that item 13's MODEL procs answered with no dialog open; there is no dialog
 # any more, so the claim is simply that none of these reaches for Tk.
-proc strip_tcl_comments {body} {
-  set out {}
-  foreach l [split $body "\n"] {
-    if {[regexp {^[ \t]*#} $l]} continue
-    regsub {;[ \t]*#.*$} $l {} l
-    lappend out $l
-  }
-  return [join $out "\n"]
-}
+# (strip_tcl_comments is a preamble helper -- section D uses it too.)
 # ⚠ COMMAND POSITION, not merely a non-word character. Half these names are
 # ordinary English -- `entry`, `label`, `text` -- and a bare `[^a-zA-Z0-9_]`
 # context matches them inside `dict get $s entry`, which reddens the row for a

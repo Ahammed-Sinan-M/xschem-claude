@@ -451,8 +451,10 @@ folder the probe cannot use switches every simulator warning off, for good, with
 nothing said — both shapes measured, a read-only folder and an ordinary file
 sitting where `.ase_probe` needs to be. **0961**: a location written `./name` is
 not made absolute before the probe changes folder and cannot then be started;
-latent behind the registry's own normalize, and the code comment states the
-opposite rule. **0962**: a coverage gap — no committed row reproduces the
+filed as latent behind the registry's own normalize, and the code comment states
+the opposite rule. (⚠ **The "latent" half was wrong and was corrected
+2026-09-07**: the nothing-in-force route hands the probe `auto_execok`'s answer,
+which is relative on an ordinary `$PATH`. See the issue file.) **0962**: a coverage gap — no committed row reproduces the
 CONCURRENT write that 0951 is about, and row I4's headline half passes on the
 defective tree.
 
@@ -2465,4 +2467,40 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   0, which manufactured and then destroyed an intermediate "lock modifier"
   finding. `tests/headless/probe_mmb_pan.tcl` is the outstanding measurement.
 
-**The next free number is 1377.**
+- **1377** — filed as four ASE suites reading the **developer's own**
+  `~/.xschem/ase_simulators`; it is **SIX**. `src/xschem.tcl` loads the registry
+  once at startup, so registering a simulator reddens the suites that guard the
+  registry: `test_ase_core` 7, `test_ase_persist` 5, `test_ase_final` 3,
+  `test_ase_preflight` 2 — and **`test_ase_sod_case` 11**, which nobody had
+  noticed and which the survey found. A third, hostile registry is worse than a
+  count change: `test_ase_core`, `test_ase_final` and `test_ase_final_gf180`
+  ABORT on a `REFUSED` raise with 130, 55 and 4 checks never reached, while
+  `test_ase_preflight` and `test_ase_sod_case` go green for the WRONG reason.
+  `test_ase_sod_case` is the sharpest shape: green under an empty registry AND
+  under a broken one, red only under a registry that WORKS. **FIXED** by an
+  opt-in helper `test_sim_registry_isolate` / `test_sim_registry_state` in
+  `tests/headless/scratch.tcl` (the file all six already source) plus one
+  `ISO1377` row per suite and an `ISO1377b` round trip fencing the two clears no
+  HOME can red; the user's registry file is never read, written, moved or backed
+  up — the clear happens in memory after the startup load. The issue also
+  records a standing red found in passing and NOT fixed: `test_op_dump_altshow`
+  H1, a stray gitignored `/untitled~.sym` dated 2026-09-04, needs its own number.
+
+- **1378** — `op_param_lists::write_conf` turns the user's settings file into a
+  **symlink** when `<path>.new` is one: `open` follows a symlink and `file
+  rename` does not, so the bytes land on the link's target — an unrelated file,
+  truncated — and the link itself is moved onto the settings path. rc=**1**,
+  **zero reports**. The third member of issue **1276**'s family, found by that
+  item's own re-verification pass on 2026-09-07 and **filed, not fixed**,
+  because 1276's scope was an explicit lift of two named hunks. Row W1 of
+  `test_op_param_store_1245` makes `<path>.new` a *directory* (where `open`
+  fails and the writer behaves); nothing makes it a *link* (where `open`
+  succeeds). `ase::sim_write_conf` shares the idiom — see issue **1286**.
+  ⚠ **FIXED 2026-09-07, close-out item F3, and it was in BOTH writers** — the
+  claim in 1286 that it applied only to the sibling was measured false. Rows
+  `W7f W7g W7h W7i` (`test_op_param_store_1245`, 138 → 142) and
+  `R11j R11k R11l R11m` (`test_ase_simreg_0931`, 91 → 95). No new number was
+  minted for the `..`-collapse residual measured alongside it; it is recorded
+  in 1276, 1286 and in both resolvers' comments instead.
+
+**The next free number is 1379.**

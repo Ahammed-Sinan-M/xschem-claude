@@ -96,6 +96,16 @@ set repo    [file normalize [file join $here .. ..]]           ;# repo root
 source [file join $here scratch.tcl]
 set scratch [test_scratch ase_plot]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## P4/P6 pin FOLDED trace names (`i(v1)`, `v(d)`). MEASURED before this line:
+## 3 FAILED under the developer's HOME, ALL PASS (150) under a HOME with no
+## registry, and 31 FAILED with 42 rows NEVER RUN under a registry naming a
+## WORKING build -- P1/P3 exit -1 and the viewer never opens, so everything below
+## them stops measuring.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 # model resolution exactly as sky130A/cadence_style_rc sets it
 set ::SKYWATER_MODELS [file join $repo sky130A models libs.tech combined]
 

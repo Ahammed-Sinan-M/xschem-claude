@@ -1678,6 +1678,256 @@ check {W7b a two-hop chain and a DANGLING link both resolve to the real file and
         [llength [glob -nocomplain -directory $W7B *.new]]] \
   [list 0 0 0 0 1 link 1 1 link 1 0 1 0 0]
 
+# W7c / W7d / W7e — THE TILDE AND THE BOUND (repair round, 2026-09-07).
+# The same hole as issue 1286's, because that resolver and this one are copies
+# of each other; fixed in both at once so they do not drift a third time.
+#
+# ⚠ `file join` AND `file normalize` EXPAND A LEADING TILDE; THE KERNEL DOES
+# NOT. A symlink whose stored target is literally `~/notes.conf` is, to the
+# operating system, a link into a folder NAMED `~` beside the link: readlink
+# says `~/notes.conf`, and with no such folder there the link reads as
+# DANGLING. Measured in tclsh: [file join /a/b {~/x}] answers `~/x`, and
+# `file normalize` then answers `/home/<you>/x`. So `_resolve_target` turned
+# such a link into a path in the user's HOME and `write_conf` OVERWROTE
+# WHATEVER FILE WAS ALREADY THERE while returning 1 — this issue's own headline
+# symptom, bytes somewhere else with rc still success, arriving through this
+# issue's own fix.
+#
+# THE REMEDY IS MEASURED, NOT INVENTED: put a `./` in front of the target
+# before joining. [file normalize [file join /a/b ./~/x]] answers `/a/b/~/x`,
+# kernel-identical, and the other target shapes are unchanged: `sub/y` ->
+# /a/b/sub/y, `/abs/z` -> /abs/z (absolute still wins), `../up.conf` ->
+# /a/up.conf.
+#
+# W7c overrides HOME for the duration of the call, so the row neither depends
+# on nor writes into the developer's real home directory.
+set W7C [file join $scratch w7c]
+file delete -force $W7C
+file mkdir $W7C
+## ⚠ `file join` CANNOT BUILD THIS PATH — it treats a bare ~ as absolute and
+## throws the prefix away — so the folder literally named ~ is spelled with a
+## slash.
+file mkdir $W7C/~
+set W7C_HOME [file join $scratch w7c_home]
+file delete -force $W7C_HOME
+file mkdir $W7C_HOME
+set W7C_BYST [file join $W7C_HOME w7cnotes.conf]
+ol_put $W7C_BYST "# KEEP ME: an unrelated file that happens to share the name\n"
+set W7C_LINK [file join $W7C w7clink.conf]
+set W7C_MK [catch {exec ln -s {~/w7cnotes.conf} $W7C_LINK}]
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7crow w7crow 0}}
+ol_ans ::op_param_lists::said_clear
+set W7C_HOME0 $::env(HOME)
+set ::env(HOME) $W7C_HOME
+set W7C_R [ol_ans ::op_param_lists::write_conf $W7C_LINK]
+set ::env(HOME) $W7C_HOME0
+set W7C_BYSTB [ol_bytes $W7C_BYST]
+check {W7c a link whose stored target starts with a tilde is followed the way the system follows it — as an ordinary folder named ~ beside the link — so the settings land there and an unrelated file of the same name in your home directory is left byte-for-byte as it was} \
+  [list $W7C_MK $W7C_R \
+        [expr {[catch {file type $W7C_LINK} W7C_T] ? "RAISED" : $W7C_T}] \
+        [ol_lines_eq [ol_bytes $W7C/~/w7cnotes.conf] {param class mos annotation w7crow w7crow 0}] \
+        $W7C_BYSTB] \
+  [list 0 1 link 1 "# KEEP ME: an unrelated file that happens to share the name\n"]
+
+# W7d — AND IT MUST NOT RAISE. `file normalize` RAISES on a `~nosuchuser` no
+# password entry matches (measured: `user "nosuchuser_xschem" doesn't exist`),
+# and this writer's own contract is "Returns 1, or 0 with a report; never
+# raises." Measured before this repair: write_conf raised.
+#
+# ⚠ THIS WRITER THEN SUCCEEDS, AND THAT IS THE RIGHT ANSWER HERE — unlike
+# ase::sim_write_conf, it creates a missing parent directory (the `file mkdir`
+# above), so the kernel-identical target `<link's dir>/~nosuchuser_xschem/…`
+# is made and written. The row's subject is WHERE the bytes are, not whether
+# the save failed: a directory literally named `~nosuchuser_xschem` beside the
+# link, and nothing under any real home.
+set W7D [file join $scratch w7d]
+file delete -force $W7D
+file mkdir $W7D
+set W7D_LINK [file join $W7D w7dlink.conf]
+set W7D_MK [catch {exec ln -s {~nosuchuser_xschem/list.conf} $W7D_LINK}]
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7drow w7drow 0}}
+ol_ans ::op_param_lists::said_clear
+set W7D_R [ol_ans ::op_param_lists::write_conf $W7D_LINK]
+check {W7d a link pointing into the home directory of a user who does not exist does NOT raise — this writer's contract is that it never does — and the settings land in a directory literally named ~nosuchuser_xschem beside the link, never under any real home} \
+  [list $W7D_MK $W7D_R [ol_nsaid] \
+        [expr {[catch {file type $W7D_LINK} W7D_T] ? "RAISED" : $W7D_T}] \
+        [ol_lines_eq [ol_bytes $W7D/~nosuchuser_xschem/list.conf] {param class mos annotation w7drow w7drow 0}] \
+        [llength [glob -nocomplain -directory $W7D *.new]]] \
+  [list 0 1 0 link 1 0]
+
+# W7e — THE BOUND AND THE SENTENCE MUST NAME THE SAME NUMBER. The refusal says
+# "more than 16 links deep". The resolver spends one pass per link and needs one
+# further pass to see that the last thing is not a link, so a loop of exactly 16
+# passes refused a chain of exactly 16. Measured before this repair: 15 saved,
+# 16 was refused as "more than 16".
+proc ol_mkchain {dir n leaf} {
+  file delete -force $dir
+  file mkdir $dir
+  ol_put [file join $dir $leaf] "# the real settings file\n"
+  for {set i [expr {$n - 1}]} {$i >= 0} {incr i -1} {
+    set t [expr {$i == $n - 1 ? $leaf : "c[expr {$i + 1}].conf"}]
+    catch {file link -symbolic [file join $dir c$i.conf] $t}
+  }
+  return [file join $dir c0.conf]
+}
+set W7E16 [ol_mkchain [file join $scratch w7e16] 16 w7ereal16.conf]
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7e16 w7e16 0}}
+ol_ans ::op_param_lists::said_clear
+set W7E16_R [ol_ans ::op_param_lists::write_conf $W7E16]
+set W7E17 [ol_mkchain [file join $scratch w7e17] 17 w7ereal17.conf]
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7e17 w7e17 0}}
+ol_ans ::op_param_lists::said_clear
+set W7E17_R [ol_ans ::op_param_lists::write_conf $W7E17]
+check {W7e a chain of exactly sixteen links still saves and only the seventeenth is refused — the number the refusal sentence names and the number the resolver allows are the same number} \
+  [list $W7E16_R \
+        [ol_lines_eq [ol_bytes [file join $scratch w7e16 w7ereal16.conf]] {param class mos annotation w7e16 w7e16 0}] \
+        [expr {[catch {file type $W7E16} W7E_T] ? "RAISED" : $W7E_T}] \
+        $W7E17_R [ol_saidmatch {*more than 16*}] \
+        [ol_lines_eq [ol_bytes [file join $scratch w7e17 w7ereal17.conf]] {param class mos annotation w7e17 w7e17 0}]] \
+  [list 1 1 link 0 1 0]
+
+# W7f .. W7i — THE TEMPORARY FILE IS PART OF THE TARGET (issue 1378), AND THE
+# TILDE SHAPE THAT NEITHER DANGLES NOR RAISES (close-out round, 2026-09-07).
+# The same hole as issue 1286's, in both writers, fixed in both at once — this
+# is the fourth member of the family (directory target, symlink target, tilde
+# target, chain bound) and the last one 1276/1286 had open.
+#
+# ⚠ THE RESOLVER ABOVE GUARDS `$path`. NOTHING GUARDED `[_tmpname $path]`. The
+# temp name is deterministic, `open <tmp> w` FOLLOWS a symbolic link and
+# `file rename` does NOT, so a stale `<conf>.new` left behind as a link meant:
+# the settings were written THROUGH the link into an unrelated file, and then
+# the LINK ITSELF was moved onto the user's settings file. Measured on this
+# writer before the repair, verbatim from W7f's RED line: rc 1, nothing said,
+# the settings file is now a `link`, and the bystander lost its own content and
+# gained the settings. rc 1, zero reports, bytes somewhere the user never named
+# — this issue's own headline symptom, one step further down.
+#
+# THE REMEDY, AND WHAT IT DOES ABOUT THE RACE. A leftover temp of a kind this
+# writer could have left (a regular file, or a link) is REMOVED first, and the
+# temp is then created with CREAT|EXCL, which POSIX requires to FAIL on an
+# existing path including a symbolic link, dangling or not. Measured in tclsh
+# 8.6.17 on this tree: `open <link> {WRONLY CREAT EXCL} 0666` raises `file
+# already exists` over a link to a real file, over a DANGLING link and over a
+# directory, and the link's target is left untouched; `open <path> w` over a
+# dangling link CREATES the target. So the unlink/create window is still there
+# and is NOT closed by ordering — what closes it is that anything planted in it
+# makes the create FAIL and the user is told, instead of the write being
+# followed somewhere else.
+#
+# ⚠ AND THE REMOVAL MUST NEVER BE `file delete -force`. Row W1 above makes
+# `<path>.new` a DIRECTORY on purpose, and a user's directory at that name is
+# not this writer's to delete: `file delete -force` removes a directory tree,
+# and `file delete` with no -force removes an EMPTY one (measured, both). W7h
+# below is the fence: a NON-EMPTY directory at the temp name, with a file
+# inside it that must still be there afterwards.
+
+# W7f — RED ON THE TREE AS FOUND. This is the row issue 1378 was filed for.
+set W7F [file join $scratch w7f]
+file delete -force $W7F
+file mkdir $W7F
+set W7F_CONF [file join $W7F op_param_lists.conf]
+set W7F_BYST [file join $W7F unrelated_notes.txt]
+ol_put $W7F_CONF "# the settings file the user has\nversion 2\n"
+ol_put $W7F_BYST "# KEEP ME: an unrelated file the user also keeps in this directory\n"
+set W7F_BEFORE [ol_bytes $W7F_BYST]
+## The temp name is deterministic, so nothing has to be guessed to arrange this.
+set W7F_MK [catch {exec ln -s unrelated_notes.txt $W7F_CONF.new}]
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7frow w7frow 0}}
+ol_ans ::op_param_lists::said_clear
+set W7F_R [ol_ans ::op_param_lists::write_conf $W7F_CONF]
+set W7F_AFTER [ol_bytes $W7F_BYST]
+check {W7f a stale temporary file left behind as a symlink is not written through — your settings file stays a real file of its own instead of quietly becoming a link, and the unrelated file that link pointed at keeps its own bytes} \
+  [list $W7F_MK $W7F_R \
+        [expr {[catch {file type $W7F_CONF} W7F_T] ? "RAISED" : $W7F_T}] \
+        [ol_lines_eq [ol_bytes $W7F_CONF] {param class mos annotation w7frow w7frow 0}] \
+        [expr {$W7F_AFTER eq $W7F_BEFORE ? 1 : 0}] \
+        [ol_count $W7F_AFTER w7frow] \
+        [llength [glob -nocomplain -directory $W7F *.new]]] \
+  [list 0 1 file 1 1 0 0]
+
+# W7g IS THE COUNTERWEIGHT AND IT WAS GREEN ON THE TREE AS FOUND. A guard that
+# refuses a stale temp is worthless if it also refuses the ordinary leftover
+# this writer itself drops on a mid-save failure — the user would then have a
+# save that can never succeed again. Its sabotage is dropping the removal and
+# keeping the exclusive create.
+set W7G [file join $scratch w7g]
+file delete -force $W7G
+file mkdir $W7G
+set W7G_CONF [file join $W7G op_param_lists.conf]
+ol_put $W7G_CONF "# the settings file the user has\nversion 2\n"
+ol_put $W7G_CONF.new "ZZ_STALE_TEMP left behind by a save that was interrupted\n"
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7grow w7grow 0}}
+ol_ans ::op_param_lists::said_clear
+set W7G_R [ol_ans ::op_param_lists::write_conf $W7G_CONF]
+set W7G_TXT [ol_bytes $W7G_CONF]
+check {W7g an ordinary leftover temporary file from an earlier interrupted save is simply replaced — the save still succeeds, says nothing, leaves no temporary behind and none of the stale text is in your settings file} \
+  [list $W7G_R [expr {[catch {file type $W7G_CONF} W7G_T] ? "RAISED" : $W7G_T}] \
+        [ol_lines_eq $W7G_TXT {param class mos annotation w7grow w7grow 0}] \
+        [ol_count $W7G_TXT ZZ_STALE_TEMP] \
+        [llength [glob -nocomplain -directory $W7G *.new]] [ol_nsaid]] \
+  [list 1 file 1 0 0 0]
+
+# W7h IS A FENCE AND IT WAS GREEN ON THE TREE AS FOUND. It forbids the obvious
+# wrong shape of W7f's fix — an unconditional `file delete -force` on the temp
+# name — from becoming a new hole of the very family this issue is about. W1
+# above uses an EMPTY directory, which a plain `file delete` also removes; this
+# one has a file inside it that has to still be there.
+set W7H [file join $scratch w7h]
+file delete -force $W7H
+file mkdir $W7H
+set W7H_CONF [file join $W7H op_param_lists.conf]
+ol_put $W7H_CONF "# keepw7h the settings file the user has\nversion 2\nparam class mos annotation keepw7h keepw7h 0\n"
+set W7H_BEFORE [ol_bytes $W7H_CONF]
+file mkdir $W7H_CONF.new
+ol_put [file join $W7H_CONF.new inside_the_folder] "DO NOT DELETE ME\n"
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7hrow w7hrow 0}}
+ol_ans ::op_param_lists::said_clear
+set W7H_R [ol_ans ::op_param_lists::write_conf $W7H_CONF]
+check {W7h a directory sitting at the temporary name is never deleted to make room — the save is refused with a sentence, the directory and the file inside it are still there, and the settings file you already had is untouched} \
+  [list $W7H_R [expr {[ol_nsaid] >= 1 ? 1 : 0}] \
+        [expr {[catch {file type $W7H_CONF.new} W7H_T] ? "RAISED" : $W7H_T}] \
+        [ol_count [ol_bytes [file join $W7H_CONF.new inside_the_folder]] {DO NOT DELETE ME}] \
+        [expr {[ol_bytes $W7H_CONF] eq $W7H_BEFORE ? 1 : 0}] \
+        [ol_lines_eq [ol_bytes $W7H_CONF] {param class mos annotation w7hrow w7hrow 0}]] \
+  [list 0 1 directory 1 1 0]
+
+# W7i — THE TILDE SHAPE NO ROW COVERED, AND IT IS THE WORST OF THE THREE.
+# GREEN ON THE TREE AS FOUND: the `./` guard landed last round and this row
+# covers a shape that guard was never measured against. W7c uses `~/x`, which
+# DANGLES, and W7d uses `~nosuchuser/x`, which RAISES. Neither is the shape
+# that goes quietly wrong: `~<a user who really exists>/x` neither dangles nor
+# raises — `file normalize` hands back that user's REAL home directory and the
+# writer would write there. Measured in tclsh: [file normalize [file join /a/b
+# {~root/x}]] -> /root/x, against /a/b/~root/x with the guard.
+#
+# `root` is used because it is the one account every one of these machines has
+# and the one no test may write into: if the guard is ever dropped the row reds
+# on the RETURN VALUE, because the save into /root is refused by the operating
+# system, rather than by actually putting a file there.
+set W7I [file join $scratch w7i]
+file delete -force $W7I
+file mkdir $W7I
+set W7I_LINK [file join $W7I w7ilink.conf]
+set W7I_MK [catch {exec ln -s {~root/list.conf} $W7I_LINK}]
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7irow w7irow 0}}
+ol_ans ::op_param_lists::said_clear
+set W7I_R [ol_ans ::op_param_lists::write_conf $W7I_LINK]
+check {W7i a link whose stored target names the home directory of a user who really does exist is still followed the way the system follows it — into an ordinary directory named after that user beside the link — and not into that user's real home directory} \
+  [list $W7I_MK $W7I_R [ol_nsaid] \
+        [expr {[catch {file type $W7I_LINK} W7I_T] ? "RAISED" : $W7I_T}] \
+        [ol_lines_eq [ol_bytes $W7I/~root/list.conf] {param class mos annotation w7irow w7irow 0}] \
+        [expr {[file exists /root/list.conf] ? 1 : 0}] \
+        [llength [glob -nocomplain -directory $W7I *.new]]] \
+  [list 0 1 0 link 1 0 0]
+
 # A TARGET THAT EXISTS BUT CANNOT BE READ. Under DD-7 the writer READS the file
 # it is about to write, so an unreadable-but-present target is a new failure
 # mode: proceeding would write this session's few changed keys over a file

@@ -1,8 +1,41 @@
 # 1276 — `op_param_lists::write_conf` returns success when the settings went somewhere else
 
-**Status: MEASURED, FILED, NOT FIXED.** Found by item B2's adversary pass on
-B2's own new code, 2026-09-03, before anything calls the writer. Two cases, one
-proc, one fix site.
+**Status: the DIRECTORY and RELATIVE-SYMLINK cases were fixed in commit
+`21fcece6` on 2026-09-03 (item B2c) — BEFORE the ASE-L registry batch opened.
+A THIRD CASE OF THE SAME BUG, THE TILDE, WAS STILL OPEN AFTER THAT, and was
+fixed on 2026-09-07 by this batch's REPAIR ROUND (item R1). A FOURTH, issue
+**1378** (`<path>.new` itself being a symlink), was fixed on the same day by
+this batch's CLOSE-OUT ROUND (item F3) — and in BOTH writers, not just this
+one. This header said "A fourth, issue 1378, is still open" until the truth
+sweep; that was true when written and stale by the end of the day.**
+
+⚠ **THIS HEADER SAID "FIXED AND LANDED … RE-VERIFIED INDEPENDENTLY" ON
+2026-09-07 AND THAT WAS PARTLY FALSE, so read the correction before the
+history.** Two things were run together into one sentence and both were
+overstated:
+
+* the **landing** was not this batch's work at all. `21fcece6` predates the
+  batch; the pass that rewrote this header lifted nothing and found nothing
+  left to lift, and said so correctly further down. What it did was *discover
+  that this file was stale*.
+* the **re-verification** was real but INCOMPLETE. It re-ran the two cases this
+  file names and did not ask the third: a symlink whose stored target begins
+  with a **tilde**. `file join` and `file normalize` expand a leading tilde and
+  the kernel does not, so `_resolve_target` answered a path in the user's
+  **home directory** and `write_conf` overwrote whatever unrelated file was
+  there — **rc 1, zero reports, bytes somewhere else**, which is this issue's
+  own headline symptom arriving through this issue's own fix. Two independent
+  adversaries measured it. A green suite said nothing about it because no row
+  asked.
+
+**The tree is fixed for the three cases named above** as of the repair round;
+see **"THE TILDE — REPAIR ROUND"** at the very end of this file. Everything
+below the first horizontal rule is the record of how it got here, including two
+attempts that were reverted as collateral; read it as history, not as a
+description of the tree.
+
+Originally: found by item B2's adversary pass on B2's own new code, 2026-09-03,
+before anything calls the writer. Two cases, one proc, one fix site.
 
 **Severity: this is the writer's headline contract failing in the direction
 nobody tests for.** Issue 0937's whole lesson is that a *truncated* file is
@@ -290,3 +323,266 @@ fails, so a build with **no directory guard at all** still returns 0 and still
 leaves the directory empty — while telling the user *"it already exists but
 could not be read"*. **Row W6 must assert the report's TEXT**, not just the
 verdict. It does now.
+
+---
+
+# LANDED AND RE-VERIFIED — 2026-09-07, the ASE-L registry batch
+
+**This item was scheduled a fourth time because THIS FILE said "NOT LANDED"
+and the tree said otherwise.** The B2c fix went in with commit `21fcece6`
+(*"fix(1276,1277,1281,1288,1294,1296): the settings file stops eating rows the
+user typed (B2c)"*); `src/op_param_lists.tcl` at md5
+`14a20c65f492721cf81d95925dae9c6e` carries `_resolve_target`, `_target_why` and
+the four lines inside `write_conf` that use them, and
+`tests/headless/test_op_param_store_1245.tcl` carries rows **W6 W7 W7b W8 W9**.
+Nothing was lifted out of `B2a_working_tree_REVERTED.patch` this pass; there was
+nothing left to lift. The staleness was the whole cost of the item, so it is
+corrected at the top of this file.
+
+## Re-measured against the tree, WITHOUT the suite
+
+The suite could in principle be wrong about its own subject, so both original
+cases were re-run from a bare `tclsh` that sources `src/op_param_lists.tcl` and
+calls the writer directly (probe kept out of tree, in the session scratch):
+
+```
+CASE1 DIRTARGET rc=0 reports=1 path_is_dir=1 inside={}
+CASE1 said: cannot save the parameter lists to <S>/w/dirtarget: it is a
+      directory, not a settings file. Nothing was written inside it, and the
+      file you already had is untouched.
+CASE2 SYMLINK mk=0 rc=1 reports=0 link_type=link real_size_before=0
+      real_size_after=1689 link_size=1689 stray_in_cwd=0
+CASE2 real_has_row=1
+CASE3 FRESHDIR rc=1 reports=0 isfile=1 has_row=1
+```
+
+Case 2's link is made with a **relative** target from a **different cwd**, which
+is the shape that refutes this issue's own recommended one-liner; `stray_in_cwd=0`
+is the term that would red if anyone reintroduced it. Case 3 is the
+counterweight (row W2's shape): a path in a directory that does not exist yet
+still succeeds, so the guard is not a blanket refusal.
+
+## The rows are non-vacuous — two sabotages, by name
+
+`test_op_param_store_1245` baseline: **ALL PASS (135 checks)**, `--nolog`, `:99`.
+
+| sabotage | suite verdict | rows red BY NAME |
+|---|---|---|
+| `SB-NO-SYMLINK-RESOLVE` — `_resolve_target` → `return $path` | `RESULT: 3 FAILED (132 passed)` | **W7** `{0 1 file 0 0}`, **W7b**, and **BE9** (issue 1327's Save-through-a-symlink row, which rides the same resolution) |
+| `SB-NO-TARGET-GUARD` — `_target_why` → `return {}` | `RESULT: 2 FAILED (133 passed)` | **W6** `{0 1 0 0 1}` — red on the **third** term, the sentence, and **BE6** |
+
+The second one reproduces, exactly, the observability gap recorded in the
+ATTEMPT-3 section above: with `_target_why` gone the writer **still** returns 0
+and **still** leaves the directory empty, because ruling DD-7's read guard also
+fails to `open` a directory — but it tells the user *"it already exists but
+could not be read (… illegal operation on a directory)"*. Only W6's **text**
+term catches it. That term is load-bearing and must not be trimmed.
+
+Restored from a `cp` of the pristine file after each sabotage; md5 back to
+`14a20c65f492721cf81d95925dae9c6e` and `git diff` empty both times.
+
+## ⚠ ONE SIBLING HOLE FOUND AND DELIBERATELY NOT FIXED HERE — issue 1378
+##    (HISTORY — it WAS fixed later the same day, close-out item F3; see below)
+
+The same adversary pass measured a third way this writer can return **1** with
+**zero reports** while the settings land somewhere else: when the temp name
+`<path>.new` is itself a **symlink**. `open` follows it, `file rename` does
+not, so the user's regular settings file is REPLACED BY A LINK and an unrelated
+file is truncated and overwritten. It is filed as **1378** rather than fixed,
+because this item's scope was an explicit lift of two named hunks and the guard
+ORDER in `_resolve_target`'s comment block is not a place to freehand a third.
+No acceptance row was added for it either: a row for an unfixed hole would put
+the suite off its ALL-PASS baseline.
+
+---
+
+# THE TILDE — REPAIR ROUND, 2026-09-07 (item R1)
+
+The 2026-09-07 pass recorded above was refuted by the batch's adversary on the
+case it did not ask. Fixed here, in **both** copies of the resolver at once —
+`op_param_lists::_resolve_target` and `ase::sim_conf_target` (issue **1286**) —
+because the two procs being copies that drift apart is the defect 1286 exists
+about, and this was that drift arriving a third time.
+
+## What was wrong
+
+`file join` and `file normalize` **expand a leading tilde**; the **kernel does
+not**. A link whose stored target is literally `~/notes.conf` is, to the
+operating system, a link into a directory *named* `~` beside the link —
+`readlink` prints `~/notes.conf` and the link reads as **dangling**. Measured
+in `tclsh`:
+
+```
+[file join /a/b {~/x}]                    ->  ~/x
+[file normalize [file join /a/b {~/x}]]   ->  /home/analog/x        <-- the hole
+[file normalize [file join /a/b {./~/x}]] ->  /a/b/~/x              <-- the kernel's answer
+```
+
+So `_resolve_target` answered a path in `$HOME` and `write_conf` wrote the
+settings **over an unrelated file there**, returning **1** with **zero
+reports**, leaving the link dangling and the next `load_conf` saying there is
+no settings file.
+
+Second half: `file normalize` **raises** on a `~user` that no password entry
+matches (`user "nosuchuser_xschem" doesn't exist`), out of a writer whose
+contract is *"Returns 1, or 0 with a report; never raises."*
+
+## The remedy, measured rather than invented
+
+Neutralise the tilde before joining:
+
+```tcl
+if {[string index $tgt 0] eq "~"} { set tgt ./$tgt }
+```
+
+Checked against all five target shapes — `~/x` → `/a/b/~/x`,
+`~nosuchuser/q` → `/a/b/~nosuchuser/q` (no raise), `sub/y` → `/a/b/sub/y`,
+`/abs/z` → `/abs/z` (an absolute target still wins), `../up.conf` →
+`/a/up.conf`.
+
+## And the bound was off by one
+
+`_target_why`'s sentence says *"a symbolic link chain more than 16 links
+deep"*. The loop spent one pass per link and needed one further pass to see
+that the last thing is **not** a link, so it refused a chain of **exactly 16**.
+Measured before the repair: 15 saved, 16 refused. The loop is now `$i <= 16`,
+and 16 saves while 17 is refused.
+
+## Red before green — verbatim, `--nolog` on `:99`
+
+Baseline `test_op_param_store_1245`: **ALL PASS (135 checks)**. With the three
+new rows on the **as-found** resolver:
+
+```
+FAIL: W7c a link whose stored target starts with a tilde is followed the way the system follows it — as an ordinary folder named ~ beside the link — so the settings land there and an unrelated file of the same name in your home directory is left byte-for-byte as it was -> {0 1 link NOFILE {# KEEP ME: an unrelated file that happens to share the name
+list class mos annotation
+param class mos annotation w7crow w7crow 0
+}} (exp {0 1 link 1 {# KEEP ME: an unrelated file that happens to share the name
+}}) : FAIL
+FAIL: W7d a link pointing into the home directory of a user who does not exist does NOT raise — this writer's contract is that it never does — and the settings land in a directory literally named ~nosuchuser_xschem beside the link, never under any real home -> {0 {RAISED:user "nosuchuser_xschem" doesn't exist} 0 link NOFILE 0} (exp {0 1 0 link 1 0}) : FAIL
+FAIL: W7e a chain of exactly sixteen links still saves and only the seventeenth is refused — the number the refusal sentence names and the number the resolver allows are the same number -> {0 0 link 0 1 0} (exp {1 1 link 0 1 0}) : FAIL
+RESULT: 3 FAILED (135 passed)
+```
+
+W7c's RED line is the whole issue in one place: the user's unrelated home file
+**contains the settings** the writer claimed to save elsewhere.
+
+After the repair: **`RESULT: ALL PASS (138 checks)`**, and the name+status diff
+against the baseline is three added `ok:` lines and nothing moved.
+
+`HOME` is overridden for the duration of W7c's call and restored, so the row
+neither depends on nor writes into the developer's real home directory.
+
+## Non-vacuous — sabotage, by name
+
+| sabotage | suite verdict | rows red BY NAME |
+|---|---|---|
+| drop `if {[string index $tgt 0] eq "~"} …` from `_resolve_target` | `RESULT: 2 FAILED (136 passed)` | **W7c**, **W7d** |
+| `$i <= 16` back to `$i < 16` | `RESULT: 1 FAILED (137 passed)` | **W7e** |
+
+Restored from a `cp` after each; `md5sum src/op_param_lists.tcl` back to
+`cce5bd0cad711f9abd8a38c83a03152c`.
+
+## What this repair did NOT measure
+
+* **The `catch` around `file normalize` is insurance with no row behind it.**
+  Removing it while keeping the `./` guard left the suites **ALL PASS** —
+  measured. After the guard, a tilde can only reach `file normalize` from the
+  *caller's own* path, and `file link` raises on that first and returns. The
+  code comment says so; do not read the suite as proving that line.
+* ~~**Issue 1378 is still open** — `<path>.new` itself being a symlink.
+  Untouched by this repair.~~ **CLOSED in the close-out round, 2026-09-07** —
+  and it was in **both** writers, not just this one. See the section below.
+* No `:0` / Xwayland run, no GUI arm: both writers are pure Tcl file I/O and
+  every row above is headless.
+
+
+---
+
+# THE TEMPORARY FILE WAS NEVER GUARDED — close-out round, 2026-09-07 (F3)
+
+`_resolve_target` guards `$path`. **Nothing guarded `[_tmpname $path]`.** The
+temp name is deterministic, `open <tmp> w` **follows** a symbolic link and
+`file rename` does **not**, so a stale `<conf>.new` left behind as a link wrote
+the settings **through** the link into an unrelated file and then moved the
+**link itself** onto the user's settings file — rc **1**, **zero reports**. It
+is the **fifth** and last member of this issue's family: directory target,
+symlink target, tilde target, chain bound, **temp-name symlink**. (It read
+"fourth" over a list of five until the close-out round's adversary counted
+them.)
+
+RED on the tree as found, verbatim:
+
+```
+FAIL: W7f a stale temporary file left behind as a symlink is not written through — your settings file stays a real file of its own instead of quietly becoming a link, and the unrelated file that link pointed at keeps its own bytes -> {0 1 link 1 0 2 0} (exp {0 1 file 1 1 0 0}) : FAIL
+```
+
+**Both writers were repaired in one change** — `op_param_lists::write_conf` and
+`ase::sim_write_conf` — because these two drifting apart is the defect issue
+**1286** exists about. The repair, the measured platform facts it rests on, the
+sabotage table and the list of what was **not** measured all live in issue
+**1378**; they are not duplicated here.
+
+## The rows added here
+
+`tests/headless/test_op_param_store_1245.tcl`: **W7f W7g W7h W7i**
+(ALL PASS 138 → **142**, four added `ok:` lines and nothing moved).
+
+**Only W7f was RED on the tree as found.** The other three were **GREEN as
+found** and say so in their own comment blocks:
+
+* **W7g** is the counterweight — an ordinary leftover **regular** `<conf>.new`
+  must still be replaced and the save must still succeed, or the user gets a
+  Save that can never work again. Its sabotage is dropping the removal and
+  keeping the exclusive create: `RESULT: 2 FAILED (140 passed)`, **W7f** and
+  **W7g** red by name.
+* **W7h** is a fence against the obvious *wrong* fix. Row W1 puts a
+  **directory** at `<path>.new` on purpose, and an unconditional
+  `file delete -force` would delete a user's directory whole — a new hole of
+  this issue's own family. W7h's directory has a file inside it that has to
+  still be there. Sabotage: `RESULT: 2 FAILED (140 passed)`, **W1** and **W7h**
+  red by name, W7h reading `{1 0 RAISED 0 0 1}` — the save succeeded, nothing
+  was said, and the directory and its contents are gone.
+* **W7i** covers the tilde shape no row reached. W7c uses `~/x`, which
+  **dangles**; W7d uses `~nosuchuser/x`, which **raises**;
+  `~<a user who really exists>/x` does **neither** — `file normalize` hands back
+  that account's real home directory (measured: `[file normalize [file join /a/b
+  {~root/x}]]` → `/root/x`). `root` is used deliberately: its home is
+  unwritable for the user these suites run as, so dropping the `./` guard reds
+  the row on the **return value** instead of by putting a file somewhere real.
+  Sabotage: `RESULT: 3 FAILED (139 passed)`, **W7c**, **W7d** and **W7i** red by
+  name.
+
+## The `..` residual — measured, and deliberately left alone
+
+`file normalize` collapses `..` **lexically**. Measured on this tree,
+`tclsh 8.6.17`, against the kernel:
+
+| path | `file normalize` | the kernel |
+|---|---|---|
+| `<base>/./sub/../x`, `sub` a **link** to `<d>/elsewhere` | `<d>/x` | `readlink -f` → `<d>/x` — **agree** |
+| `<base>/./~/../x`, **no** `~` beside the link | `<base>/x` | `cat` → **ENOENT** — disagree |
+| `<base>/./~/../x`, `~` present as a real directory | `<base>/x` | `cat` → `<base>/x` — **agree** |
+
+An *existing* component, directory **or symlink**, is resolved before the `..`
+and there is no divergence at all; it needs a `..` immediately after a component
+that **does not exist**. **Left as it is and pinned by no row**: in that state
+the link is **broken**, this writer writes through broken links by design (row
+`W7b`), and `<base>/x` is exactly the path the kernel names once the missing
+component appears as an ordinary directory. Not covered: that component
+appearing later as a **link elsewhere**. The measurement is in the code beside
+the `./` guard so it is not re-derived.
+
+## Suites, `--nolog` on `:99`
+
+`test_op_param_store_1245` ALL PASS (138) → **ALL PASS (142)**;
+`test_ase_simreg_0931` ALL PASS (91) → **ALL PASS (95)**;
+`test_ase_persist` and `test_ase_simdlg_0937` unchanged at ALL PASS (137) and
+(48), with **no name+status diff** in either.
+
+## Not measured
+
+The unlink/create window was **not raced** — no row plants a link between the
+`file delete` and the exclusive create; the safety argument rests on the
+measured `CREAT|EXCL` behaviour tabled in issue 1378. No `:0` / Xwayland run and
+no GUI arm: pure Tcl file I/O. Nothing measured under `root`.

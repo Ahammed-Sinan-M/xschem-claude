@@ -1434,10 +1434,48 @@ namespace eval ::op_param_lists {
   ## 16 links, which is what a loop looks like from here.
   proc _resolve_target {path} {
     set p $path
-    for {set i 0} {$i < 16} {incr i} {
+    ## ONE PASS PER LINK, PLUS ONE MORE to see that the last thing is not a
+    ## link at all. A loop of exactly 16 passes refuses a chain of exactly 16,
+    ## which the sentence in _target_why calls "more than 16 links deep" --
+    ## measured: 15 saved, 16 was refused. The bound and the sentence have to
+    ## name the same number.
+    for {set i 0} {$i <= 16} {incr i} {
       if {[catch {file link $p} tgt]} { return $p }
       if {$tgt eq {}} { return $p }
-      set p [file normalize [file join [file dirname $p] $tgt]]
+      ## ⚠ THE TILDE. `file join` and `file normalize` EXPAND a leading tilde;
+      ## THE KERNEL DOES NOT. A stored target of `~/notes.conf` is a link into
+      ## a directory NAMED `~` beside the link -- readlink says `~/notes.conf`
+      ## and, with no such directory there, the link reads as DANGLING.
+      ## Without the `./` this resolver answered a path in the user's HOME and
+      ## write_conf OVERWROTE AN UNRELATED FILE THERE while returning 1 --
+      ## this issue's own headline symptom arriving through its own fix.
+      ## Measured in tclsh: [file join /a/b {~/x}] -> `~/x`, normalized ->
+      ## `/home/<you>/x`; with the `./` -> `/a/b/~/x`, kernel-identical. The
+      ## other shapes are untouched: `sub/y` -> /a/b/sub/y, `/abs/z` -> /abs/z
+      ## (an absolute target still wins), `../up.conf` -> /a/up.conf.
+      if {[string index $tgt 0] eq "~"} { set tgt ./$tgt }
+      ## ⚠ A MEASURED RESIDUAL THAT NO ROW PINS. `file normalize` collapses
+      ## `..` LEXICALLY across a component that DOES NOT EXIST; the kernel does
+      ## not. Measured here (tclsh 8.6.17): with `sub` a link to <d>/elsewhere,
+      ## [file normalize <base>/./sub/../x] answers <d>/x -- the same as
+      ## `readlink -f`, so an EXISTING component, directory or link, is
+      ## resolved first and there is no divergence at all. With no `~` beside
+      ## the link, [file normalize <base>/./~/../x] answers <base>/x while the
+      ## kernel refuses <base>/~/../x with ENOENT. Left as it is, on purpose:
+      ## in that state the link is BROKEN, this writer writes through broken
+      ## links by design (rows W7b / R11d), and <base>/x is exactly the path
+      ## the kernel names once the missing component is created as an ordinary
+      ## directory (measured). What is NOT covered, and no row says anything
+      ## about it: the missing component later appearing as a link elsewhere.
+      ## ⚠ AND `file normalize` RAISES on a `~user` no password entry matches
+      ## (measured: `user "nosuchuser_xschem" doesn't exist`), out of a writer
+      ## whose contract is "never raises". A path that cannot even be named is
+      ## not a path this may write, so it is refused.
+      ## ⚠ NO ROW REACHES THIS CATCH and none can: after the `./` above a
+      ## tilde can only reach `file normalize` from the CALLER's own path, and
+      ## `file link` raises on that first and returns above. It is insurance,
+      ## not a covered arm -- do not read the suite as proving it.
+      if {[catch {file normalize [file join [file dirname $p] $tgt]} p]} { return {} }
     }
     return {}
   }
@@ -1498,7 +1536,34 @@ namespace eval ::op_param_lists {
     set tmp [_tmpname $path]
     set mode {}
     if {[file exists $path]} { catch {set mode [file attributes $path -permissions]} }
-    if {[catch {open $tmp w} fp]} {
+    ## THE TEMP IS PART OF THE TARGET (issue 1378), AND _resolve_target ONLY
+    ## GUARDS `$path`. The temp name is deterministic, `open <tmp> w` FOLLOWS a
+    ## symlink and `file rename` does NOT, so a stale `<conf>.new` left behind
+    ## as a link wrote the settings THROUGH the link into an unrelated file and
+    ## then moved the LINK ITSELF onto the user's settings file. Measured on
+    ## this writer before this pair of lines: rc 1, zero reports, the settings
+    ## file is now a `link`, and the bystander lost its own content and gained
+    ## the settings -- this issue's own headline symptom, one step further down.
+    ##
+    ## ⚠ `file delete` HERE, NEVER `file delete -force`. The temp name is also
+    ## the one rows W1/W7h use as a DIRECTORY on purpose, and a directory a user
+    ## put there is not this writer's to remove: `file delete -force` deletes a
+    ## whole tree and a plain `file delete` still removes an EMPTY directory
+    ## (both measured, tclsh 8.6.17). `file type` is the probe rather than
+    ## `file exists` because a DANGLING link answers exists=0 and type=link.
+    ##
+    ## ⚠ THE UNLINK/CREATE WINDOW IS REAL AND ORDERING DOES NOT CLOSE IT. What
+    ## closes it is CREAT|EXCL, which POSIX requires to fail on an existing path
+    ## INCLUDING a symlink, dangling or not -- measured here: `open <link>
+    ## {WRONLY CREAT EXCL} 0666` raises `file already exists` over a link to a
+    ## real file, over a dangling link and over a directory, and leaves the
+    ## link's target untouched, while `open <path> w` over a dangling link
+    ## CREATES the target. Anything planted in the window therefore makes the
+    ## create FAIL and the user is told, instead of the write being followed
+    ## somewhere else. The explicit 0666 is what Tcl's `w` already used: both
+    ## land at 00644 under this shell's umask 0022 (measured).
+    if {![catch {file type $tmp} tkind] && $tkind ne {directory}} { catch {file delete $tmp} }
+    if {[catch {open $tmp {WRONLY CREAT EXCL} 0666} fp]} {
       _say "cannot save the parameter lists to $path: $fp. The file you already had is untouched."
       return 0
     }
