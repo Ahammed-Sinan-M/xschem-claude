@@ -17421,6 +17421,31 @@ source $XSCHEM_SHAREDIR/op_annot.tcl
 # source time; it reads no file and touches op_annot:: not at all until called, and
 # it must follow op_annot.tcl because it seeds from that registry.
 source $XSCHEM_SHAREDIR/op_param_lists.tcl
+## ⚠ AND THE FILE IT WROTE LAST TIME IS READ BACK HERE, WHICH NOTHING DID.
+## THE USER'S WORDS: "'Save' modified list (annotation or summary) for RDW is
+## not surviving session. RDW claims saved, and the file exists while Xschem
+## still up.  But, relaunch and: No such file or directory."  Both halves were
+## true and the second half was a different bug; this line is the first half.
+##
+## MEASURED at f25eb4a5: `op_param_lists::load` -- the user-then-project tier
+## reader, complete, correct and fenced -- had ZERO callers in src/.  Save
+## wrote `<pwd>/.xschem/op_param_lists.conf` and every subsequent session
+## started with an empty store, so the Save button's own sentence ("wrote the
+## operating-point parameter lists to <path>") was true and useless.  Called by
+## hand in a fresh process it returned both tier paths and restored the user's
+## nine-parameter summary list exactly.
+##
+## HERE, and not lazily at first use: `load` is DEFINED as the session's
+## INITIAL STATE (its own comment, ruling DD-7 -- it stamps nothing, so a later
+## Save of one tier still rewrites only the keys this session touched).  A lazy
+## first-use load would make "initial" depend on which door the user opened
+## first.  It must follow the source above and may precede the PDK's
+## declarations, because a STORED list wins over a declared one.
+##
+## `catch` because a missing file is the ordinary first-run case and a broken
+## one must not take the whole GUI down with it (issue 0423: Tcl_AppInit()
+## continues after a failed source, and the installed binary then segfaults).
+catch {::op_param_lists::load}
 # Generic command-mode suspend/resume registry (cmdmode; no Tk, no ASE knowledge).
 # doc/claude/issues/0201-no-command-suspend-resume-contract.md. MUST precede ase_window.tcl,
 # which calls cmdmode::register at source time.

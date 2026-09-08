@@ -1567,7 +1567,15 @@ proc rdw::_list_ctx {ctx} {
     return $ctx
 }
 
-proc rdw::dump_devpath {devpath ctx} {
+## ⚠ THE BUILDER, SPLIT OUT OF THE DOOR (item: blocks follow a list edit).
+## `rdw::dump_devpath` is still THE SEAM'S ONLY DOOR for a NEW dump -- every
+## comment below about contexts and rulings DD-5/1298/1300 is about this
+## builder and still governs -- but a REBUILD of a block already in the store
+## must produce a block by exactly the same route, or the two would drift and
+## this file would be paying for two builders again (issues 1288, 1300, 1355
+## are all that shape).  So: this proc makes a block, `dump_devpath` makes one
+## and pushes it, and `rdw::_rebuild_block` makes one and REPLACES with it.
+proc rdw::_make_block {devpath ctx} {
     set s [rdw::sim]
     ## The renderer's malformed-answer sentence names the backend, so the
     ## backend has to be in the context it is handed (issue 1284).
@@ -1600,12 +1608,16 @@ proc rdw::dump_devpath {devpath ctx} {
     } else {
         set blk [rdw::format_answer $ans $ctx]
     }
+    return $blk
+}
+
+proc rdw::dump_devpath {devpath ctx} {
     ## ⚠ THE VALUE HANDED BACK IS THE VALUE STORED (issue 1322).  `push`
-    ## now stamps the block with what it was about, so returning `$blk` would
-    ## hand the caller an UNSTAMPED copy of a block the store holds stamped --
-    ## two values for one dump, and the caller's is the one that cannot say
-    ## which device it came from.
-    return [rdw::push $blk]
+    ## now stamps the block with what it was about, so returning the builder's
+    ## `$blk` would hand the caller an UNSTAMPED copy of a block the store
+    ## holds stamped -- two values for one dump, and the caller's is the one
+    ## that cannot say which device it came from.
+    return [rdw::push [rdw::_make_block $devpath $ctx]]
 }
 
 # The whole round trip for one instance name: the header, the ONE name
@@ -1750,7 +1762,20 @@ proc rdw::_capture_subject {block} {
     set cell [lindex $tc 1]
     set sch {}
     catch {set sch [xschem get schname]}
-    return [dict create instname $inst type $type cellname $cell schname $sch]
+    ## ⚠ AND THE LIST THIS DUMP WAS TAKEN UNDER.  A rebuild (item: blocks
+    ## follow a list edit) has to re-render the block the user is looking at,
+    ## and that block's membership was decided by the list in force AT DUMP
+    ## TIME -- ruling DD-1's key 1/2/3 identity, carried into the block by
+    ## `rdw::_list_ctx`.  Rebuilding a list-2 block under list 1 because list 1
+    ## is what the window happens to be showing now would silently rewrite a
+    ## dump into a different question's answer.  The store is session-only
+    ## (`_do_save` writes the parameter lists, never the blocks), so there is
+    ## no stamped-without-it block to migrate.
+    variable listkind
+    set lk {}
+    catch {set lk $listkind}
+    return [dict create instname $inst type $type cellname $cell schname $sch \
+                        list $lk]
 }
 
 # THE ONE READER OF WHERE THE STAMP LIVES, AND A PURE FUNCTION OF ITS
@@ -3474,30 +3499,157 @@ proc rdw::_selection_span {} {
 # `popup_menu`) is on the CLIPBOARD path.  The two gestures look identical and
 # the window said nothing about the difference.
 #
-# ⚠ SAYING SO IS THE FIX HERE; BUILDING THE FEATURE IS A RULING, NOT A PATCH.
-# One dialog would have to answer for N rows, one status sentence would have to
-# report N outcomes rather than one, and ruling DD-10's last-row rule would
-# have to be evaluated over the BATCH -- or the user deletes five and is
-# refused on the sixth with five already gone.  Filed as issue 1356, rule debt
-# 1356, with the one-row answer proposed.
+# ⚠ THE CLAUSE WAS THE ANSWER; IT IS NOT THE ANSWER ANY MORE.  Saying so was
+# the right size of fix while a multi-row press was a RULING and not a patch,
+# and issue 1356 was filed with the one-row answer proposed.  The user has
+# since ruled the other way, in these words: "When multiple lines of parameters
+# are selected and user presses Add or Delete, those should get processed the
+# same way that a single line would get processed."  So the three problems that
+# comment names are now SOLVED rather than declared, each in one place:
 #
-# ⚠ AND THE CLAUSE IS CONDITIONAL, WHICH IS WHY IT IS AN ANSWER AND NOT NOISE.
-# It fires only when a selection is actually standing across two or more lines
-# -- i.e. only when the user made the gesture it is about.  Row BT31 asserts
-# both halves.
-proc rdw::_selection_lines {} {
+#   * ONE DIALOG for N rows -- `rdw::scope_dialog` is raised once, outside the
+#     loop, which is why the batch is confined to a single BLOCK: the dialog
+#     names one instance, one cell and one class, and a question that named one
+#     device while writing for another would be a false statement on a screen
+#     the user is reading.  Row BT9 golds the count of exactly one.
+#   * ONE SENTENCE reporting N outcomes -- `rdw::_batch_say`, which names every
+#     row that changed and every row that did not, with the store's own reason
+#     for each.
+#   * RULING DD-10 ASKED OF THE BATCH -- `rdw::_batch_last_row_why`, before the
+#     first write, so the five-deleted-then-refused-on-the-sixth outcome that
+#     comment warns about cannot happen.  There is no undo in this window and
+#     that was the whole reason the feature was a ruling.
+#
+# What survives is the LINE COUNT, because Up and Down still act on the shaded
+# row alone -- spec 4.2 B7 gives them no dialog and therefore no answer to obey
+# for a batch -- so the clause is still owed, narrowed to those two buttons.
+proc rdw::_selection_span_lines {} {
     set sp [rdw::_selection_span]
-    if {[llength $sp] != 2} { return 0 }
+    if {[llength $sp] != 2} { return {} }
     set a [lindex [split [lindex $sp 0] .] 0]
     set b [lindex [split [lindex $sp 1] .] 0]
     set c [lindex [split [lindex $sp 1] .] 1]
-    if {![string is integer -strict $a]} { return 0 }
-    if {![string is integer -strict $b]} { return 0 }
+    if {![string is integer -strict $a]} { return {} }
+    if {![string is integer -strict $b]} { return {} }
     ## A span ending at column 0 stops at the START of that line, so the line
     ## itself is not covered.  `tag add sel 5.0 11.0` is six lines, not seven.
     if {[string is integer -strict $c] && $c == 0} { incr b -1 }
-    if {$b < $a} { return 0 }
-    return [expr {$b - $a + 1}]
+    if {$b < $a} { return {} }
+    return [list $a $b]
+}
+
+proc rdw::_selection_lines {} {
+    set sp [rdw::_selection_span_lines]
+    if {[llength $sp] != 2} { return 0 }
+    return [expr {[lindex $sp 1] - [lindex $sp 0] + 1}]
+}
+
+# ---------------------------------------------------------------------------
+# THE ROWS A PRESS ACTS ON WHEN A SELECTION IS STANDING (the user's ruling)
+# ---------------------------------------------------------------------------
+# The PARAMETER rows the selection covers, in pane order, deduped by parameter
+# name, as a dict {blocks {..} params {..} locs {..} lines {..}}; `{}` when no
+# selection is standing or when it covers no parameter row at all.
+#
+# ⚠ IT IS DEDUPED BY NAME, NOT BY LINE, AND THE TWO DIFFER.  One drag can cover
+# the same parameter in two different blocks -- the window keeps its dumps, so
+# two dumps of the same device are the ordinary case -- and the second Delete
+# of `gm` would be refused as "not in the list" by a store that had already
+# removed it, turning a successful batch into one that reports a failure it
+# caused itself.
+#
+# ⚠ AND `rdw::_locate` IS THE ONLY LINE->ROW CONVERTER, here as everywhere
+# else.  It is pure in `::rdw::blocks` because `rdw::render_pane` paints one
+# line per stored entry in store order; a second walk with its own arithmetic
+# would be a second definition of "which row is line N" and would drift the
+# first time a block gained a line.
+#
+# ⚠ NOTHING HERE IS SAFE TO CALL AFTER AN EDIT.  Every success arm repaints,
+# and `rdw::render_pane` deletes the pane's text and with it the `sel` tag, so
+# the batch is taken ONCE at the top of `rdw::button` alongside the selection
+# note and for the same measured reason (issue 1356).
+proc rdw::_selection_rows {} {
+    variable blocks
+    set sp [rdw::_selection_span_lines]
+    if {[llength $sp] != 2} { return {} }
+    set bis {} ; set params {} ; set locs {} ; set lines {}
+    for {set L [lindex $sp 0]} {$L <= [lindex $sp 1]} {incr L} {
+        set loc [rdw::_locate $L]
+        if {[llength $loc] != 2} { continue }
+        set e {}
+        catch {set e [lindex [lindex $blocks [lindex $loc 0]] [lindex $loc 1]]}
+        set p [rdw::_row_param $e]
+        if {$p eq {}} { continue }
+        if {[lsearch -exact $bis [lindex $loc 0]] < 0} {
+            lappend bis [lindex $loc 0]
+        }
+        if {[lsearch -exact $params $p] >= 0} { continue }
+        lappend params $p ; lappend locs $loc ; lappend lines $L
+    }
+    if {![llength $params]} { return {} }
+    return [dict create blocks $bis params $params locs $locs lines $lines]
+}
+
+# A prose list: `a`, `a and b`, `a, b and c`.  ONE builder, because a batch
+# sentence names parameters in three different clauses and three hand-rolled
+# joins would punctuate the same fact three ways.
+proc rdw::_and_list {items} {
+    set n [llength $items]
+    if {$n == 0} { return {} }
+    if {$n == 1} { return [lindex $items 0] }
+    if {$n == 2} { return "[lindex $items 0] and [lindex $items 1]" }
+    return "[join [lrange $items 0 end-1] {, }] and [lindex $items end]"
+}
+
+# THE ONE-BLOCK REFUSAL, WORDED FROM WHAT IS ACTUALLY DIFFERENT.
+#
+# A selection that crosses a block boundary is refused, because the scope
+# dialog raised for it would name one instance while the write reached another.
+# The sentence has to earn that refusal, so it names the CLASSES when they
+# differ -- two classes are two different lists and one dialog answer cannot
+# cover both -- and says "the same device dumped twice" when they do not, which
+# is the ordinary case in a window that deliberately keeps its dumps.
+proc rdw::_batch_spread_why {bis} {
+    set names {}
+    foreach bi $bis {
+        set s [rdw::_subject $bi]
+        set c {}
+        catch {set c [dict get $s class]}
+        if {$c eq {}} { continue }
+        set d $c
+        catch {set d [::op_param_lists::class_label $c]}
+        if {[lsearch -exact $names $d] < 0} { lappend names $d }
+    }
+    if {[llength $names] > 1} {
+        return "the selected rows span [rdw::_and_list $names], which are different lists, and one answer to \"which devices?\" cannot cover both. Select rows from one dump at a time."
+    }
+    return "the selected rows span [llength $bis] dumps in this window. The scope question names one device, so select rows from one dump at a time."
+}
+
+# RULING DD-10, ASKED OF THE WHOLE BATCH AND BEFORE THE FIRST WRITE.
+#
+# `rdw::_last_row_why` refuses a Delete that would empty a list, and asking it
+# per row over a batch would delete N-1 rows and refuse the last -- with no
+# undo in this window, and with the user having pressed once.  So count the
+# batch's rows that are actually IN the base first, and refuse the whole press
+# if removing them all would leave nothing.
+#
+# ⚠ THE SENTENCE IS DD-10's OWN, EXTENDED, NOT A SECOND WORDING FOR IT.  A
+# batch of ONE falls straight through to `rdw::_last_row_why`, so the single-row
+# press keeps the sentence rows CL7 and BE-series gold, byte for byte.
+proc rdw::_batch_last_row_why {base listname params} {
+    if {[llength $params] < 2} {
+        return [rdw::_last_row_why $base $listname [lindex $params 0]]
+    }
+    set n 0
+    foreach p $params { if {[rdw::_index_of $base $p] >= 0} { incr n } }
+    if {$n == 0} { return {} }
+    if {[expr {[llength $base] - $n}] >= 1} { return {} }
+    set what [rdw::_and_list $params]
+    if {$listname eq {annotation}} {
+        return "removing $what would empty the annotation list, and at least one parameter must stay. To stop showing operating-point values on this device, turn the annotation off instead."
+    }
+    return "removing $what would empty the summary list, and at least one parameter must stay. Add another before removing these."
 }
 
 # ⚠ THE BOUNDARY IS SPLIT OUT SO IT CAN BE DRIVEN AT ITS OWN VALUES.  The
@@ -3508,13 +3660,32 @@ proc rdw::_selection_lines {} {
 # test_rdw_window_1245 and test_rdw_keys_1245 fully green while appending the
 # whole lecture to every ordinary one-row copy.  Row LX15 drives 0, 1, 2 and 16
 # on both arms.
-proc rdw::_selection_note {} {
-    return [rdw::_selection_note_for [rdw::_selection_lines]]
+proc rdw::_selection_note {id} {
+    return [rdw::_selection_note_for [rdw::_selection_lines] $id]
 }
 
-proc rdw::_selection_note_for {n} {
+# ⚠ THE CLAUSE IS NOW PER BUTTON, BECAUSE THE FACT IT STATES IS.  It used to
+# say "the buttons act on the shaded row alone", which was true of all four and
+# is now true of two: the user's ruling made Add and Delete act on the selected
+# rows, and Up and Down still cannot, because spec 4.2 B7 gives them no dialog
+# and a reorder has no batch meaning -- N rows cannot each move up one without
+# the answer depending on the order they are asked in.  A clause that kept the
+# old wording would be a false statement on a screen the user is reading, which
+# is the defect it was written to remove, pointed the other way.
+#
+# ⚠ AND IT IS STILL CONDITIONAL, which is why it is an answer and not noise:
+# it fires only when a selection is actually standing across two or more lines,
+# i.e. only when the user made the gesture it is about.  One line is the
+# select-a-value-to-copy-it gesture this window exists for.  Row BT31 asserts
+# both halves and row LX15 drives the boundary at 0, 1, 2 and 16.
+#
+# Add and Delete need no clause at all now: their own sentence names every row
+# they changed and every row they did not, which is a better answer than a
+# standing lecture.
+proc rdw::_selection_note_for {n id} {
     if {$n < 2} { return {} }
-    return {Selecting lines does not choose them for editing - the buttons act on the shaded row alone.}
+    if {$id ne {up} && $id ne {down}} { return {} }
+    return {Selecting lines does not choose them for Up and Down - those act on the shaded row alone.}
 }
 
 # THE SELECTION STANDING IN SOME OTHER WIDGET OF THIS WINDOW: {widget text},
@@ -4999,6 +5170,185 @@ proc rdw::_reslot_block {block order} {
 # list nobody edited.  Row RE5's other two blocks are spelled in the order a
 # class-wide reorder WOULD produce, so "left alone" and "reordered" are
 # distinguishable on them.
+# ============================================================================
+# REBUILDING A BLOCK THAT IS ALREADY ON SCREEN
+# ============================================================================
+# THE USER'S WORDS: "Delete is not affecting the current display. Only future
+# items sent to the RDW are conforming to the new list."  Both halves were
+# true, and the reason is structural rather than an oversight: a block holds
+# PRE-RENDERED TEXT, and the rows the list did not declare were discarded at
+# dump time by `rdw::_narrow_answer` inside `rdw::format_answer` -- they are
+# not merely unrendered.  So the pane cannot be FILTERED into agreement with an
+# edited list: there is nothing to filter back in, and `rdw::_locate` (a pure
+# function of `::rdw::blocks`, one pane line per stored entry) would resolve
+# every later button press to the wrong row.
+#
+# The only mechanism that can make a standing block agree with an edited list
+# is to BUILD IT AGAIN, through `rdw::_make_block` -- the same builder a fresh
+# dump uses, so the rebuilt block is exactly the block a fresh dump would have
+# produced, narrowing footnote, column widths, analysis sentence and all.
+#
+# ⚠ THE USER RULED FOR THIS, AND IT SETTLES THE OPEN HALF OF ISSUE 1338.  The
+# cost was put to them in those words and accepted: a block is no longer a
+# frozen record of one moment, and an OLDER dump on screen changes under the
+# reader without their pressing anything on it.  The alternative offered --
+# leave the blocks alone and mark them stale -- was declined because it does
+# not do what was asked.  Rule debt `1338_R2_every_block_of_the_class_follows`
+# is answered by that ruling.
+#
+# ⚠ WHAT A REBUILD DELIBERATELY WILL NOT DO.  Three states leave the block
+# exactly as it was, because rebuilding it would be a guess:
+#   * no subject stamp (a block pushed before issue 1322's stamp, or one whose
+#     header carried no instance name),
+#   * a block dumped from a DIFFERENT schematic than the one now loaded -- the
+#     instance name would resolve against the wrong design,
+#   * an instance whose devpath no longer resolves, or a raw that is gone.
+# Each is counted and the caller says so, because a block that silently did
+# not follow is the defect this change exists to remove, pointed the other way.
+# The flat pane line a parameter occupies in block `bi`, or 0 if that block no
+# longer draws it.  A rebuild can change a block's LENGTH, so the cursor cannot
+# be carried across one by line arithmetic the way `rdw::_reorder_shown`'s
+# permutation allows -- it has to be found again by name.
+# How many parameter rows a block draws.  The predicate a rebuild is judged by.
+proc rdw::_param_count {block} {
+    set n 0
+    if {[catch {llength $block}]} { return 0 }
+    foreach e $block {
+        if {[rdw::_row_param $e] ne {}} { incr n }
+    }
+    return $n
+}
+
+proc rdw::_line_of_param {bi param} {
+    variable blocks
+    if {$param eq {}} { return 0 }
+    if {$bi < 0 || $bi >= [llength $blocks]} { return 0 }
+    set n 0
+    for {set i 0} {$i < $bi} {incr i} {
+        set len 0
+        catch {set len [llength [lindex $blocks $i]]}
+        incr n $len
+    }
+    set b [lindex $blocks $bi]
+    for {set e 0} {$e < [llength $b]} {incr e} {
+        if {[rdw::_row_param [lindex $b $e]] eq $param} {
+            return [expr {$n + $e + 1}]
+        }
+    }
+    return 0
+}
+
+proc rdw::_rebuild_block {bi} {
+    variable blocks
+    set blk [lindex $blocks $bi]
+    set stamp [rdw::block_subject $blk]
+    if {$stamp eq {}} { return 0 }
+    set inst {}
+    catch {set inst [dict get $stamp instname]}
+    if {$inst eq {}} { return 0 }
+    ## The stamp records the schematic the dump was taken from; an instance
+    ## name is only meaningful against that design.
+    set sch {}
+    catch {set sch [xschem get schname]}
+    set was {}
+    catch {set was [dict get $stamp schname]}
+    if {$was ne $sch} { return 0 }
+    set dp {}
+    if {[catch {::op_annot::devpath $inst} dp]} { return 0 }
+    if {$dp eq {}} { return 0 }
+    ## The header is the block's own first line -- one builder for the name
+    ## (invariant I1), so it is not recomposed here.
+    set hdr {}
+    catch {set hdr [lindex [lindex $blk 0] 1]}
+    set lk {}
+    catch {set lk [dict get $stamp list]}
+    set ctx [dict create header $hdr devpath $dp instname $inst]
+    ## An explicit `list` wins in `rdw::_list_ctx`, which is the point: the
+    ## block rebuilds under the list it was DUMPED under, not under whichever
+    ## list the window is showing now.
+    if {$lk ne {}} { catch {dict set ctx list $lk} }
+    set new {}
+    if {[catch {rdw::_make_block $dp $ctx} new]} { return 0 }
+    if {[catch {llength $new} n] || $n < 1} { return 0 }
+    ## ⚠ A REBUILD MAY NOT TRADE DATA FOR A REFUSAL, and this is the sharp
+    ## edge of the whole change.  `rdw::_make_block` answers with whatever the
+    ## backend says NOW: with the raw unloaded, the device gone, or the
+    ## simulator deregistered it returns a perfectly well-formed REFUSAL block
+    ## carrying no parameter rows.  Replacing with it would wipe the numbers
+    ## the user is reading off the screen as a side effect of editing a list --
+    ## the worst possible reading of "the display follows the edit", and the
+    ## exact failure MEASURED against rows RE10 and RE11, whose fixture has no
+    ## live raw and whose blocks came back empty.
+    ##
+    ## So: a block that HAD parameter rows keeps them unless the rebuild has
+    ## parameter rows too.  The caller counts this as stuck and says so.  A
+    ## block that was a refusal to begin with may be replaced freely -- there
+    ## is nothing to lose and the new refusal is the more current one.
+    if {[rdw::_param_count $blk] > 0 && [rdw::_param_count $new] == 0} { return 0 }
+    ## ⚠ THE ORIGINAL STAMP IS CARRIED OVER, NOT RE-DERIVED.  `rdw::push` is
+    ## the only other stamper and it is not on this path; re-deriving here
+    ## would ask `rdw::_type_cell` about the instance a second time and a block
+    ## whose device has since been renamed would come back stamped as a
+    ## different device than the one the user dumped.
+    set e [lindex $new 0]
+    set new [lreplace $new 0 0 [list [lindex $e 0] [lindex $e 1] $stamp]]
+    lset blocks $bi $new
+    return 1
+}
+
+# The sentence for the blocks that did NOT follow.  One clause, appended to the
+# verdict the press already produced -- a second status line would overwrite the
+# first, and this window's status surface holds one message (issues 1362, 1365).
+proc rdw::_stuck_note {n} {
+    if {$n <= 0} { return {} }
+    if {$n == 1} {
+        return {One older dump could not be rebuilt and still shows the list it was taken under.}
+    }
+    return "$n older dumps could not be rebuilt and still show the lists they were taken under."
+}
+
+# Rebuild every block the write ACTUALLY REACHED.  Returns {rebuilt stuck}: how
+# many followed the edit, and how many were reached but could not be rebuilt
+# and were left untouched.
+#
+# ⚠ THE THREE SKIPS ARE `rdw::_reorder_shown`'S OWN, AND NOT ONE OF THEM IS
+# COSMETIC.  A rebuild is a bigger hammer than a re-slot -- it replaces the
+# block rather than permuting it -- so a block this write did not reach must
+# not be rebuilt "harmlessly": it would come back in the LIST's order and throw
+# away a permutation an earlier Up or Down put there, which is a silent edit to
+# a block nobody touched.
+#   * another class            -- carries a list nobody edited
+#   * another LIST             -- a block dumped under list 2 does not change
+#                                 because list 1 was edited; its membership was
+#                                 decided by a list this press did not write
+#   * a shadowed flavor entry  -- `rdw::_scope_for` resolves which entry
+#                                 GOVERNS this cell, and a broad write over a
+#                                 device a flavor entry shadows changed nothing
+#                                 for that device.  Row RE11 is the fence and
+#                                 `rdw::_shadow_why` is the sentence.
+proc rdw::_rebuild_class {cls listname wkey} {
+    variable blocks
+    set done 0
+    set stuck 0
+    if {$cls eq {}} { return [list 0 0] }
+    for {set bi 0} {$bi < [llength $blocks]} {incr bi} {
+        set subj [rdw::_subject $bi]
+        if {$subj eq {}} { continue }
+        set c {}
+        catch {set c [dict get $subj class]}
+        if {$c eq {} || $c ne $cls} { continue }
+        set stamp [rdw::block_subject [lindex $blocks $bi]]
+        set blist {}
+        catch {set blist [dict get $stamp list]}
+        if {$listname ne {} && $blist ne {} && $blist ne $listname} { continue }
+        set cell {}
+        catch {set cell [dict get $subj cellname]}
+        if {$wkey ne {} && [rdw::_scope_for $cls $listname $cell] ne $wkey} { continue }
+        if {[rdw::_rebuild_block $bi]} { incr done } else { incr stuck }
+    }
+    return [list $done $stuck]
+}
+
 proc rdw::_reorder_shown {cls listname wkey loc line} {
     variable blocks
     set out {}
@@ -5496,6 +5846,188 @@ proc rdw::_sheet_note {subject} {
     return "That dump was taken on $src, which is not the sheet now open - these are class and device-flavor settings, not sheet state, so the edit applies wherever you are standing."
 }
 
+# THE ENTRY ONE PRESS WILL WRITE, WHAT IS IN IT NOW, AND HOW TO NAME IT.
+#
+# Factored out of `rdw::_edit`, whose head this used to be, so that a multi-row
+# press can ask it ONCE for the whole batch (item: multi-row Add and Delete).
+# The batch needs all three answers before it touches anything: `base` is what
+# ruling DD-10's last-row question is asked of -- and asked of the BATCH, not
+# of each row in turn, or the user deletes five rows and is refused on the
+# sixth with five already gone -- and `where` is the scope phrase its one
+# sentence ends in.
+#
+# ⚠ IT IS NOT A SECOND DEFINITION OF THE KEY.  Every branch here calls
+# `rdw::_write_key`, the same builder `rdw::_edit` wrote at before this split
+# and the same one `rdw::_reorder_shown` and `rdw::_rebuild_class` compare
+# against, so the pane cannot follow an entry the press did not touch.  The
+# `governing` arm is Up and Down's, which raise no dialog and so have no answer
+# to obey: they write at whatever entry governs this device today, because a
+# reorder whose only effect is invisible is a broken button.
+#
+# The two NARROW refusals stay in `rdw::_edit`.  They are refusals of an edit,
+# not properties of a target, and a batch has to be able to report them per row.
+proc rdw::_edit_target {cls cell listname scope} {
+    set dcls [::op_param_lists::class_label $cls]
+    if {$scope eq {governing}} {
+        set g [rdw::_write_key $cls $cell $listname governing]
+        if {[lindex $g 0] eq {flavor}} {
+            return [list [lindex $g 0] [lindex $g 1] \
+                [::op_param_lists::effective $cls $listname $cell] \
+                "for cells matching [lindex [lindex $g 1] 1] of class $dcls"]
+        }
+        return [list [lindex $g 0] [lindex $g 1] \
+            [::op_param_lists::effective $cls $listname] "for class $dcls"]
+    }
+    if {$scope eq {narrow}} {
+        set g [rdw::_write_key $cls $cell $listname narrow]
+        return [list [lindex $g 0] [lindex $g 1] \
+            [::op_param_lists::effective $cls $listname $cell] \
+            "for cell $cell only"]
+    }
+    set g [rdw::_write_key $cls $cell $listname broad]
+    return [list [lindex $g 0] [lindex $g 1] \
+        [::op_param_lists::effective $cls $listname] "for class $dcls"]
+}
+
+# ---------------------------------------------------------------------------
+# THE MULTI-ROW PRESS (the user's ruling, issue 1356 answered the other way)
+# ---------------------------------------------------------------------------
+# THE USER'S WORDS: "When multiple lines of parameters are selected and user
+# presses Add or Delete, those should get processed the same way that a single
+# line would get processed."
+#
+# So this proc runs the batch through `rdw::_edit`, N times, unchanged -- it
+# does NOT reimplement the edit.  Everything it adds is a property of the BATCH
+# that no single row can answer for:
+#
+#   1. RULING DD-10 IS ASKED UP FRONT.  `_last_row_why` refuses a Delete that
+#      would empty a list, and asking it per row would delete N-1 and refuse
+#      the last, with no undo in this window.  `rdw::_batch_last_row_why` asks
+#      it of the whole batch against the base as it stands BEFORE the first
+#      write.
+#   2. ONE SENTENCE FOR N OUTCOMES.  Every row that changed is named, and so is
+#      every row that did not, with the core's OWN refusal for each -- so a
+#      partial batch is legible rather than a silent count.
+#   3. THE TAIL CLAUSES ARE COMPUTED ONCE, through the same named callees
+#      `rdw::_edit` uses (`_sheet_note`, `_shadow_why`, `_percell_note`,
+#      `_store_tail`), because they are properties of the scope and the list
+#      and not of a row -- and because two wordings for one fact teach the
+#      reader to distrust both.
+#
+# ⚠ A BATCH OF ONE NEVER REACHES HERE.  `rdw::button` calls `rdw::_edit`
+# directly for a single row, so every sentence the suites gold byte-for-byte is
+# produced by exactly the code that produced it before this item.
+proc rdw::_batch_edit {op subject listname scope params} {
+    ## ⚠ EVERY REFUSAL IN THIS FILE CARRIES A SENTENCE.  `rdw::button` never
+    ## reaches here with an empty batch -- it routes 0 and 1 rows to the core --
+    ## but a key, a menu or a suite row calling this directly must not be able
+    ## to produce `{refused {}}`, which the status line would print as a bare
+    ## label and the user would read as the window failing silently.
+    if {![llength $params]} {
+        return [list refused "no parameter row was selected, so there is nothing to [expr {$op eq {delete} ? {remove} : {add}}]."]
+    }
+    set cls  [dict get $subject class]
+    set cell [dict get $subject cellname]
+    ## THE TARGET ONCE.  `_edit` asks for it again per row, which is correct --
+    ## the base moves under a batch as rows are removed -- but the key, the
+    ## scope phrase and the base DD-10 is asked of are all read here, before
+    ## anything is written.
+    lassign [rdw::_edit_target $cls $cell $listname $scope] skey key base where
+    if {$op eq {delete}} {
+        set why [rdw::_batch_last_row_why $base $listname $params]
+        if {$why ne {}} { return [list refused $why] }
+    }
+    ## ⚠ WHICH ROWS HAD TO BE READ OFF THE RUN, TAKEN BEFORE THE FIRST WRITE.
+    ## `rdw::_mint_note` asks `_find_triple`, which reads the very lists this
+    ## loop is about to change -- so asked after row 1 was added, row 2 would
+    ## be reported as declared by a list that had just been given the answer.
+    set minted {}
+    if {$op eq {add}} {
+        foreach p $params {
+            if {[rdw::_mint_note $op $cls $cell $p] ne {}} { lappend minted $p }
+        }
+    }
+    set before 0
+    catch {set before [llength [::op_param_lists::said]]}
+    set done {} ; set skipped {} ; set reasons {}
+    foreach p $params {
+        lassign [rdw::_edit $op $subject $listname $scope $p] v sent
+        if {$v eq {ok}} {
+            lappend done $p
+        } else {
+            lappend skipped $p ; lappend reasons $sent
+        }
+    }
+    ## NOTHING CHANGED IS A REFUSAL, not a success with an empty list -- the
+    ## caller must not repaint, must not apply and must not claim an edit.
+    if {![llength $done]} {
+        if {[llength $skipped] == 1} { return [list refused [lindex $reasons 0]] }
+        return [list refused [rdw::_batch_skipped_say \
+            "nothing was [expr {$op eq {delete} ? {removed} : {added}}]" \
+            $skipped $reasons]]
+    }
+    if {$op eq {delete}} {
+        set say "removed [rdw::_and_list $done] from the $listname list $where."
+    } else {
+        set say "added [rdw::_and_list $done] to the $listname list $where."
+    }
+    ## The STORE's own report for the whole batch, read as the tail of `said`
+    ## exactly as `rdw::_edit` reads its own -- issue 1288's ruling, told once.
+    set told [rdw::_store_tail $before {}]
+    if {$told ne {}} { append say " $told" }
+    set sheet [rdw::_sheet_note $subject]
+    if {$sheet ne {}} { append say " $sheet" }
+    set mint [rdw::_batch_mint_note $minted $done]
+    if {$mint ne {}} { append say " $mint" }
+    if {[llength $skipped]} {
+        set n [llength $skipped]
+        append say " [rdw::_batch_skipped_say \
+            [expr {$n == 1 ? {One row was not changed} : "$n rows were not changed"}] \
+            $skipped $reasons]"
+    }
+    set shadow [rdw::_shadow_why $scope $cls $listname $cell $skey $key]
+    if {$shadow ne {}} { append say " $shadow" }
+    set percell [rdw::_percell_note $scope $cls]
+    if {$percell ne {}} { append say " $percell" }
+    return [list ok $say]
+}
+
+# ISSUE 1372's CLAUSE, FOR A BATCH.  Only the rows that were actually added
+# count -- a row the store refused was not given a raw-name shape by anything.
+# One row keeps `rdw::_mint_note`'s own sentence, byte for byte.
+proc rdw::_batch_mint_note {minted done} {
+    set m {}
+    foreach p $minted { if {[lsearch -exact $done $p] >= 0} { lappend m $p } }
+    if {![llength $m]} { return {} }
+    if {[llength $m] == 1} { return [rdw::_mint_note add {} {} {}] }
+    return "No list and no PDK descriptor declares [rdw::_and_list $m], so their raw-name shapes were read from what this run published."
+}
+
+# THE ROWS THAT DID NOT CHANGE, WITH THE CORE'S OWN REASON FOR EACH.
+#
+# ⚠ A COUNT WOULD BE THE DEFECT THIS ITEM REMOVES.  "3 rows were not changed"
+# tells the user that something silently did not happen and gives them no way
+# to find out what -- which is the shape of the report the user filed as
+# "Delete is not affecting the current display".  The reasons come from
+# `rdw::_edit`, so there is no second wording of any of them.
+#
+# The pane is four lines, so the reasons are capped: two are quoted in full and
+# the rest are named without one, which still tells the reader exactly WHICH
+# rows to press again one at a time to see why.
+proc rdw::_batch_skipped_say {lead skipped reasons} {
+    if {![llength $skipped]} { return {} }
+    set n [llength $skipped]
+    set head [lrange $skipped 0 1]
+    set out {}
+    foreach p $head r [lrange $reasons 0 1] { lappend out "$p: $r" }
+    set say "$lead - [join $out { }]"
+    if {$n <= 2} { return $say }
+    set rest [lrange $skipped 2 end]
+    set verb [expr {[llength $rest] == 1 ? {was} : {were}}]
+    set which [expr {[llength $rest] == 1 ? {it} : {one of them}}]
+    return "$say [rdw::_and_list $rest] $verb not changed either; press $which alone to see why."
+}
+
 # ---------------------------------------------------------------------------
 # THE DECISION CORE.  It performs the store call and returns
 # {ok|refused <sentence>}, and it touches no Tk -- so every sentence and every
@@ -5511,21 +6043,7 @@ proc rdw::_edit {op subject listname scope param} {
     ## user types into a settings file and is compared with `eq`, so writing
     ## the display name into a key would mint a dead entry.
     set dcls [::op_param_lists::class_label $cls]
-    if {$scope eq {governing}} {
-        # UP AND DOWN, WHICH RAISE NO DIALOG AND SO HAVE NO ANSWER TO OBEY.
-        # They write at whatever entry governs this device today, because a
-        # reorder whose only effect is invisible is a broken button.
-        set g    [rdw::_write_key $cls $cell $listname governing]
-        set skey [lindex $g 0]
-        set key  [lindex $g 1]
-        if {$skey eq {flavor}} {
-            set base  [::op_param_lists::effective $cls $listname $cell]
-            set where "for cells matching [lindex $key 1] of class $dcls"
-        } else {
-            set base  [::op_param_lists::effective $cls $listname]
-            set where "for class $dcls"
-        }
-    } elseif {$scope eq {narrow}} {
+    if {$scope eq {narrow}} {
         ## ⚠ THE TWO REFUSALS BELOW POINT AT A BUTTON, so their class wording
         ## must be BYTE-IDENTICAL to `rdw::scope_dialog_build`'s `.sc.broad`
         ## -text (issue 1373).  Both sides call `class_label`; a literal on
@@ -5551,18 +6069,17 @@ proc rdw::_edit {op subject listname scope param} {
         if {![string match -nocase $cell $cell]} {
             return [list refused "the cell name $cell contains glob characters, and a device-flavor entry is matched as a glob - a key written from it would never match this device again. Choose every device of class $dcls instead."]
         }
-        set g     [rdw::_write_key $cls $cell $listname narrow]
-        set skey  [lindex $g 0]
-        set key   [lindex $g 1]
-        set base  [::op_param_lists::effective $cls $listname $cell]
-        set where "for cell $cell only"
-    } else {
-        set g     [rdw::_write_key $cls $cell $listname broad]
-        set skey  [lindex $g 0]
-        set key   [lindex $g 1]
-        set base  [::op_param_lists::effective $cls $listname]
-        set where "for class $dcls"
     }
+    ## ⚠ THE KEY, THE BASE AND THE `where` PHRASE COME FROM ONE PLACE (item:
+    ## multi-row Add and Delete).  A BATCH has to ask the identical question
+    ## once -- which entry will be written, what is in it now, and how to name
+    ## the scope in its own sentence -- and a second copy of this arithmetic
+    ## here would be two definitions of "which entry does this press write",
+    ## which is invariant I1's exact failure shape and the defect
+    ## `rdw::_scope_for` was written to remove.  The two narrow refusals above
+    ## stay HERE, because they are refusals of an EDIT, not properties of a
+    ## target: a batch reports them per row, through this same door.
+    lassign [rdw::_edit_target $cls $cell $listname $scope] skey key base where
     set mint {}
     set i [rdw::_index_of $base $param]
     set notin "$param is not in the $dcls $listname list. The pane also shows rows this run published that no list declares, and only the list's own rows can be edited here."
@@ -5712,13 +6229,23 @@ proc rdw::_edit {op subject listname scope param} {
     if {$mint ne {}} { append say " $mint" }
     set shadow [rdw::_shadow_why $scope $cls $listname $cell $skey $key]
     if {$shadow ne {}} { return [list ok "$say $shadow"] }
-    if {$scope ne {narrow}} { return [list ok $say] }
-    # ISSUE 1310, STATED RATHER THAN DISCOVERED.  `apply` is per `type=` token
-    # and passes no cell name, and op_annot holds ONE descriptor per type, so a
-    # per-cell display list cannot be expressed at all without editing
-    # op_annot.tcl, which this item may not.  The entry is stored, written and
-    # honoured by `effective`; it does not reach the drawn sheet.
-    return [list ok "$say The sheet still draws the $dcls class list - a per-cell display list cannot be expressed yet (issue 1310)."]
+    set percell [rdw::_percell_note $scope $cls]
+    if {$percell eq {}} { return [list ok $say] }
+    return [list ok "$say $percell"]
+}
+
+# ISSUE 1310, STATED RATHER THAN DISCOVERED.  `apply` is per `type=` token and
+# passes no cell name, and op_annot holds ONE descriptor per type, so a per-cell
+# display list cannot be expressed at all without editing op_annot.tcl, which
+# item B5 may not.  The entry is stored, written and honoured by `effective`;
+# it does not reach the drawn sheet.
+#
+# A named callee, so the multi-row press can end in the SAME sentence rather
+# than a second wording of it -- the rule this file follows everywhere: two
+# wordings for one fact teach the reader to distrust both.
+proc rdw::_percell_note {scope cls} {
+    if {$scope ne {narrow}} { return {} }
+    return "The sheet still draws the [::op_param_lists::class_label $cls] class list - a per-cell display list cannot be expressed yet (issue 1310)."
 }
 
 # Ruling DD-6, both halves, and the sibling types with it.
@@ -6036,8 +6563,44 @@ proc rdw::button {id} {
     ## would be silent in exactly the case it exists for.  See
     ## rdw::_selection_note for what was measured and why the clause is
     ## conditional.
-    set snote [rdw::_selection_note]
-    set loc [rdw::_locate $line]
+    set snote [rdw::_selection_note $id]
+    ## ⚠ AND SO IS THE BATCH, FOR EXACTLY THE SAME MEASURED REASON.  The rows a
+    ## multi-row press acts on are the rows the `sel` tag covers, and the first
+    ## repaint destroys that tag -- so they are read here, ONCE, before
+    ## anything can change, and carried through the rest of this proc BY
+    ## PARAMETER NAME rather than by line number, because `_reorder_shown` and
+    ## the rebuild both move rows to other lines.
+    ##
+    ## ⚠ ADD AND DELETE ONLY (the user's ruling names those two).  Up and Down
+    ## keep the shaded row: they raise no dialog, so a batch would have no
+    ## answer to obey, and N rows each moving up one has no meaning independent
+    ## of the order the rows are asked in.  `rdw::_selection_note_for` says so
+    ## on screen when a selection is standing across those two buttons.
+    set batch {}
+    if {$id eq {delete} || $id eq {add}} { set batch [rdw::_selection_rows] }
+    ## ⚠ ONE BLOCK, AND THE REFUSAL IS NOT PEDANTRY.  `rdw::scope_dialog` names
+    ## ONE instance in its question, ONE cell on its narrow radiobutton and ONE
+    ## class on its broad one; a press that answered that question and then
+    ## wrote for a second device would make the dialog a false statement.  Two
+    ## dumps of the same device are the ordinary case in this window, so the
+    ## sentence says which blocks and, when they differ, which classes.
+    set bparams {}
+    if {$batch ne {}} {
+        set bbi {}
+        catch {set bbi [dict get $batch blocks]}
+        if {[llength $bbi] > 1} {
+            return [rdw::_bstatus \
+                "$label: [rdw::_batch_spread_why $bbi]" $snote]
+        }
+        ## The batch supplies the target.  Its first row is what the cursor
+        ## follows and what every single-row sentence below is about, so a
+        ## batch of ONE is byte-for-byte today's press.
+        set bparams [dict get $batch params]
+        set loc     [lindex [dict get $batch locs] 0]
+        set line    [lindex [dict get $batch lines] 0]
+    } else {
+        set loc [rdw::_locate $line]
+    }
     set param {}
     if {$loc ne {}} {
         set param [rdw::_row_param \
@@ -6142,9 +6705,29 @@ proc rdw::button {id} {
     ## ⚠ AND ONLY THE LIST-INDEPENDENT HALF.  "Already in the list" is the
     ## other refusal, and WHICH list is what the dialog is being raised to ask,
     ## so that one still costs a dialog: the answer determined it.
+    ## ⚠ FOR A BATCH THE DOOR SHUTS ONLY WHEN EVERY ROW IS REFUSED.  The door
+    ## exists so the dialog is not raised in front of a refusal; a batch where
+    ## some rows CAN be added has a real question to ask, and the rows that
+    ## cannot are reported by name in the one sentence that follows.  A batch
+    ## of one is today's press exactly.
     if {$id eq {add}} {
-        set why [rdw::_add_why $subj $param]
-        if {$why ne {}} { return [rdw::_bstatus "$label: $why" $snote] }
+        if {[llength $bparams] < 2} {
+            set why [rdw::_add_why $subj $param]
+            if {$why ne {}} { return [rdw::_bstatus "$label: $why" $snote] }
+        } else {
+            set whys {} ; set anyok 0
+            foreach p $bparams {
+                set w [rdw::_add_why $subj $p]
+                if {$w eq {}} { set anyok 1 } else { lappend whys $p $w }
+            }
+            if {!$anyok} {
+                set names {} ; set rs {}
+                foreach {p w} $whys { lappend names $p ; lappend rs $w }
+                return [rdw::_bstatus \
+                    "$label: [rdw::_batch_skipped_say {nothing can be added} $names $rs]" \
+                    $snote]
+            }
+        }
     }
     set ans [rdw::scope_dialog $id $subj $listkind]
     if {$ans eq {}} {
@@ -6156,7 +6739,17 @@ proc rdw::button {id} {
     set ln $deflist
     if {$listkind eq {all}} { catch {set ln [dict get $ans list]} }
     if {$ln ne {annotation} && $ln ne {summary}} { set ln $deflist }
-    lassign [rdw::_edit $id $subj $ln $scope $param] verdict sentence
+    ## ⚠ ONE ROW GOES THROUGH THE CORE DIRECTLY AND A BATCH GOES THROUGH IT N
+    ## TIMES.  `rdw::_batch_edit` adds only what a single row cannot answer for
+    ## -- ruling DD-10 over the whole batch, one sentence for N outcomes, the
+    ## tail clauses computed once -- and a batch of ONE never reaches it, so
+    ## every byte-for-byte sentence this feature's suites gold is still
+    ## produced by the code that produced it before this item.
+    if {[llength $bparams] < 2} {
+        lassign [rdw::_edit $id $subj $ln $scope $param] verdict sentence
+    } else {
+        lassign [rdw::_batch_edit $id $subj $ln $scope $bparams] verdict sentence
+    }
     if {$verdict ne {ok}} { return [rdw::_bstatus "$label: $sentence" $snote] }
     ## ISSUE 1330 REACHES THIS DOOR TOO.  Delete and Add have always relied on
     ## `_apply_now` to put the change on the sheet, so a swallowed failure was
@@ -6184,13 +6777,47 @@ proc rdw::button {id} {
     ## blocks that flavor entry governs and a BROAD one skips the blocks a
     ## flavor entry shadows -- which is `rdw::_shadow_why`'s own sentence, kept
     ## true in the pane as well as in the status line.
-    set line [rdw::_reorder_shown [dict get $subj class] $ln \
-                [rdw::_write_key [dict get $subj class] \
-                                 [dict get $subj cellname] $ln $scope] \
-                $loc $line]
+    ## ⚠ AND THE BLOCKS ALREADY ON SCREEN ARE BUILT AGAIN, WHICH IS THE USER'S
+    ## RULING (item: blocks follow a list edit; the open half of issue 1338).
+    ## `rdw::_reorder_shown` is a strict PERMUTATION and answers only the
+    ## ORDER question -- it cannot add or remove a row, which is exactly why
+    ## "Delete is not affecting the current display" was true.  A rebuild goes
+    ## back through `rdw::_make_block`, so membership, the narrowing footnote
+    ## and the column widths all come out as a fresh dump would have them.
+    ## Blocks that cannot be rebuilt (no stamp, another schematic, a devpath
+    ## that no longer resolves) are left exactly as they were and COUNTED, and
+    ## the ones that stayed still get the permutation so their order follows.
+    set cls [dict get $subj class]
+    set wkey [rdw::_write_key $cls [dict get $subj cellname] $ln $scope]
+    lassign [rdw::_rebuild_class $cls $ln $wkey] nre nstuck
+    if {$nre > 0} {
+        ## The cursor is found again BY NAME: a rebuild can change a block's
+        ## length, so the entry-index arithmetic `_reorder_shown` relies on
+        ## does not survive one.  A parameter the Delete removed has no line
+        ## to point at, and `rdw::set_row 0` is then the same least-destructive
+        ## reading `rdw::render_pane`'s stale-target sweep takes.
+        set line [rdw::_line_of_param [lindex $loc 0] $param]
+    } else {
+        set line [rdw::_reorder_shown $cls $ln $wkey $loc $line]
+    }
+    ## ⚠ A MULTI-ROW PRESS LEAVES NO CURSOR, WHICH IS RULING DD-1's OWN
+    ## ARGUMENT ONE CASE FURTHER ON.  The press acted on N rows; shading any
+    ## ONE of them afterwards would be a cursor the user did not put there,
+    ## sitting on a row chosen by nothing but list order -- and the next press
+    ## would act on it without a word.  Clearing costs one click and is the
+    ## only reading that cannot act on a row the user never chose.  The
+    ## selection itself is gone either way: `rdw::render_pane` below deletes
+    ## the pane's text and with it the `sel` tag.
+    if {[llength $bparams] > 1} { set line 0 }
     rdw::set_row $line
     rdw::render_pane
     set why [rdw::_apply_now $subj]
-    if {$why ne {}} { return [rdw::_bstatus "$label: $sentence $why" $snote] }
-    return [rdw::_bstatus "$label: $sentence" $snote]
+    ## A block that did not follow is said out loud.  Silence here would be the
+    ## defect this change removes, pointed the other way.
+    set stucknote {}
+    if {$nstuck > 0} {
+        set stucknote " [rdw::_stuck_note $nstuck]"
+    }
+    if {$why ne {}} { return [rdw::_bstatus "$label: $sentence $why$stucknote" $snote] }
+    return [rdw::_bstatus "$label: $sentence$stucknote" $snote]
 }

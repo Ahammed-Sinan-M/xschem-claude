@@ -2517,4 +2517,29 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   was a reporting batch. No existing row reads the WIDGET after a push, which is
   how the same sentence came to be false in both directions.
 
-**The next free number is 1380.**
+- **1380** — `op_param_lists::load` had **zero callers**: Save wrote
+  `<pwd>/.xschem/op_param_lists.conf` and no session ever read it back, so the
+  RDW's parameter lists did not survive a restart and the Save button's own
+  sentence was true and useless. Reported by the user 2026-09-07 ("*'Save'
+  modified list … is not surviving session*"). The loader itself is complete —
+  called by hand in a fresh process it restored their nine-row summary list
+  exactly — so the fix is one guarded call at the `src/xschem.tcl` source seam.
+  **FIXED**, verified in a fresh process. No suite caught it because a round
+  trip needs TWO processes and every store row is single-process; that fence is
+  still owed, as is a fix for `BT9`, which now reds because the user having
+  their own `.xschem/` in the repo root is indistinguishable, to that row, from
+  the suite dropping one.
+
+- **1381** — the three decisions the multi-row Add/Delete had to take that the
+  user's instruction did not settle (a one-row selection beating the shaded row;
+  a partial batch proceeding rather than refusing whole; the cursor cleared after
+  a multi-row press), each shipped in a stated reading with its alternative
+  recorded — **rule debt 1381**. And, fixed in the same change, the three hygiene
+  rows (`BT9`, `SD4`, `H1`) that asserted `<repo>/.xschem` did not exist: a
+  legitimate user artifact since issue 1380 made it load at startup, so a
+  developer who had used Save redded three suites for having used the feature,
+  and the obvious way to green them again is to delete their file. That happened
+  in this session. Now a snapshot-and-compare, which is what the rows always
+  meant.
+
+**The next free number is 1382.**

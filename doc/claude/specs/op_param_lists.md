@@ -1264,11 +1264,47 @@ shipped editing action for cadence-profile users only. Question Q5.
 > the user read a six-row drag as a six-row Delete. MEASURED: `tag ranges sel` =
 > `8.4 13.4` with `::rdw::targetrow` = 8, and one press produced one verdict
 > about one parameter — every reader of the text selection in `src/rdw.tcl` is
-> on the CLIPBOARD path. A conditional clause now rides every verdict when a
-> selection really spans two or more lines. **The multi-row edit itself is a
-> ruling and is NOT built**: one dialog for N rows, one status line for N
-> outcomes, and ruling **DD-10**'s last-row refusal evaluated over a batch.
-> Rule debt **1356**.
+> on the CLIPBOARD path. A conditional clause rode every verdict when a
+> selection really spanned two or more lines, while the multi-row edit itself
+> was a ruling. Rule debt **1356**.
+>
+> ✅ **UPDATE, 2026-09-07 — THE RULING CAME BACK THE OTHER WAY AND THE MULTI-ROW
+> PRESS IS BUILT.** The user: *"When multiple lines of parameters are selected
+> and user presses Add or Delete, those should get processed the same way that
+> a single line would get processed."* **Add and Delete act on the parameter
+> rows the selection covers**, in pane order, deduped by name; Up and Down still
+> act on the shaded row alone and the clause survives narrowed to them. The
+> three costs the ruling was filed over are answered, each in one place:
+>
+> * **one dialog for N rows** — `rdw::scope_dialog` is raised once, outside the
+>   loop, which is why a batch is confined to a **single dump**: the dialog
+>   names one instance, one cell and one class, and a question that named one
+>   device while writing for another would be a false statement. A selection
+>   crossing dumps is refused with a sentence naming the classes (two lists, one
+>   answer cannot cover both) or the dump count.
+> * **one sentence for N outcomes** — `rdw::_batch_edit` names every row that
+>   changed **and every row that did not, with the core's own reason**. A count
+>   would be the defect the item removes, pointed the other way.
+> * **ruling DD-10 over the BATCH** — `rdw::_batch_last_row_why`, asked before
+>   the first write. A batch that would empty the list is refused **whole**; one
+>   that leaves exactly one row is allowed. There is no undo in this window and
+>   this is the leg that costs data if it is wrong.
+>
+> **A batch of ONE never reaches any of it** — `rdw::button` routes a single row
+> to `rdw::_edit` directly, so every byte-for-byte sentence this feature's
+> suites gold is still produced by the code that produced it before. The target
+> (which entry is written, what is in it now, how to name the scope) is built by
+> `rdw::_edit_target`, which BOTH paths call: two definitions of "which entry
+> does this press write" is invariant **I1**'s exact failure shape and the defect
+> `rdw::_scope_for` was written to remove.
+>
+> Fenced by **BT31** (the user's own gesture, all three legs), **BT37** (the
+> batch is read once, from one block, in pane order, deduped by name),
+> **BT38** (DD-10 at both boundaries), **BT39** (a skipped row is named, never
+> counted), **BT40** (the cross-dump refusal), **BT41** (one definition of each
+> fact), **LX11**/**LX15** (the clause narrowed to Up and Down), **SL5**,
+> **SL11**, and **KD1** of the keys suite. Three decisions the instruction did
+> not settle are recorded as rule debt **1381**.
 
 > ✅ **ITEM B2, 2026-09-03 — LIST 3 HAS NO PERSISTED STATE, AND THE STORE HAS
 > NO SLOT FOR IT.** It is live from the run, its Delete is greyed above, and a

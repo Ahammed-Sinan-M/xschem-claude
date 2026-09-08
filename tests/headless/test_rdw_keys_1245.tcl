@@ -188,6 +188,25 @@ set KX_RC [file join $repo src cadence_style_rc]
 ## Taken BEFORE anything can write a file (hygiene row S1).
 set S1_ROOT0 [lsort [glob -nocomplain -directory $repo -tails untitled*]]
 
+## ⚠ THE PROJECT SETTINGS FILE IS A SNAPSHOT, NOT AN ABSENCE (issue 1381).
+## These rows used to assert that `<repo>/.xschem/op_param_lists.conf` did not
+## exist, which was true only for as long as nothing ever SAVED one.  It is a
+## legitimate user artifact -- `rdw::button save` with project scope writes
+## exactly there, by design -- so a developer who has used the feature in their
+## own tree redded this suite for having used it, and (worse) the obvious way
+## to green it again is to delete their file.  That happened: a real saved list
+## was destroyed because a red row read as litter.  What the row actually means
+## is "SECTION SD WROTE NOTHING HERE", so take the file's identity up front and
+## compare, the way the `untitled*` leg beside this one already does.
+proc kx_conf_stamp {} {
+  global repo
+  set f [file join $repo .xschem op_param_lists.conf]
+  if {![file exists $f]} { return {ABSENT} }
+  if {[catch {list [file size $f] [file mtime $f]} st]} { return {UNREADABLE} }
+  return $st
+}
+set S1_CONF0 [kx_conf_stamp]
+
 check {FX0 the canvas is mapped and really sized before anything is measured - every row below is silently vacuous without it} \
   [list [winfo ismapped .drw] [expr {[winfo width .drw] > 1 && [winfo height .drw] > 1 ? 1 : 0}]] \
   {1 1}
@@ -2124,12 +2143,20 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
   set SD3_LINE [kx_ans ::rdw::_target_line]
   catch {.rdw.b.delete invoke}
   update
-  check {SD3 the cursor rule end to end: a REAL Button-1 in the read-only pane sets the target row, and a REAL Delete invoke then acts on THAT row and no other - the store loses `ids`, keeps the two rows the cursor was not on, and the NEWEST block's own class is left unowned, so acting on the newest dump instead of the cursor's would red this row} \
-    [list [expr {[llength $SD3_BB] == 4 ? 1 : 0}] $SD3_LINE \
+  ## ⚠ AND THE NO-SELECTION CONDITION IS A LEG, NOT AN ASSUMPTION.  Since the
+  ## user's ruling a standing selection is what Add and Delete act on; the
+  ## shaded row is the target when there is none, which is exactly what a real
+  ## <Button-1> leaves behind (the Text class binding clears `sel`).  Asserting
+  ## it keeps this row a statement about the CURSOR rather than a row that is
+  ## green because of a state nobody wrote down.
+  set SD3_SEL 0
+  catch {set SD3_SEL [llength [.rdw.p.t tag ranges sel]]}
+  check {SD3 the cursor rule end to end: a REAL Button-1 in the read-only pane clears any selection and sets the target row, and a REAL Delete invoke then acts on THAT row and no other - the store loses `ids`, keeps the two rows the cursor was not on, and the NEWEST block's own class is left unowned, so acting on the newest dump instead of the cursor's would red this row} \
+    [list [expr {[llength $SD3_BB] == 4 ? 1 : 0}] $SD3_LINE $SD3_SEL \
           [kx_ans ::op_param_lists::owns class b5cls annotation] \
           [kx_ans ::op_param_lists::get_list class b5cls annotation] \
           [kx_ans ::op_param_lists::owns class b5pcls annotation]] \
-    [list 1 9 1 {{gm gm 1} {gds gds 1}} 0]
+    [list 1 9 0 1 {{gm gm 1} {gds gds 1}} 0]
 
   # --- SD3b  THE REAL DIALOG, WITH NO STUB ANYWHERE (issue 1314) ------------
   ## ⚠ THE REAL SCOPE DIALOG GOES BACK BEFORE THIS ROW, AND THAT IS THE ROW'S
@@ -2405,14 +2432,14 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
   catch {destroy .rdw.scope}
   kx_ans ::rdw::close
   update idletasks
-  check {SD4 HYGIENE section SD leaves nothing behind: no dialog, no window, no grab, no settings file under the repo's own .xschem and no untitled* anywhere} \
+  check {SD4 HYGIENE section SD leaves nothing behind: no dialog, no window, no grab, no untitled* anywhere, and the repo's own project settings file is byte-for-byte as section SD found it - which is the developer's file when they have one and still no file when they do not (issue 1381)} \
     [list [expr {[winfo exists .rdw.scope] ? 1 : 0}] \
           [expr {[winfo exists .rdw] ? 1 : 0}] \
           [grab current] \
-          [expr {[file exists [file join $repo .xschem op_param_lists.conf]] ? 1 : 0}] \
+          [expr {[kx_conf_stamp] eq $S1_CONF0 ? 1 : 0}] \
           [expr {[lsort [glob -nocomplain -directory $repo -tails untitled*]] eq $S1_ROOT0 ? 1 : 0}] \
           [llength [glob -nocomplain -directory $scratch -tails untitled*]]] \
-    {0 0 {} 0 1 0}
+    {0 0 {} 1 1 0}
 }
 
 # ============================================================================
@@ -2602,9 +2629,15 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
   set CU9_R2 [cu_ranges]
   set CU9_T2 [kx_ans ::rdw::_target_line]
   set CU9_A2 [cu_agree]
-  check {CU9 the shaded line and the row Delete/Add/Up/Down act on are ONE row: a click moves the target the buttons read, and rdw::set_row moves the shading the user sees - two cursors would let a button edit a line nobody is looking at, and every row in section BT would still pass} \
-    [list $CU9_T1 $CU9_A1 $CU9_R2 $CU9_T2 $CU9_A2] \
-    [list 4 1 [cu_span 9] 9 1]
+  ## ⚠ "WITH NO SELECTION STANDING" IS PART OF THE CLAIM NOW, AND IS ASSERTED.
+  ## The user's ruling gave Add and Delete the selected rows when a selection
+  ## is standing; the shaded row is the target when none is, which is what a
+  ## real click leaves behind.  Without this leg the row would read as "the
+  ## shaded row is always the target", which is no longer true.
+  set CU9_SEL [llength [cu_w .rdw.p.t tag ranges sel]]
+  check {CU9 with no selection standing - asserted, not assumed - the shaded line and the row Delete/Add/Up/Down act on are ONE row: a click moves the target the buttons read, and rdw::set_row moves the shading the user sees - two cursors would let a button edit a line nobody is looking at, and every row in section BT would still pass} \
+    [list $CU9_T1 $CU9_A1 $CU9_R2 $CU9_T2 $CU9_A2 $CU9_SEL] \
+    [list 4 1 [cu_span 9] 9 1 0]
 
   # --- CU10  THE FENCE: the selection still works, and still SHOWS ----------
   ## GREEN TODAY on legs 1-3 and it must stay green. A <Button-1> binding that
@@ -4612,14 +4645,27 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
   set KD1_NB_C [kx_nblocks]
   set KD1_NEW [kd_newest]
 
-  check {KD1 THE USER'S THIRD SYMPTOM, DRIVEN WITHOUT GRANTING THE FOCUS THE SHIPPED CODE NEVER GRANTS: press 2 on the canvas, click the parameter row the status line tells you to click - which parks the keyboard on the pane, asserted as a leg - press Delete and accept the defaults, then press 2 again where your hands are, and the window shows the store you just changed instead of the row you just deleted} \
+  ## ⚠ TWO LEGS HERE REVERSED WITH THE USER'S RULING (item: blocks follow a
+  ## list edit).  They used to gold the FROZEN RECORD: the block already in the
+  ## pane kept `zid` after `zid` was deleted, because `_reslot_block` is a
+  ## strict permutation and could re-order rows but never drop one.  The user's
+  ## report was "Delete is not affecting the current display.  Only future
+  ## items sent to the RDW are conforming to the new list", and the ruling was
+  ## REBUILD THEM -- so a block whose device belongs to the edited class is
+  ## re-dumped from the loaded raw, and BOTH the block on screen at the moment
+  ## of the press (leg 7) and the older one still in the store (leg 12) now
+  ## lose the row.  The cost was stated and accepted: a block stops being a
+  ## frozen record of the run and an older dump changes under its reader.
+  ## The row's own subject -- the keyboard is on the pane and stays there -- is
+  ## untouched, and legs 9..11 still prove the press produced a NEW dump.
+  check {KD1 THE USER'S THIRD SYMPTOM, DRIVEN WITHOUT GRANTING THE FOCUS THE SHIPPED CODE NEVER GRANTS: press 2 on the canvas, click the parameter row the status line tells you to click - which parks the keyboard on the pane, asserted as a leg - press Delete and accept the defaults, then press 2 again where your hands are, and the window shows the store you just changed instead of the row you just deleted - and by the user's ruling the block ALREADY in the pane lost the deleted row the moment Delete succeeded, without waiting for that second press} \
     [list $KD1_NB_A [expr {$KD1_ROW > 0 ? 1 : 0}] $KD1_FOCUS \
           $KD1_EFF0 $KD1_EFF1 $KD1_WHERE \
-          [kx_has $KD1_SHOWN { zid }] $KD1_NB_B \
+          [kx_has $KD1_SHOWN { zid }] [kx_has $KD1_SHOWN { zgm }] $KD1_NB_B \
           $KD1_NB_C [kx_has $KD1_NEW { zgm }] [kx_has $KD1_NEW { zid }] \
-          [kx_has [kd_nth 1] { zid }]] \
+          [kx_has [kd_nth 1] { zid }] [kx_has [kd_nth 1] { zgm }]] \
     [list 1 1 .rdw.p.t {{zid zid 0} {zgm zgm 1}} {{zgm zgm 1}} .rdw.p.t \
-          1 1 2 1 0 1]
+          0 1 1 2 1 0 0 1]
 
   ## KD2 -- THE COPY MUST SURVIVE THE NEW KEYBOARD.
   set KD2_L0 [.rdw.p.t bbox 4.0]

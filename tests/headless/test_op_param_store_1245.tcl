@@ -325,6 +325,26 @@ proc check_true {name cond} { check $name [expr {$cond ? 1 : 0}] 1 }
 # --- locations (cwd-independent) --------------------------------------------
 set here [file normalize [file dirname [info script]]]      ;# tests/headless
 set repo [file normalize [file join $here .. ..]]           ;# repo root
+
+## ⚠ THE PROJECT SETTINGS FILE IS A SNAPSHOT, NOT AN ABSENCE (issue 1381).
+## Row H1 used to assert that `<repo>/.xschem` did not exist, which was true
+## only for as long as nothing ever SAVED a list there.  It is a legitimate
+## user artifact -- the RDW's Save button with project scope writes exactly
+## `<repo>/.xschem/op_param_lists.conf`, by design, and `op_param_lists::load`
+## reads it back at startup -- so a developer who had used the feature in their
+## own tree redded this suite for having used it, and the obvious way to green
+## it again is to delete their file.  That happened: a real saved list was
+## destroyed because a red row read as litter.  What H1 actually means is "THIS
+## SUITE WROTE NOTHING HERE", so take the file's identity before anything runs
+## and compare it at the end.
+proc ol_conf_stamp {} {
+  global repo
+  set f [file join $repo .xschem op_param_lists.conf]
+  if {![file exists $f]} { return {ABSENT} }
+  if {[catch {list [file size $f] [file mtime $f]} st]} { return {UNREADABLE} }
+  return $st
+}
+set H_CONF0 [ol_conf_stamp]
 source [file join $here scratch.tcl]
 set scratch [test_scratch op_param_store]
 set OL_AUDIT [file join $here full_audit.sh]
@@ -5135,13 +5155,13 @@ ol_ans ::rdw::set_list annotation
 ol_ans ::rdw::status {}
 
 set H_ROOT0 [lsort [glob -nocomplain -directory $repo -tails untitled*]]
-check {H1 HYGIENE the suite creates no untitled* anywhere and no .xschem directory in the repo root, and it left the cwd where it found it} \
+check {H1 HYGIENE the suite creates no untitled* anywhere, leaves the repo's own project settings file byte-for-byte as it found it - which is the developer's file when they have one and still no file when they do not (issue 1381) - and left the cwd where it found it} \
   [list [expr {[lsort [glob -nocomplain -directory $repo -tails untitled*]] eq $H_ROOT0 ? 1 : 0}] \
         [llength [glob -nocomplain -directory $scratch -tails untitled*]] \
         [llength [glob -nocomplain -directory $here -tails untitled*]] \
-        [expr {[file isdirectory [file join $repo .xschem]] ? 1 : 0}] \
+        [expr {[ol_conf_stamp] eq $H_CONF0 ? 1 : 0}] \
         [expr {[pwd] eq $T_OLDPWD ? 1 : 0}]] \
-  {1 0 0 0 1}
+  {1 0 0 1 1}
 
 # ============================================================================
 # THE CHECK-COUNT FLOOR — TRAP 7, WHICH THIS SUITE HAD NO GUARD RAIL FOR
