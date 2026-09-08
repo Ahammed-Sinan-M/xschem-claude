@@ -2503,4 +2503,18 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   minted for the `..`-collapse residual measured alongside it; it is recorded
   in 1276, 1286 and in both resolvers' comments instead.
 
-**The next free number is 1379.**
+- **1379** — the Results Display Window's chrome line still reads "No device has
+  been sent here yet" after a dump lands in the pane. `rdw::_chrome_line`
+  derives its `filled` flag from `llength $blocks`, but the only proc that
+  writes that text into `.rdw.hdr` — `rdw::apply_list_state` — is reached only
+  from `rdw::build` and `rdw::set_list` (an invariant the comment at
+  `src/rdw.tcl:409` states outright), and `rdw::push` calls neither. **Issue
+  1367 in the mirror**: that one claimed to be `Showing` an empty pane, this one
+  claims an empty pane while showing two blocks. Found 2026-09-07 by the
+  look-debt digest batch, in the first RDW photograph it took; measured on `:99`
+  against the tree's own `_chrome_line` one line later, so the widget and its
+  builder disagree with no golden in between. **Filed, not fixed** — the batch
+  was a reporting batch. No existing row reads the WIDGET after a push, which is
+  how the same sentence came to be false in both directions.
+
+**The next free number is 1380.**
