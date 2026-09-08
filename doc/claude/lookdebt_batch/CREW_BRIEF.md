@@ -48,3 +48,30 @@ like, and either
    (`tests/headless/devdisplay.sh`) or your own private Xvfb. Never a bare
    run on the inherited `$DISPLAY`: that is the user's real screen.
 6. Acceptance is a name+status diff, never a count.
+
+---
+
+## Outcome, 2026-09-07
+
+Eight agents, 46 debts, 0 errors. Classification in `debts.json`; the page is
+built by `build_page.py` from that plus `page_shell.html` and the PNGs, and was
+published as an artifact.
+
+| disposition | n | what it means |
+|---|---|---|
+| photographed | 8 | the picture is on the page |
+| one command away | 18 | pose written and checked against the source, not yet run |
+| your bench only | 10 | a gesture, a clipboard, a focus change, or the user's own VcXsrv |
+| retire | 10 | asked twice, or already answered by a commit in the tree |
+
+**Ten of forty-six are recommended for retirement** — six are the same eyeball
+asked twice (the ledger has no supersede verb, so a re-filed entry lands beside
+the one it replaces), and four were answered by commits `8b1572b8` (1345),
+`f44a982a` (1347/1348/1349), `fa0eb0b0` (1362) and by the user's own ruling on
+issue 1238. Each was checked against the issue file and the commit named. **The
+user still clears them; nothing here does.**
+
+**Issue 1379 was found by the first photograph** and filed, not fixed.
+
+**Not done:** the 18 "one command away" recipes were not executed — that is the
+obvious next batch, and it is mostly machine time.
