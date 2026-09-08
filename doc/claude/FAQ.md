@@ -14,6 +14,486 @@ Newest entries on top.
 
 ---
 
+## Q91. Why did a tooltip with four green rows never appear on screen?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing`, issue **1384**'s repair pass — the
+  RDW status-bar hint and its overflow tooltip.
+
+**Because every row asserted a BINDING, and a binding is not a tooltip.** The
+`<Enter>` script was correct, the string baked into it was correct, the arm was
+taken only when the text was clipped, and `balloon_off` really removed it again.
+Four rows said so. The user still got nothing, 3 runs out of 3.
+
+Two things conspired, and both are general:
+
+1. **The widget you are tipping may not be the size you measured.**
+   `.statusbar.10` is packed `-side left` with no `-fill x`, so its width
+   follows its text — 8 px blank, 471 px with the sentence. C blanks it on every
+   canvas event. The pointer can only reach a status bar *from the canvas*, so
+   it arrives at a label that is 8 px wide.
+
+2. **Re-arming a tooltip cancels the show the pointer already queued.**
+   `balloon` bakes its string in at bind time, so anything periodic that
+   re-decides the tip must call `balloon_clipped` → `balloon_off` → `after
+   cancel`. If the pointer is already inside, **no second `<Enter>` is coming**.
+   A cache keyed on `winfo width` re-armed on every regrow and threw the show
+   away, forever.
+
+**The rule that falls out:** a periodic re-arm must cache on the *answer* (the
+string and the clipped verdict), never on the pixels; and a row about a tooltip
+must generate a real crossing, wait the real delay, and assert
+`winfo exists $w.balloon`. The row that missed this warped the pointer and then
+called `balloon_show` **itself** — no `<Enter>`, no 1000 ms — while its own
+sentence claimed it went "through the real `<Enter>` and the real
+`balloon_show`". That is this tree's oldest failure wearing a new hat: a row
+that passes for an unstated reason will pass again for the wrong one.
+
+**And the same shape says something about status-bar prompts generally.** The
+answer to "C blanks my label on every event" is not a faster timer. It is a
+private **binding tag** on the canvas, inserted after the widget's own tag: it
+runs in the same binding invocation C blanked in, and Tk's geometry manager
+does not run until idle, so the blank never reaches a relayout. Measured: an
+80 ms re-assert alone left the sentence visible **16–40 %** of the time while
+the pointer moved and swung the label's width at ~12 Hz; the tag makes it 100 %
+with both widths constant, for about 1.3 ms of CPU per second of mouse
+movement. `ase::ui::sod_prompt_pump` still ships the timer alone and still
+carries the "at most a sub-frame flicker" claim — issue **1387**.
+
+---
+
+## Q90. How do I get operating-point numbers onto my schematic at all?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing` @ `b0d19af9` — the `op_param` batch
+  closed, the five RDW items landed. Specs `doc/claude/specs/op_annotation.md`
+  and `doc/claude/specs/op_param_lists.md`.
+
+**Run an operating point, then press `6`.** Everything else on this page is a
+variation on that one key.
+
+In a PDK workarea that sources `cadence_style_rc` (sky130A, gf180mcuD,
+ihp-sg13g2):
+
+```
+Tools > Launch ASE-L, then Run          ;# produces the .raw
+6                                       ;# device OP blocks + branch currents
+Alt-6                                   ;# add node voltages
+Ctrl-6                                  ;# clear everything
+```
+
+`6` and `Alt-6` are **additive setters, not toggles** — pressing `6` twice
+changes nothing and never removes voltages; `Ctrl-6` is the only off switch
+(ruling 0614, `src/cadence_style_rc:379-381`). The press also loads this cell's
+results if nothing is annotated yet — the ASE-L session's raw first, else
+`$netlist_dir/<cell>.raw` — and says what it did on the held status line
+(`utils/annot_mode.tcl`).
+
+**Without the cadence profile** there are two stock menu doors that write the
+same mask: `Waves > Op Annotate` and `Simulation > Graphs > Annotate Operating
+Point into schematic` (`src/xschem.tcl:18080` and `:18523`, both
+`annot_show | 3`). Both refuse unless this design has a bound ASE-L session, and
+the refusal names `Tools > Launch ASE-L`. Inside an ASE-L window the same two
+bits are checkbuttons: `Results > Annotate > Operating Point info` and
+`> DC Node Voltages`, greyed until results exist.
+
+To have it on from startup, `set annot_show 3` in `~/.xschem/xschemrc`.
+
+---
+
+## Q89. What do keys 1, 2, 3 and 4 do, and what is the Results Display Window?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing` @ `b0d19af9` — feature B of
+  `op_param_lists.md` closed; `src/rdw.tcl`.
+
+**They print one device's operating point into a window you can select and copy
+from.** That window is the Results Display Window (RDW), and it exists because
+the text has to be pastable into a design review — that is why it is a window
+and not a line in the CIW.
+
+Select exactly one device instance, then:
+
+| key | what it prints |
+|---|---|
+| `1` | the **annotation list** — the parameters the sheet draws |
+| `2` | the **summary list** — parameters computed but not drawn |
+| `3` | **everything this run published** for that device |
+| `4` | refresh: keeps the newest dump and clears the earlier ones |
+
+Press a key with **nothing** selected and you get a pick mode instead: click
+devices one after another, `ESC` ends it, and clicking selects nothing (it is a
+read-only pick — `xschem instance_at`). With more than one object selected the
+key refuses and says so, and changes nothing.
+
+The digits are **cadence-profile only** (ruling D-2): inside that profile they
+displace "toggle pin logic level", which survives as `xschem logic_set 0|1|2|3|4`.
+In stock xschem, `Tools > Results Display Window` opens the same window
+unconditionally, and the four digits are also bound on the window itself
+(issue 1358) — so select a device on the canvas, click into the window, press `1`.
+
+---
+
+## Q88. What is the difference between the annotation list, the summary list, and "all"?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing` @ `b0d19af9` — `src/op_param_lists.tcl`,
+  `src/rdw.tcl`; issues **1300**, **1353**, **1355**.
+
+**Annotation = what the sheet draws. Summary = computed but not drawn. All = what
+this run actually published.** The window words it the same way:
+
+```
+1  the annotation list      (drawn on the sheet)
+2  the summary list         (computed, not drawn)
+3  everything this run published (live from the simulator)
+```
+
+Lists 1 and 2 are stored per device class and are yours to edit. **List 3 is
+never stored** — it is read back out of the raw every time, and a settings-file
+row that names it is reported and skipped, because storing a list no simulator
+published is invented data (ruling D-4).
+
+Each block says which list narrowed it, in the past tense, so a paste carries its
+own provenance:
+
+```
+Narrowed to the mos annotation list at this dump: 6 of 88 columns.
+```
+
+A key-3 block instead carries `Not everything the device has - only what this run
+saved.` Today's ngspice cannot enumerate a device's full parameter set, so the
+window states that as fact rather than implying completeness (ruling DD-1).
+
+⚠ **The buttons act on the list the KEY selected, not on the block you are
+reading.** Press `2` without re-dumping and the block still says `annotation`
+while Delete acts on `summary`. The line above the pane is the present-tense
+statement of which list the buttons are on — that gap is issue **1355**, and it
+is why the line exists.
+
+---
+
+## Q87. How do I change which parameters are shown — and does that change what the simulator is asked to save?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing` @ `b0d19af9` — rulings DD-4, DD-6,
+  DD-13; issue **1312**.
+
+**Edit them with the RDW button column. And no — Delete never shrinks your deck.**
+
+The working path is: press `3` over the device (so the pane shows everything the
+run has), **click the row** you want, press **Add**. To remove one, press `1` or
+`2`, click the row, press **Delete**. **Up** / **Down** reorder. **Save** writes
+the settings file. `Add` is greyed on list 1 — an Add made from list 2 or 3 writes
+the *annotation* list — and `Delete` is greyed on list 3.
+
+**Display and deck are deliberately separate.** `op_param_lists::apply` writes the
+annotation+summary union **plus this device type's own PDK declaration** into the
+descriptor's `params`, which is what the `.save` cards are built from, and derives
+the drawn set by filtering that. So a Delete takes a row off the sheet and the
+simulator still computes it. DD-4 states the price out loud: *a user who deletes a
+row to make the deck smaller does not get a smaller deck.* Saving an
+operating-point parameter is measured free, so the cost is a slightly larger raw.
+
+Adding a parameter the PDK never declared **does** widen the request — it enters
+the union, so it gets a `.save` card.
+
+⚠ **The sheet draws at most six rows**, whatever your list says (ruling D9b — IHP's
+`vertical_npn` shipped sixteen). A seventh parameter is stored, saved and printed
+in the RDW, and silently dropped from the drawn block. Lift the cap from an rc or
+the CIW:
+
+```tcl
+set ::op_annot_max_rows 0     ;# no limit
+set ::op_annot_max_rows 10    ;# or any other ceiling
+```
+
+---
+
+## Q86. How do I make a change apply to just one device type instead of every MOSFET?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing` @ `b0d19af9` — ruling DD-2;
+  issues **1310**, **1311**.
+
+**Every Delete and every Add raises a scope dialog first: *this device flavor
+only* versus *every device of this broad class*.**
+
+Broad writes a `class` entry — the five shipped classes are `mos`, `resistor`,
+`capacitor`, `diode`, `bipolar`. Narrow writes a `flavor` entry keyed on a
+cell-name glob, so `*nfet_01v8_lvt*` can differ from the rest of the MOSFETs.
+The dialog names the list it is about to change in all three states.
+
+⚠ **One real limitation, and the button says so on screen: a narrow list does not
+reach the drawn sheet yet — issue 1310.** It is stored, written to the file,
+honoured by `op_param_lists::effective` and shown in the Results window; but the
+schematic still draws the *class* list, because `op_annot` holds one descriptor
+per `type=` token and two cells of that type share it. The success sentence ends
+with "a per-cell display list cannot be expressed yet (issue 1310)".
+
+When two globs of the same class both match a cell, **the first one in the file
+wins** (ruling DD-8) — nothing ranks globs, because neither `sky130_fd_pr__*` nor
+`*nfet_01v8_lvt*` contains the other. Reorder them by editing the file. Reaching
+that ordering from the window is issue **1311**.
+
+For a device type nobody mapped — sky130 ships `varactor`, `pwell_resistor`,
+`high_precision_p`; IHP ships `inductor` and `esd` — the token is **its own
+class**, which works. Group it with one line in the settings file:
+`class varactor capacitor`.
+
+---
+
+## Q85. Where are my parameter lists saved, and do they survive a restart?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing` @ `b0d19af9` — rulings DD-3, DD-7;
+  issues **1273**, **1380**.
+
+**In `op_param_lists.conf` — and yes, as of `b0d19af9`.** Two tiers, read
+user-global first, then project:
+
+```
+$USER_CONF_DIR/op_param_lists.conf     # normally ~/.xschem/
+<pwd>/.xschem/op_param_lists.conf      # the project tier -- what Save writes
+```
+
+They are read back at startup by `src/xschem.tcl:17448`. Until that one line
+landed, Save wrote a real file, reported the real path, and every later session
+started with an empty store — issue **1380**, in the user's words: *"RDW claims
+saved, and the file exists while Xschem still up. But, relaunch and: No such file
+or directory."*
+
+⚠ **The project tier is `[pwd]/.xschem/`, and xschem is normally launched from
+`$HOME`** — so at the ordinary launch directory the two tiers resolve to the
+**same file** and every design on the machine reads it back. Save says so when it
+happens. Which directory ought to count as "the project" is issue **1273** and is
+not settled.
+
+The file is line-oriented **data and is never sourced** — no `source`, `eval`,
+`subst` or `uplevel`; anything unrecognised is reported and skipped. That is
+because the point of the file is to be shared with teammates, and a shared file
+that is sourced is arbitrary code execution on whoever opens the project. It is
+hand-editable:
+
+```
+version 2
+class  varactor capacitor
+param  class  mos annotation id  id  0
+param  flavor mos *nfet_01v8_lvt* annotation gm gm 1
+```
+
+Save is a read-modify-write of that one tier: comments, blank lines and rows this
+build does not understand come through verbatim (ruling DD-7).
+
+---
+
+## Q84. Why are some values blank?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing` @ `b0d19af9` — invariant I3;
+  issues **0909**, **1272**.
+
+**Because the raw names that column and the simulator did not compute it.** The
+Results window prints exactly that sentence, once, whenever a block has a blank
+in it.
+
+A blank is never a `0`, never a fabricated number and never the previous run's
+number (invariant I3). Three distinct things a row can be:
+
+- **blank** — the column is in the raw, uncomputed;
+- **`(did not converge)`** — the column *is* there and holds `Inf`/`NaN`. That is
+  a result a designer wants told, not a gap;
+- **absent from the block entirely** — the deck never asked for it.
+
+If *every* row is blank, the usual cause is the deck: **ngspice publishes nothing
+per-device unless asked**, and `save all` does not include `gm`, `gds` or `vth`.
+Check the tick at `Outputs > Save All… > Save device OP parameters (gm, gds,
+vth, ...)` in the ASE-L window — that is the exact path the annotation path
+prints as its remedy (issue 0909). It defaults ON.
+
+⚠ One honest caveat: an ASCII raw turns a NaN into a finite `0` before this window
+ever sees it, so an empty `did not converge` bucket is **not** proof the run
+converged, and no sentence in the window claims it did. (That is measured in issue
+**1272** — the seam it names was fixed 2026-09-03; the ASCII encoding's own
+lossiness, `nan` → `0`, is upstream of xschem and is not.)
+
+---
+
+## Q83. Why does my device show nothing at all?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing` @ `b0d19af9` — `rdw::_state_sentence`,
+  `src/rdw.tcl:877`.
+
+**There are five different silences and the window tells you which one you are
+in.** None of them says "nothing found".
+
+| what it says | what to do |
+|---|---|
+| `No simulation results are loaded.` | run, or load a raw |
+| `...nothing has been published from them yet.` | annotate first — `Waves > Op Annotate`, or key `6` |
+| `The loaded results are a tran analysis, not an operating point.` | an OP+TRAN run writes both to one file; reading the transient made it the current one |
+| `<inst> has no operating-point descriptor...` | nothing is registered for this symbol type |
+| `This run's raw holds no operating-point columns for <path>.` | the deck did not save them |
+
+The fourth is the common one and it is not a bug: **no PDK in this tree registers
+a capacitor, a resistor or a diode.** sky130, gf180mcu and IHP each register
+`nmos` and `pmos`; IHP also registers `vertical_npn`. Clicking a mim cap can only
+ever refuse.
+
+On the schematic rather than in the window, the two first-run confusions — no
+results file for this cell, and nothing on this sheet has a descriptor — are both
+said on the held status line by the `6` press itself.
+
+---
+
+## Q82. How do I copy numbers out of the Results window?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing` @ `b0d19af9` — issues **1339**,
+  **1344**; `rdw::copy`.
+
+**Drag over the lines and press `Ctrl-C`, or right-click for `Copy` / `Select
+All`.**
+
+The pane is a real Tk text with `-exportselection 1`, so the X PRIMARY selection
+works too (highlight, then middle-click into your document). `Ctrl-C` is bound on
+the toplevel *and* on the pane, so it fires wherever focus sits inside the window,
+and the right-click menu calls the same single proc.
+
+Two behaviours worth knowing, both deliberate:
+
+- **A `Ctrl-C` with nothing selected leaves your clipboard alone** and says so.
+  It does not clear it — pressing the chord in the wrong window should not destroy
+  what you copied five minutes ago.
+- **A selection made in the status line** (which is where the settings-file path
+  is printed after a Save) is copied too, not just the pane (issue 1344).
+
+The block is shaped for pasting: line 1 is the Cadence-style path `M18:/x1/x1`,
+line 2 is the raw's own device path — what you would type at an ngspice prompt —
+then the numbers.
+
+---
+
+## Q81. Does this work with a PDK other than sky130?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing` @ `b0d19af9` — spec
+  `op_param_lists.md` §2.2; `op_annot::register`, `src/op_annot.tcl:507`.
+
+**Yes. Three PDKs ship registrations today, and any PDK can add one.**
+
+| PDK | types registered | params |
+|---|---|---|
+| sky130 | `nmos`, `pmos` | `id gm gds vgs vth vds` |
+| gf180mcu | `nmos`, `pmos` | the same six |
+| IHP sg13g2 | `nmos`, `pmos` | the same six, but `{id ids 0}` — label `id`, raw parameter `ids` |
+| IHP sg13g2 | `vertical_npn` | `ic ib gm go vbe vbc` |
+
+**No PDK token appears in any code in `src/`** — sixteen files there spell
+`sky130`, `gf180` or `sg13g2`, and every one of those occurrences is inside a
+comment. That is the design: every PDK-specific *fact* lives in that PDK's own
+`*_procs.tcl`, which calls `op_annot::register`:
+
+```tcl
+op_annot::register nmos {
+  devproc sky130_op_devpath
+  match   {*sky130_fd_pr/*}
+  params  {{id id 0} {gm gm 1} {gds gds 1} {vgs vgs 2} {vth vth 2} {vds vds 2}}
+}
+```
+
+`match` is a list of globs over the cell name and is why `type=nmos` can mean four
+different things in one session (issue 0425). To change a list from an rc without
+a restart — live on the next redraw:
+
+```tcl
+set d [op_annot::descriptor nmos]
+dict set d params [concat [dict get $d params] {{vdsat vdsat 2}}]
+dict unset d declared    ;# ⚠ part of the recipe, not optional
+op_annot::register nmos $d
+```
+
+That `dict unset` is ruling DD-14 / issue **1315**: `register` deliberately
+*preserves* an existing declaration (so the RDW's Save cannot destroy the PDK's
+list — issue 1312), which means without the unset your new set is what runs and
+draws while a later Reset restores the PDK's, silently.
+
+---
+
+## Q80. The numbers look stale, or they are from the wrong run. What do I do?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing` @ `b0d19af9` — issue **0684**,
+  ruling D5-1; spec `op_annotation.md` §4.10.
+
+**Press `6` again.** It is not a no-op: the press asks whether the database it is
+painting from is still the file it was read from — path, `mtime`, `size` **and a
+CRC32 of the file's own first and last 4096 bytes** — and if it is not, it takes
+the stale one off and re-reads before painting anything. The fingerprint is the
+third term on purpose: it comes from the file, so it sees a rewrite xschem did not
+do, which is every rewrite that matters here (`src/op_annot.tcl:1397`).
+
+Before issue **0684** both operating-point surfaces asked only *"is some database
+attached?"*, took silence for consent, and repainted the previous run's
+`id`/`gm`/`gds` for ever.
+
+If you want to be certain, `Ctrl-6` then `6`. In the Results window, key `4`
+clears every dump but the newest — the window accumulates blocks, so an old one
+can still be sitting above the one you just took.
+
+Four holes are known, filed and not silent:
+
+- a same-second rewrite of identical size confined to the **middle of a file
+  larger than 8 KiB** is still invisible — narrowed by issue **1255**, not closed:
+  in a file of 8 KiB or less the whole file is the window, and in a larger one any
+  change touching the first or last 4096 bytes is caught. Row F51 pins the residue
+  as a measured limit;
+- a database attached from outside these verbs at the same path is stamped at
+  first sighting, not at attach, so it is trusted for ever (**0910**);
+- a descended sheet with no ASE-L session never repairs, because the candidate
+  path is built from the sheet you are standing on (**0911**);
+- a **deleted** results file leaves the menu tick showing it and the chord
+  blanking the sheet (**0912**).
+
+---
+
+## Q79. My transistors are buried under their own W/L text. Can I hide it while I read the numbers?
+
+- **Asked:** 2026-09-08
+- **Project state:** branch `fluid-editing` @ `b0d19af9` — ruling D-8, feature
+  **1244** (a number reserved for the declutter, not an issue file);
+  `src/cadence_style_rc:395`.
+
+**`Ctrl-Alt-6`.** While the operating point is displayed, an annotated device
+draws its **name and its OP block and nothing else** — the sizing, `nf=`, the
+model name and the pin labels all go, so the numbers are legible.
+
+Four things about it that are deliberate and will surprise you otherwise:
+
+- **It is a toggle**, where its three neighbours are additive setters. Press it
+  again to bring the text back.
+- **It is an AND-gate on `6`** (ruling D-8, the user verbatim: *"Declutter is
+  active ONLY when OP info (6 key triggered) is displayed"*). Armed with
+  annotation off, it changes nothing at all.
+- **Nothing is persisted** and nothing is written into the `.sch`. After
+  `6` → `Ctrl-Alt-6` → `Ctrl-6` → `6`, the parameters are back and you press
+  `Ctrl-Alt-6` again.
+- **It reaches only the devices that got OP numbers.** A hierarchical block keeps
+  its cell name and pin labels; a device with no descriptor is untouched.
+
+Exactly three text spellings survive: `@name`, `@symname` and `@spiceprefix@name`
+(`annot_name_token`, `src/actions.c:1327`).
+
+⚠ **Only the chord door tells you.** Press it — or any of the four annotation
+chords — and the held status line names the declutter (issue 1251, fixed). Annotate
+from `Waves > Op Annotate` instead and the bit is **preserved and never mentioned**:
+that menu body runs `annotate_op`, refreshes the bounding boxes, redraws, and emits
+no status sentence at all. So a sheet can come up stripped with nothing said. That
+is issue **1256**, and it is open.
+
+---
+
 ## Q78. If a config view decides which view each cell uses, what happens to the `schematic=` attributes already sitting in my designs?
 
   *(Renumbered from Q49 when `annotate` landed on `fluid-editing`; both branches had minted a Q49. The **Asked** date below is the real one.)*
