@@ -4709,6 +4709,101 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
   kx_ans ::rdw::set_list summary
 }
 
+# ============================================================================
+# SECTION HP — ISSUE 1384, THROUGH THE REAL KEYBOARD AND THE REAL STATUS BAR
+# ============================================================================
+# The sentence, the slot, the tooltip arithmetic and all four exits are section
+# HT of test_rdw_window_1245.tcl, which drives `rdw::key` as a COMMAND.  What
+# only this file can add is the user's actual gesture: a bare `1` on the design
+# canvas under src/cadence_style_rc, which is where ruling D-2 put those keys
+# and which cannot be sourced under --nogui at all.
+#
+# ⚠ NO WIDTH IS ASSERTED HERE.  The tooltip half is width-dependent and the
+# main window's width is restored per schematic FILE out of the user's
+# `~/.xschem/geometry` (issue 1385), so it is measured in the window suite,
+# which sets its own geometry.  These two rows are about text on a label.
+if {[kx_ans ::rdw::have_tk] eq {1} && [winfo exists .statusbar.10]} {
+  set HP_SLOT [kx_ans ::rdw::_hint_slot [xschem get current_win_path]]
+  set HP_ANN {Click on instance for annotation OP info in Results Display Window}
+  proc hp_txt {} { global HP_SLOT ; set r {} ; catch {set r [$HP_SLOT cget -text]} ; return $r }
+  proc hp_st  {} { global HP_SLOT ; set r {} ; catch {set r [$HP_SLOT cget -state]} ; return $r }
+  proc hp_pumping {} { return [expr {[info exists ::rdw::hint(after)] ? 1 : 0}] }
+  ## The mode's private binding tag on the design canvas -- the SYNCHRONOUS
+  ## re-assert, which is what actually keeps the sentence on screen while the
+  ## pointer moves (the 80 ms timer alone was measured to lose 16-40% of the
+  ## time to C's per-event blank).  Asked for by name from the proc that owns
+  ## it, so this reader cannot drift from the code.
+  proc hp_tagged {} {
+    set t [kx_ans ::rdw::_hint_tag]
+    if {![winfo exists .drw]} { return NO-CANVAS }
+    return [expr {[lsearch -exact [bindtags .drw] $t] >= 0 ? 1 : 0}]
+  }
+  proc hp_settle {{n 8}} { for {set i 0} {$i < $n} {incr i} { catch {update} ; after 30 } }
+
+  ## -------------------------------------------------------------------------
+  ## HP1 — THE USER'S OWN GESTURE, END TO END.
+  ## Bare `1` on the canvas with nothing selected: cadence_style_rc's bind ->
+  ## rdw::key -> the `none` branch -> pick_start -> the sheet says what the
+  ## mode is waiting for.  Then the mode's own documented exit, a real ESC on
+  ## the canvas, takes it away again.  The slot is asserted BLANK first, so a
+  ## label that already said this cannot make the row pass.
+  kx_ans ::rdw::pick_end
+  kx_reset
+  hp_settle 4
+  set HP1_PRE [list [hp_txt] [hp_st] [hp_pumping] [hp_tagged]]
+  focus -force .drw ; update idletasks
+  event generate .drw <Key-1> -when now
+  update
+  hp_settle 6
+  set HP1_UP [list [hp_txt] [hp_st] [hp_pumping] [hp_tagged] [seized] [kx_listkind]]
+  ## THE MOUSE MOVES, WHICH IS WHAT THE SENTENCE IS ASKING FOR.  C blanks
+  ## `.statusbar.10` at the top of `callback()` on every canvas event, so a row
+  ## that reads the label without ever moving the pointer reads a label nothing
+  ## attacked.  These are real motions on the real canvas, delivered `-when now`
+  ## so no timer can have run between the last one and the read: what survives
+  ## them is the binding tag's work.
+  for {set _i 0} {$_i < 8} {incr _i} {
+    event generate .drw <Motion> -x [expr {60 + $_i * 13}] -y [expr {60 + $_i * 9}] -when now
+  }
+  set HP1_MOVED [list [hp_txt] [hp_st] [hp_tagged]]
+  focus -force .drw ; update idletasks
+  event generate .drw <Key-Escape> -when now
+  update
+  set HP1_DOWN [list [hp_txt] [hp_st] [hp_pumping] [hp_tagged] [seized]]
+  check {HP1 A BARE 1 ON THE DESIGN CANVAS, WITH NOTHING SELECTED, MAKES THE SHEET SAY WHAT THE COMMAND MODE IS WAITING FOR AND KEEPS SAYING IT WHILE THE HAND MOVES - and a real ESC on the canvas takes it back: the profile's own keybinding reaches rdw::key, the none branch arms the pick, .statusbar.10 carries the user's annotation sentence in the -state active C uses for its own mode prompts, the private binding tag is on the canvas and the backstop timer is armed; eight real hover motions delivered synchronously leave the sentence STANDING, which is C's per-event blank being undone in the same binding invocation it happened in; and after the mode's documented exit the label is blank, normal, untagged and unpumped again with the canvas handed back} \
+    [list $HP1_PRE $HP1_UP $HP1_MOVED $HP1_DOWN] \
+    [list [list { } normal 0 0] [list $HP_ANN active 1 1 1 annotation] \
+          [list $HP_ANN active 1] [list { } normal 0 0 0]]
+
+  ## -------------------------------------------------------------------------
+  ## HP2 — THE RULING, THROUGH THE REAL KEYBOARD.
+  ## "If an instance is selected and user presses 1/2/3, only the selected
+  ## instance is processed.  One does not enter command mode in this case."
+  ## Driven at HEAD before the hint existed and already true; what this row
+  ## adds is that the SHEET stays silent on that branch, and it asserts the
+  ## dump really happened so the silence is not the silence of a dead key.
+  kx_ans ::rdw::pick_end
+  kx_reset
+  hp_settle 4
+  xschem unselect_all
+  xschem select instance M1
+  set HP2_SEL [xschem get lastsel]
+  focus -force .drw ; update idletasks
+  event generate .drw <Key-1> -when now
+  update
+  hp_settle 6
+  set HP2 [list [hp_txt] [hp_st] [hp_pumping] [hp_tagged] [seized] \
+                [expr {[kx_nblocks] >= 1 ? 1 : 0}]]
+  xschem unselect_all
+  kx_ans ::rdw::close
+  kx_reset
+  check {HP2 WITH AN INSTANCE SELECTED THE SAME KEY SAYS NOTHING ON THE SHEET, WHICH IS THE USER'S OWN RULING: a real bare 1 with M1 selected dumps M1 and enters NO command mode, so .statusbar.10 is still blank and normal, no backstop timer is running, no binding tag is left on the canvas and the canvas is not seized - and the dump leg is there so the silence cannot be the silence of a key that did nothing} \
+    [list $HP2_SEL $HP2] \
+    [list 1 [list { } normal 0 0 0 1]]
+
+  kx_ans ::rdw::set_list summary
+}
+
 if {[llength [info commands kx_ciw_echo_real]]} { rename kx_ciw_echo_real ciw_echo }
 catch {xschem raw clear}
 
@@ -4850,7 +4945,20 @@ catch {xschem raw clear}
 ## now spends the one-shot - so it does not move the count.  Issue 1369's
 ## structural row is K18 of test_rdw_window_1245.tcl.  A floor is raised when
 ## rows are added and NEVER lowered to make a run pass.
-set KX_FLOOR 90
+## ⚠ AND RAISED 90 -> 92 BY ISSUE 1384, IN THE SAME COMMIT AS HP1 AND HP2 -
+## the two rows that press a bare `1` on the design canvas under this profile's
+## own binding and read the SHEET's status bar: once with nothing selected,
+## where the pick mode arms and the sentence appears and a real ESC takes it
+## away, and once with an instance selected, where the user's ruling says only
+## that instance is processed and no command mode is entered, so the sheet must
+## stay silent.  Both are behind this file's `[kx_ans ::rdw::have_tk] eq {1}`
+## guard plus a `winfo exists .statusbar.10`, so a display that fails to come
+## up drops them silently - which is exactly what a floor is for.  The
+## sentence, the slot arithmetic, the tooltip and all four exits are section HT
+## of test_rdw_window_1245.tcl, whose RW_FLOOR moves 193 -> 197 in the same
+## commit.  A floor is raised when rows are added and NEVER lowered to make a
+## run pass.
+set KX_FLOOR 92
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\

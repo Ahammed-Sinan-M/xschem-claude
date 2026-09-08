@@ -96,11 +96,28 @@
 ##
 ##     # a whole-line comment ; blank lines are skipped
 ##     version 2
+##     [pdk <name>]                  a PDK SECTION HEADER; [pdk *] goes back to
+##                                   the rows that apply to every PDK
 ##     class  <type-token> <broad-class>
 ##     list   class  <class> <listname>
 ##     list   flavor <class> <cell-name glob> <listname>
 ##     param  class  <class> <listname> <label> <rawparam> <kind>
 ##     param  flavor <class> <cell-name glob> <listname> <label> <rawparam> <kind>
+##
+## THE PDK AXIS IS NOT A NEW ROW SHAPE AND THE VERSION DOES NOT MOVE (issue
+## 1388). Every v2 row means exactly what it meant before; the only new LINE
+## KIND is the section header, and a v2 row's arity, fields and order are
+## untouched. Bumping to `version 3` was rejected AND MEASURED AGAINST THE
+## USER'S OWN FILE: theirs says `version 2` and is completely correct under
+## this grammar, so a bump would report a mismatch at every launch about a file
+## with nothing wrong with it, and ruling DD-11 would then rewrite their
+## version line on the next Save for no behavioural reason at all. THE PRICE,
+## STATED: an OLDER xschem reading a sectioned file reports the header as an
+## unknown keyword, skips it, and then applies the section's rows to EVERY PDK
+## -- so a file with PDK sections is shareable with a teammate on this build or
+## newer, and merely wrong-not-broken on an older one. Recorded in the issue
+## and in spec section 4.4 rather than in the emitted header, which the user
+## reads every time and which is already at its length budget.
 ##
 ## GRAMMAR v2 -- ITEM B2c, ISSUE 1277. A `flavor` row carries its CLASS as a
 ## field of its own, so `effective <class>` can never be answered by a flavor
@@ -137,6 +154,57 @@
 ## project file WIN over the user-global one (D-7) rather than append to it.
 ## Within one file the rows then accumulate in file order, and a repeated LABEL
 ## replaces in place and is reported.
+##
+## ===========================================================================
+## THE PDK AXIS (issue 1388): THREE PRECEDENCE AXES, AND THEY ARE ORDERED
+## ===========================================================================
+## The user's constraint is the whole design and it is generous: "a given
+## launch, with a set of libraries will not have more than one PDK included".
+## The PDK is therefore a PER-PROCESS CONSTANT, so nothing here ever merges two
+## PDKs and no store key gains a PDK field. A row that is not for THIS launch's
+## PDK is NEVER PARSED INTO THE STORE AT ALL -- which is the same structural
+## move ruling DD-7 makes about provenance one layer out: you cannot leak a row
+## you never read.
+##
+## The three axes, OUTERMOST FIRST, because two of them used to be one:
+##   1. TIER.  The project file's rows for a (scope,key,listname) replace the
+##      user-global file's rows for it, WHATEVER PDK SCOPE EITHER WAS WRITTEN
+##      IN. Read order decides and `touched` is per FILE, so this axis is
+##      unchanged by the PDK work and stays the outermost one.
+##   2. PDK SCOPE, within one file.  A row under `[pdk <name>]` for THIS
+##      launch's PDK beats a row with no PDK scope, WHEREVER THE SECTION SITS
+##      IN THE FILE. This is a RANK, not file order, and that is deliberate:
+##      the user's ruling is "PDK section beats the un-scoped rows", and a rank
+##      means moving your section to the top of the file cannot silently cost
+##      you your per-PDK list. Implemented by reading the file in TWO PASSES --
+##      un-scoped rows first, then this PDK's -- so the SAME "first touch of a
+##      key clears what came before" machinery that gives axis 1 its answer
+##      gives axis 2 its answer too, with no rank bookkeeping anywhere.
+##   3. FILE ORDER among flavor globs (ruling DD-8, above). Untouched.
+## Axis 2 is the only new one and it is the only one that is a rank. Saying
+## which is which is the point: an earlier draft made axis 2 file order too,
+## and then "PDK beats un-scoped" was false for exactly the user who put their
+## section first.
+##
+## A ROW WITH NO PDK SCOPE APPLIES TO EVERY PDK. That is what every row in
+## every existing file is, so this is what backward compatibility means
+## concretely, and it is why an old file needs no migration and gets none.
+## NO PDK DETECTED IS NOT AN ERROR: a launch with no PDK reads the un-scoped
+## rows and `[pdk *]`, applies no `[pdk <name>]` section, and otherwise behaves
+## exactly as it did before this existed.
+##
+## ⚠ SAVE EDITS THE ROWS WHERE THEY ALREADY ARE, AND NEVER INVENTS A SECTION.
+## If the file already carries rows for a dirty key in THIS launch's PDK
+## section, the writer edits them there; otherwise it edits the un-scoped rows,
+## which is byte-for-byte what it did before this item. So an existing file --
+## the user has a real nine-row one at <repo>/.xschem/op_param_lists.conf --
+## is never rewritten into the new shape behind their back, and per-PDK lists
+## are opted into by TYPING one header, which the emitted header explains in
+## one line. The alternative, "a Save under a PDK always writes into that
+## PDK's section", is a live RULE DEBT (issue 1388) and is the user's to
+## settle: it delivers their sentence more literally and it also silently
+## grows a section into a file whose owner never asked for one, and leaves the
+## un-scoped rows behind as a stale list a no-PDK launch would then read back.
 ##
 ## THE TIER WIN IS PER (scope,key,listname), NOT PER CLASS. DD-3's own sentence
 ## says "per class"; per-list is FINER, never coarser, so a project file that
@@ -338,6 +406,23 @@ namespace eval ::op_param_lists {
   variable reports
   if {![info exists reports]} { set reports {} }
 
+  ## SENTENCES THE TERMINAL HAS ALREADY BEEN TOLD BY A READ THIS ONE REPLACES.
+  ## `set_pdk`'s re-read parses the SAME two files again, so without this every
+  ## per-row complaint in them -- a malformed row, an unknown keyword, a
+  ## duplicate label -- would be printed to stderr TWICE on every workarea
+  ## launch this tree ships, once by the startup read and once by the read that
+  ## supersedes it. MEASURED before the gate, on the shipped sky130A rc.
+  ##
+  ## ⚠ IT GATES THE ECHO, NEVER THE BUFFER. `said` still receives every
+  ## sentence, so nothing that COUNTS reports can be changed by this and no row
+  ## moves; only the duplicate line on the user's terminal disappears.
+  ## ⚠ AND ONLY `set_pdk` EVER FILLS IT, for the duration of its own re-read.
+  ## It is not a general "tell me once" cache: two DIFFERENT problems still
+  ## speak, and the same problem in a later session speaks again. `reset` does
+  ## NOT clear it, because `set_pdk` resets in the middle of the window it owns.
+  variable echoskip
+  if {![info exists echoskip]} { set echoskip {} }
+
   variable scopes    {class flavor}
   variable listnames {annotation summary}
   ## Section 4.2's list 3. Live from the simulator, never persisted (D-4).
@@ -354,9 +439,13 @@ namespace eval ::op_param_lists {
   ## its own suite from the outside.
   ## -----------------------------------------------------------------------
   proc _say {msg} {
-    variable reports
+    variable reports ; variable echoskip
     lappend reports $msg
-    catch {puts stderr "op_param_lists: $msg"}
+    ## The buffer always gets it; the terminal is spared a sentence the read
+    ## this one REPLACES already printed. See `echoskip` above.
+    if {[lsearch -exact $echoskip $msg] < 0} {
+      catch {puts stderr "op_param_lists: $msg"}
+    }
     return {}
   }
 
@@ -367,10 +456,17 @@ namespace eval ::op_param_lists {
   ## Back to the shipped map and no user lists at all.
   ## ⚠ `applied` IS NOT CLEARED HERE. See its declaration above: reset+apply is
   ## the undo of issue 1292, so the record must survive the reset half of it.
+  ## ⚠ NEITHER IS `pdkoverride` (issue 1388), and for a sharper reason: the
+  ## PDK is a fact about the LAUNCH, not about the user's data. A Reset that
+  ## also un-declared the PDK would answer a different settings file's rows
+  ## afterwards, which is a mode change nobody asked a Reset button for.
+  ## `forget_pdk` is the verb for that, and a suite that moves the PDK puts it
+  ## back itself.
   proc reset {} {
     variable classmap ; variable defaultmap ; variable lists
     variable owned ; variable warned ; variable reports
     variable keyorder ; variable dirty ; variable dirtyclass
+    variable loadedpdk
     array unset classmap
     array set classmap $defaultmap
     array unset lists
@@ -385,6 +481,10 @@ namespace eval ::op_param_lists {
     array unset dirtyclass
     array set dirtyclass {}
     set reports {}
+    ## THE ROWS ARE GONE, so "they were read under X" is no longer true of
+    ## anything. Not the same as un-declaring the PDK, which `reset`
+    ## deliberately does not do -- this is a fact about the STORE.
+    set loadedpdk {}
     return {}
   }
 
@@ -1099,6 +1199,368 @@ namespace eval ::op_param_lists {
   }
 
   ## -----------------------------------------------------------------------
+  ## THE PDK IDENTITY, AND THE SECTION HEADER (issue 1388)
+  ## -----------------------------------------------------------------------
+  ## ⚠ WHAT IS ACTUALLY SET, MEASURED 2026-09-08 IN THIS TREE'S OWN THREE PDK
+  ## WORKAREAS, because three of the four candidates read plausibly and only
+  ## one of them survives contact:
+  ##
+  ##   workarea      env(PDK)     env(PDK_ROOT)  ::PDK      XSCHEM_LIBRARY_PATH
+  ##   sky130A       sky130A      UNSET          sky130A    {} (EMPTY)
+  ##   gf180mcuD     gf180mcuD    UNSET          UNSET      {} (EMPTY)
+  ##   ihp-sg13g2    ihp-sg13g2   UNSET          UNSET      {} (EMPTY)
+  ##
+  ##   * `env(PDK)` is set by ALL THREE (each rc's `if {![info exists
+  ##     ::env(PDK)]} { set ::env(PDK) <name> }`), the values are distinct, and
+  ##     they are the names a person would type. IT IS THE ONE THAT WORKS.
+  ##   * `env(PDK_ROOT)` is set by NONE of them. sky130A sets a TCL GLOBAL
+  ##     `::PDK_ROOT`, and it is `/home/analog/eda/tools/share/pdk` -- the
+  ##     directory that HOLDS pdks, identical for every PDK installed beside
+  ##     each other. IT IS A LOCATION, NOT AN IDENTITY: keyed on it, every PDK
+  ##     in an open_pdks install would share one section called `pdk`.
+  ##   * `$::XSCHEM_LIBRARY_PATH` is EMPTY in all three -- every workarea is
+  ##     registry-only Cadence mode and sets `set XSCHEM_LIBRARY_PATH {}`. It
+  ##     does not distinguish the three PDKs; it distinguishes NOTHING.
+  ##     (`XSCHEM_LIBRARY_DEFS` does differ, but it is a path to a
+  ##     `library.defs`, and taking a PDK NAME out of it means guessing which
+  ##     path component is the PDK -- the invention ruling D-4 forbids.)
+  ##   * THE REGISTERED `op_annot` DESCRIPTORS CANNOT TELL sky130A FROM
+  ##     gf180mcuD, WHICH IS THE USER'S OWN EXAMPLE. Measured: both register
+  ##     exactly {nmos pmos} and both declare byte-identical
+  ##     `{id id 0} {gm gm 1} {gds gds 1} {vgs vgs 2} {vth vth 2} {vds vds 2}`.
+  ##     Only IHP differs ({nmos pmos vertical_npn}, and `{id ids 0}`). The
+  ##     semantically honest candidate is the one that cannot answer the
+  ##     question that was asked.
+  ##
+  ## ⚠ AND THE HARD PART IS NOT WHICH VARIABLE, IT IS *WHEN*. MEASURED: the
+  ## startup `catch {::op_param_lists::load}` (xschem.tcl:17550) runs while
+  ## xschem.tcl is being sourced, and a PDK workarea is entered with
+  ## `--script <workarea>/cadence_style_rc`, which xinit.c:3793 sources AFTER
+  ## that. So at load time `env(PDK)` is UNSET for every launch this tree's own
+  ## PDK launcher makes -- the probe printed `env(PDK) = <UNSET>` at the top of
+  ## the --script phase, which is already later than `load`. A per-PDK settings
+  ## file whose PDK is unknown when the file is read is not a feature.
+  ## TWO SUPPORTED ORDERS, AND BOTH ARE REAL:
+  ##   (a) `PDK` exported in the ENVIRONMENT before launch -- the open_pdks
+  ##       convention, and the case that needs no code at all: `load` sees it.
+  ##   (b) the workarea rc DECLARES it, with `op_param_lists::set_pdk`, which
+  ##       RE-READS the two tiers because the first read could not have known.
+  ##       The three shipped `cadence_style_rc` files call it, beside the
+  ##       `env(PDK)` line they already had.
+  ## Rejected: making `load` lazy so it happens after the rc. Its own comment
+  ## (xschem.tcl:17532) rules that out -- "initial state" would then depend on
+  ## which door the user opened first.
+  ##
+  ## SOURCE-TIME PURITY IS INTACT: these are literals, and nothing below reads
+  ## the environment until a proc is called.
+  ##
+  ## `pdkoverride` is a LIST, not a string: empty means "nobody declared one,
+  ## ask the environment", and a ONE-ELEMENT list is a declaration -- which may
+  ## declare the EMPTY string, meaning "this launch has no PDK" even though the
+  ## environment names one. Collapsing the two would make `set_pdk {}`
+  ## ambiguous, which is the {present value} distinction `_key_state` already
+  ## draws one concept over.
+  variable pdkoverride
+  if {![info exists pdkoverride]} { set pdkoverride {} }
+
+  ## THE PDK THE STORE'S ROWS WERE ACTUALLY READ UNDER. Same LIST shape as
+  ## `pdkoverride`: empty means "nothing has been loaded", a one-element list
+  ## is the PDK the last `load` ran under, and that element may be the EMPTY
+  ## STRING, which is the ordinary startup case.
+  ##
+  ## ⚠ IT EXISTS BECAUSE "HAS THE PDK CHANGED" IS NOT A QUESTION ABOUT `pdk`,
+  ## AND A REAL LAUNCH IS WHAT PROVED IT. `set_pdk` first compared the resolved
+  ## PDK before and after its own write. The three shipped rcs set `env(PDK)`
+  ## and THEN declare, so by the time `set_pdk` ran `pdk` ALREADY answered
+  ## `sky130A` out of the environment -- before and after were equal, the
+  ## re-read was skipped, and MEASURED end to end in a project directory whose
+  ## conf carried a `[pdk sky130A]` section:
+  ##     AT-STARTUP pdk=          mos={id id 0} {gm gm 1}
+  ##     AFTER-RC   pdk=sky130A   mos={id id 0} {gm gm 1}   <- the section LOST
+  ## Every store row was green for it: the suite's fixture declared through the
+  ## override alone, never through the environment, so "before" really was
+  ## empty there. The question the code has to ask is about THE ROWS IN THE
+  ## STORE -- "they were read under X, the launch is now Y" -- which is what
+  ## this variable answers and what `pdk` structurally cannot.
+  variable loadedpdk
+  if {![info exists loadedpdk]} { set loadedpdk {} }
+
+  ## Is <name> usable as a PDK identity? {} when it is -- INCLUDING THE EMPTY
+  ## STRING, which means "no PDK" and is not an error (the user's own
+  ## non-negotiable).
+  ##
+  ## THERE ARE EXACTLY TWO REFUSALS AND THEY ARE THE SAME REFUSAL: a name this
+  ## file could not WRITE BACK as `[pdk <name>]`. Whitespace, because the
+  ## header is one whitespace-free field like every other field in this
+  ## whitespace-delimited file (the same sentence `_key_why` makes about keys);
+  ## and `]`, because `_section_of`'s pattern ends the name at the first one,
+  ## so `[pdk a]b]` would be read back as the PDK `a`. Both are stated as the
+  ## round trip rather than as two rules, and row PK1b DRIVES the round trip in
+  ## both directions -- it was minted because deleting the `]` arm outright
+  ## left the whole suite green (this item's adversary), the comment above it
+  ## claimed there was only one refusal, and `_scope_header`'s `pdk` arm -- the
+  ## writing half of the pair -- had no caller of its own to keep it honest.
+  proc _pdk_why {name} {
+    if {$name eq {}} { return {} }
+    if {[regexp {\s} $name]} {
+      return "the PDK name \"$name\" carries whitespace, so it could not be written as a `\[pdk <name>\]` section header; this launch is treated as having no PDK"
+    }
+    if {[string first {]} $name] >= 0} {
+      return "the PDK name \"$name\" carries a `\]`, so it could not be written as a `\[pdk <name>\]` section header; this launch is treated as having no PDK"
+    }
+    return {}
+  }
+
+  proc _pdk_env {} {
+    if {![info exists ::env(PDK)]} { return {} }
+    if {[catch {string trim $::env(PDK)} v]} { return {} }
+    return $v
+  }
+
+  ## THIS LAUNCH'S PDK, OR {} FOR NONE. THE ONE DEFINITION (invariant I1);
+  ## every other proc here asks this one and nothing re-derives it.
+  ##
+  ## ⚠ NOT CACHED, DELIBERATELY. It is a per-process constant in PRACTICE, but
+  ## a cache would be a second copy of the fact that goes stale the moment
+  ## `set_pdk` or a test moves it, and the read is two `info exists`. One fact,
+  ## one reader, recomputed.
+  ## ⚠ AND IT NEVER REPORTS. `_scope_applies` calls it once per line of the
+  ## file; a report in here would be a flood. `load_conf` says the sentence
+  ## once per file instead.
+  proc pdk {} {
+    variable pdkoverride
+    if {[llength $pdkoverride]} {
+      set n [lindex $pdkoverride 0]
+    } else {
+      set n [_pdk_env]
+    }
+    if {[_pdk_why $n] ne {}} { return {} }
+    return $n
+  }
+
+  ## THE DECLARATION DOOR, matching `set_class`'s shape: one call from a PDK's
+  ## own rc. Returns the LIST OF PATHS RE-READ, which is {} when nothing was.
+  ##
+  ## ⚠ IT RE-READS THE TIERS, AND THAT IS THE WHOLE REASON IT EXISTS. The
+  ## startup `load` ran before the rc could name the PDK, so it applied the
+  ## un-scoped rows and skipped every `[pdk ...]` section.
+  ##
+  ## ⚠ AND IT RE-READS FROM AN EMPTY STORE, NOT ON TOP OF THE OLD ONE. The
+  ## first draft called `load` straight over the existing store on the strength
+  ## of "first touch of a key clears what came before", which really does
+  ## rebuild every key's CONTENT -- and left `keyorder`, which is FILE ORDER
+  ## among flavor globs (ruling DD-8), carrying the first read's positions with
+  ## the second read's new keys appended after them. So THE SAME TWO FILES GAVE
+  ## DIFFERENT ANSWERS depending on how the PDK arrived. MEASURED, user tier
+  ## `[pdk sky130A] flavor mos *nfet_01v8_lvt*`, project tier un-scoped
+  ## `flavor mos *`:
+  ##     `PDK=sky130A xschem`   (env first, one read)  -> *nfet_01v8_lvt* wins
+  ##     the shipped rc         (read, then declare)   -> bare `*` wins
+  ## and the rc is the default path for all three PDKs this tree ships. A
+  ## `reset` makes the sentence below true instead of merely plausible: the end
+  ## state is identical to a launch that knew its PDK all along, ORDER AND ALL.
+  ## Safe because the dirty check above already refused every case where the
+  ## store holds something the files do not, and `reset` deliberately keeps
+  ## `pdkoverride` (the declaration) and `applied` (issue 1292's undo).
+  ## Rows PK7 and PK7b compare the two arrival orders' STORES; PK13b compares
+  ## their flavor ORDER, which is the half that was wrong.
+  ##
+  ## ⚠ "CHANGED" MEANS "DIFFERENT FROM WHAT THE ROWS WERE READ UNDER", NOT
+  ## "different from a moment ago". The three shipped rcs set `env(PDK)` and
+  ## THEN declare, so a before/after comparison of `pdk` is equal on both sides
+  ## and skips the re-read -- measured, with the section silently lost. See
+  ## `loadedpdk` above.
+  ##
+  ## ⚠ IT WILL NOT RE-READ OVER YOUR UNSAVED EDITS. A re-read is silent
+  ## discard for any key this session already changed, so a declaration that
+  ## arrives AFTER an edit records the name, re-reads nothing, and says so.
+  ## In the supported order nothing is dirty yet: `load` stamps nothing
+  ## (ruling DD-7) and the rc runs before any window is open.
+  proc set_pdk {name} {
+    variable pdkoverride ; variable dirty ; variable dirtyclass
+    set why [_pdk_why $name]
+    if {$why ne {}} {
+      _say $why
+      set pdkoverride [list {}]
+      return {}
+    }
+    variable loadedpdk
+    set pdkoverride [list $name]
+    ## NOTHING HAS BEEN READ YET, so there is nothing to correct: the next
+    ## `load` will simply see the right PDK.
+    if {![llength $loadedpdk]} { return {} }
+    if {[lindex $loadedpdk 0] eq [pdk]} { return {} }
+    if {[array size dirty] || [array size dirtyclass]} {
+      _say "PDK \"$name\" was declared after this session changed a list, so the settings files were NOT re-read and any `\[pdk $name\]` rows in them are not applied. Save your lists, or restart with PDK=$name in the environment."
+      return {}
+    }
+    ## The read below REPLACES the one above it, so it replaces its report
+    ## buffer too (`reset`) and does not re-echo its sentences to the terminal
+    ## (`echoskip`). What IS new -- the sections this launch skips, which the
+    ## provisional startup read could not honestly name -- is not in the
+    ## snapshot and is said normally.
+    variable reports ; variable echoskip
+    set echoskip $reports
+    reset
+    ## The flag is cleared on EVERY exit, including one nothing here expects.
+    ## `load` is not documented to raise, and a leaked `echoskip` would silence
+    ## those sentences for the rest of the process -- a debugging aid turned
+    ## into a gag. The raise is re-thrown, not swallowed.
+    if {[catch {load} got]} {
+      set echoskip {}
+      return -code error $got
+    }
+    set echoskip {}
+    return $got
+  }
+
+  ## Drop the declaration and go back to the environment. The restore half of
+  ## `set_pdk`, so a suite can put the reader's own launch back.
+  ## ⚠ IT DOES NOT RE-READ, AND ROW PK1 DRIVES THAT. `set_pdk` re-reads because
+  ## a PDK arriving late is the case the feature exists for; forgetting one is
+  ## a test's own cleanup and re-reading there would give a row a store it did
+  ## not build. So after `forget_pdk` the STORE still holds exactly what the
+  ## declaration read -- only the identity goes back to the environment -- and
+  ## PK1 asserts both halves, because replacing this body with `return [load]`
+  ## used to leave the suite green (this item's adversary).
+  proc forget_pdk {} {
+    variable pdkoverride
+    set pdkoverride {}
+    return {}
+  }
+
+  ## -----------------------------------------------------------------------
+  ## THE SECTION HEADER
+  ## -----------------------------------------------------------------------
+  ## A SCOPE IS A TWO-ELEMENT LIST, never a bare string, so no PDK name can
+  ## ever collide with a sentinel:
+  ##   {any {}}      the rows that apply to EVERY PDK -- the top of the file,
+  ##                 and everything under `[pdk *]`
+  ##   {pdk <name>}  a `[pdk <name>]` section
+  ##   {bad {}}      the rows under a header this reader could not read
+  ##
+  ## ⚠ `[pdk *]` IS THE WAY BACK, AND THE WRITER NEEDS IT MORE THAN THE USER
+  ## DOES. An appended row lands at the END of the file, and the end of a
+  ## sectioned file is INSIDE a section, so a writer with no way to say "back
+  ## to every PDK" would silently give a new un-scoped list the last section's
+  ## PDK. `*` reuses the glob vocabulary the `flavor` scope already spends, and
+  ## the one collision it could have -- a PDK literally named `*` -- is
+  ## harmless rather than wrong: such a launch matches `[pdk *]`, which is
+  ## "every PDK", which includes it.
+  ##
+  ## ⚠ A HEADER THIS READER CANNOT READ POISONS THE SECTION RATHER THAN
+  ## LEAVING THE SCOPE ALONE. `[pdk sky 130A]` is two fields where one was
+  ## wanted; leaving the current scope unchanged would make the rows under it
+  ## UN-SCOPED, i.e. would apply rows the user wrote for ONE PDK to EVERY PDK,
+  ## which is the leak this whole item is about. Applying them to nothing is
+  ## the safe direction -- the same direction "a lost `list` line degrades to
+  ## the PDK seed" already takes -- and the reader says so on the header line.
+  ##
+  ## `[` CAN START NO OTHER LINE. A data row starts with one of four verbs and
+  ## a comment with `#`; the only `[` a row can carry is inside a cell-name
+  ## glob, which is never the first field. So "the trimmed line starts with
+  ## `[`" is a complete and unambiguous trigger.
+  ##
+  ## -> {}                  this is not a section header
+  ## -> {ok <scope>}        a well-formed one
+  ## -> {bad <sentence>}    it looks like one and is not
+  proc _section_of {line} {
+    set t [string trim $line]
+    if {[string index $t 0] ne {[}} { return {} }
+    if {[regexp {^\[[ \t]*pdk[ \t]+([^\]\s]+)[ \t]*\]$} $t -> nm]} {
+      if {$nm eq {*}} { return [list ok [list any {}]] }
+      return [list ok [list pdk $nm]]
+    }
+    return [list bad "\"$t\" is not a section header; the shape is `\[pdk <name>\]`, one whitespace-free name, or `\[pdk *\]` for every PDK. The rows under it are read and NOT applied, because guessing which PDK you meant would apply them to the wrong one"]
+  }
+
+  ## Does a scope apply to THIS launch? The one place the constant is spent.
+  proc _scope_applies {scope} {
+    set kind [lindex $scope 0]
+    if {$kind eq {any}} { return 1 }
+    if {$kind ne {pdk}} { return 0 }
+    set p [pdk]
+    if {$p eq {}} { return 0 }
+    return [expr {[lindex $scope 1] eq $p ? 1 : 0}]
+  }
+
+  ## WHICH OF `load_conf`'s TWO PASSES AN APPLYING SCOPE BELONGS TO.
+  ## ⚠ A PARTITION, NOT A SECOND FENCE (invariant I1). It is asked ONLY about
+  ## scopes `_scope_applies` has already accepted, and among those the only
+  ## two possibilities are the un-scoped rows and this launch's own section.
+  ## The reader used to test `[lindex $scope 0] ne $phase` directly, which
+  ## happened to exclude a `bad` scope as well -- so `_scope_applies` had a
+  ## silent understudy, and with `_scope_applies` sabotaged to accept
+  ## everything the reader stayed correct and the whole suite stayed GREEN
+  ## while the WRITER, which has no understudy, rewrote the user's rows under
+  ## an unreadable header. One predicate now answers "is this row mine" for
+  ## both; row PK5b is the writer's half of the fence.
+  proc _phase_of {scope} {
+    if {[lindex $scope 0] eq {any}} { return any }
+    return pdk
+  }
+
+  ## A scope AS A FILE LINE. The writer's half of `_section_of`, and the only
+  ## place a header is spelled.
+  ##
+  ## ⚠ THE `pdk` ARM HAS NO PRODUCTION CALLER TODAY AND STAYS ANYWAY, WITH A
+  ## ROW ON IT. `_merge_lines` emits only `[pdk *]` (the `any` arm), because
+  ## the shipped Save edits rows where they already are and invents no section;
+  ## the `pdk` arm is what rule debt 1388 option 1 -- "a Save under a PDK always
+  ## writes into that PDK's section" -- would call the moment the user rules for
+  ## it. Deleting it would leave the reader able to parse a header shape the
+  ## writer has no word for, which is how `_row_id` and `_parse_line` drifted in
+  ## issue 1294. Row PK1b is its caller until the user's ruling arrives: it
+  ## asserts `_section_of [_scope_header ...]` is the identity for every name
+  ## `_pdk_why` accepts, and is NOT for the two it refuses -- which is the whole
+  ## reason those two are refused.
+  proc _scope_header {scope} {
+    if {[lindex $scope 0] eq {pdk}} { return "\[pdk [lindex $scope 1]\]" }
+    return {[pdk *]}
+  }
+
+  ## Why a section is being read and not applied. Its own proc because the
+  ## sentence differs for a launch WITH another PDK and a launch with NONE, and
+  ## the second one is the case a user meets first.
+  proc _skip_why {scope} {
+    set nm [lindex $scope 1]
+    set p [pdk]
+    if {$p eq {}} {
+      return "the rows under `\[pdk $nm\]` are for PDK $nm and this launch has no PDK, so they are read and not applied"
+    }
+    return "the rows under `\[pdk $nm\]` are for PDK $nm and this launch is PDK $p, so they are read and not applied"
+  }
+
+  ## THE ONE SECTION SCANNER, TWO CONSUMERS (invariant I1): the strict reader
+  ## and the writer's read-modify-write. A second scanner inside the writer
+  ## would let a header the reader honoured be a data line to the merge, and
+  ## the merge would then rewrite a row in the wrong PDK's section with nothing
+  ## said anywhere -- the exact divergence issue 1294 measured one row shape
+  ## over, where `_row_id` was laxer than `_parse_line`.
+  ##
+  ## -> a list, ONE ELEMENT PER INPUT LINE, each {<scope> <kind> <text>}:
+  ##      kind `row`     an ordinary line, in <scope>
+  ##      kind `header`  a well-formed section header that OPENED <scope>
+  ##      kind `bad`     a header this reader could not read; <text> says why
+  ##                     and <scope> is {bad {}} from there on
+  proc _scope_lines {lines} {
+    set cur [list any {}]
+    set out {}
+    foreach line $lines {
+      set s [_section_of $line]
+      if {$s eq {}} { lappend out [list $cur row {}] ; continue }
+      if {[lindex $s 0] eq {ok}} {
+        set cur [lindex $s 1]
+        lappend out [list $cur header {}]
+        continue
+      }
+      set cur [list bad {}]
+      lappend out [list $cur bad [lindex $s 1]]
+    }
+    return $out
+  }
+
+  ## -----------------------------------------------------------------------
   ## THE TWO TIERS
   ## -----------------------------------------------------------------------
   proc conf_path {which} {
@@ -1190,6 +1652,19 @@ namespace eval ::op_param_lists {
   ## (ase.tcl:2101 states it), and two tiers resolving to the SAME path are read
   ## once.
   proc load {} {
+    variable loadedpdk
+    ## ⚠ IS THIS READ PROVISIONAL? Exactly when it has no PDK AND nothing has
+    ## been read yet -- i.e. it is the startup restore, the one read a
+    ## `--script` workarea rc can still supersede by declaring a PDK. A
+    ## re-read from `set_pdk` is not (something was read), and a launch whose
+    ## PDK came from the environment is not (it has one). Captured BEFORE the
+    ## record below overwrites it. See the section-report gate in `load_conf`.
+    set provisional [expr {[pdk] eq {} && ![llength $loadedpdk]}]
+    ## RECORDED BEFORE THE READ, not after: `_scope_applies` is what the read
+    ## spends the PDK on, so the value that governed this store's contents is
+    ## the one live at the start of it, and a `set_pdk` racing the read cannot
+    ## leave the record claiming a PDK the rows were not filtered by.
+    set loadedpdk [list [pdk]]
     set got {} ; set seen {}
     foreach which {user project} {
       set p [conf_path $which]
@@ -1206,7 +1681,7 @@ namespace eval ::op_param_lists {
       ## tier's file (ruling DD-7). A direct `load_conf` DOES stamp -- importing
       ## a file into your session is a session change -- which is the whole of
       ## the difference between the two doors.
-      if {[load_conf $p 0]} { lappend got $p }
+      if {[load_conf $p 0 $provisional]} { lappend got $p }
     }
     return $got
   }
@@ -1219,7 +1694,12 @@ namespace eval ::op_param_lists {
   ## changed-this-session, because importing a file into your session IS a
   ## session change and a user who imports then saves must get what she
   ## imported. `load`, the two-tier startup restore, passes 0.
-  proc load_conf {path {stamp 1}} {
+  ## ⚠ THE SECOND OPTIONAL ARGUMENT IS `provisional` (issue 1388), AND THE
+  ## REQUIRED ARITY STILL DOES NOT MOVE (row J5). A PROVISIONAL read is one
+  ## whose PDK may still arrive: the startup `load` runs while xschem.tcl is
+  ## sourced, and the workarea `--script` rc that DECLARES the PDK is sourced
+  ## after it. Only `load` passes 1, and only for the session's first read.
+  proc load_conf {path {stamp 1} {provisional 0}} {
     if {![file isfile $path]} {
       _say "no settings file at $path"
       return 0
@@ -1229,13 +1709,130 @@ namespace eval ::op_param_lists {
       _say "cannot read $path: [lindex $rd 1]"
       return 0
     }
-    set touched {}
+    set lines  [lindex $rd 1]
+    set scoped [_scope_lines $lines]
+
+    ## THE HEADERS ARE REPORTED ONCE, HERE, BEFORE ANY ROW IS APPLIED -- not
+    ## inside the two passes below, which would say each sentence twice.
+    ## A section that is READ AND NOT APPLIED is not an error and is not
+    ## silence either: with three PDKs' sections in one file the user is told
+    ## once per section which ones this launch skipped, which is the first
+    ## question they will ask.
+    ##
+    ## ⚠ EXCEPT FROM A READ THAT COULD STILL BE SUPERSEDED, WHICH SAYS NOTHING
+    ## ABOUT SECTIONS AT ALL (issue 1388's repair pass). `_skip_why`'s no-PDK
+    ## sentence is a claim about THE LAUNCH, and the startup read is not in a
+    ## position to make it: the rc that names the PDK is sourced after it.
+    ## MEASURED before this gate -- `cd <proj> && xschem --script
+    ## sky130A/cadence_style_rc` over a conf with three sections -- FIVE lines,
+    ## the first of them FALSE:
+    ##   :3: ... `[pdk sky130A]`    ... this launch has no PDK   <- FALSE, that
+    ##                                  section was applied one line later
+    ##   :5: ... `[pdk gf180mcuD]`  ... this launch has no PDK
+    ##   :7: ... `[pdk ihp-sg13g2]` ... this launch has no PDK
+    ##   :5: ... `[pdk gf180mcuD]`  ... this launch is PDK sky130A   <- again
+    ##   :7: ... `[pdk ihp-sg13g2]` ... this launch is PDK sky130A   <- again
+    ## and after it TWO, from the read that governs, and not one word about the
+    ## section this launch applied. Re-measured the same way for all three
+    ## shipped workareas. Row PK14 counts the lines in a CHILD PROCESS, because
+    ## the echo is stderr and `said` alone would score the duplicate green.
+    ##
+    ## THE `bad` ARM IS NOT GATED: a header nobody can read is a fact about the
+    ## FILE, true whoever reads it and whenever.
+    ##
+    ## `provisional` IS NARROWER THAN "[pdk] IS EMPTY", so THE NO-PDK WORDING
+    ## STAYS LIVE. Only `load` passes it, and only for the session's FIRST read
+    ## -- the one read a `--script` rc can still supersede. A direct
+    ## `load_conf` (importing a file by hand) is nobody's provisional read, so
+    ## a PDK-less session that opens a sectioned file is still told why nothing
+    ## applied.
+    ## ⚠ PRICE, STATED, AND ON THE RULE LEDGER AS ISSUE 1388 QUESTION 2: a
+    ## launch with NO PDK AT ALL -- started outside the workarea, sections in
+    ## the file -- is no longer told AT STARTUP. The alternative was a false
+    ## sentence on every workarea launch this tree ships.
+    set ev [_pdk_env]
+    if {$ev ne {} && [_pdk_why $ev] ne {}} { _say "$path: [_pdk_why $ev]" }
     set n 0
-    foreach line [lindex $rd 1] {
+    foreach sc $scoped {
       incr n
-      if {[string trim $line] eq {}} { continue }
-      if {[string index [string trimleft $line] 0] eq "#"} { continue }
-      _parse_line $path $n $line touched $stamp
+      switch -- [lindex $sc 1] {
+        bad     { _say "$path:$n: [lindex $sc 2]" }
+        header  {
+          if {![_scope_applies [lindex $sc 0]] && !$provisional} {
+            _say "$path:$n: [_skip_why [lindex $sc 0]]"
+          }
+        }
+      }
+    }
+
+    ## ⚠ TWO PASSES, AND THEY ARE THE PDK PRECEDENCE ITSELF (issue 1388).
+    ## Un-scoped rows first, then this launch's PDK section rows. `touched` is
+    ## SHARED across the two, so the first PDK-scoped row for a key clears what
+    ## the un-scoped rows put there by the very machinery that already makes a
+    ## project file win over a user-global one -- no rank field, no second
+    ## comparison, nothing to keep in step. That is why the rank does NOT
+    ## depend on where the section sits in the file, which is the user's
+    ## ruling: "PDK section beats the un-scoped rows".
+    ## EVERY LINE IS PARSED AT MOST ONCE: a line belongs to exactly one phase,
+    ## and a line in a section for ANOTHER PDK (or under an unreadable header)
+    ## belongs to neither, so it can raise no report of its own -- its section
+    ## already said so, once, above.
+    ## ⚠ AND AXIS 3 IS SEEDED FIRST, IN FILE ORDER, BECAUSE THE TWO PASSES
+    ## CANNOT CARRY IT (issue 1388, found by this item's adversary).
+    ## `keyorder` is the list `governs` walks to answer "which flavor glob wins
+    ## on this cell", and ruling DD-8's answer is FILE ORDER. Letting the phase
+    ## loop below append to it made the answer PHASE order instead, so a
+    ## `flavor` row inside THIS LAUNCH'S OWN `[pdk ...]` section was always
+    ## tried AFTER every un-scoped one -- it lost sitting first in the file,
+    ## and lost while being the PDK-specific row. MEASURED on the brief's own
+    ## example shape (`[pdk sky130A]` carrying `flavor mos *nfet_01v8_lvt*`
+    ## above an un-scoped `flavor mos *`):
+    ##     governs -> flavor {mos *}                <- the broad, LOWER row
+    ## and with the two section headers deleted, the same two rows answer
+    ##     governs -> flavor {mos *nfet_01v8_lvt*}
+    ## That made `_header_lines`' own flavor paragraph -- "THE FIRST ONE IN
+    ## THIS FILE WINS ... put the row you want to win ABOVE the other one",
+    ## which the writer stamps into every new settings file -- FALSE for every
+    ## sectioned file. A file lying to its own reader is the exact failure that
+    ## paragraph records two earlier attempts making. Row F5 stayed green
+    ## because its fixture has no sections; row PK13 drives F5's own worked
+    ## example through a sectioned one.
+    ##
+    ## THE TWO AXES ARE DIFFERENT QUESTIONS AND NOW ANSWER IN DIFFERENT
+    ## PLACES: axis 2 (the passes below) decides WHICH ROWS FILL A KEY; axis 3
+    ## (here) decides WHICH KEY ANSWERS A CELL. Seeding is safe in both
+    ## directions -- `_keys` returns only keys that are `owned`, so a seeded
+    ## key no row ends up creating is invisible, and `_key_touch` keeps a key's
+    ## FIRST position, so an earlier tier is still not re-ordered by a later
+    ## one restating it. `_row_id` is the same row recogniser the writer uses,
+    ## so a line that seeds no key here parses to no key below either.
+    foreach line $lines sc $scoped {
+      if {[lindex $sc 1] ne {row}} { continue }
+      if {![_scope_applies [lindex $sc 0]]} { continue }
+      set k [_row_id [regexp -inline -all {\S+} $line]]
+      if {$k ne {}} { _key_touch $k }
+    }
+
+    set touched {}
+    foreach phase {any pdk} {
+      set n 0
+      foreach line $lines sc $scoped {
+        incr n
+        if {[lindex $sc 1] ne {row}} { continue }
+        set scope [lindex $sc 0]
+        ## ⚠ ONE FENCE, THEN A PARTITION -- not two fences (invariant I1).
+        ## `_scope_applies` is the ONLY thing that decides whether a row is
+        ## this launch's; `_phase_of` then merely says which pass an APPLYING
+        ## row belongs to. The two used to be independent tests, and the
+        ## redundancy hid a hole: `_scope_applies` sabotaged to accept
+        ## everything left the reader correct and the suite green while the
+        ## writer destroyed rows under an unreadable header (row PK5b).
+        if {![_scope_applies $scope]} { continue }
+        if {[_phase_of $scope] ne $phase} { continue }
+        if {[string trim $line] eq {}} { continue }
+        if {[string index [string trimleft $line] 0] eq "#"} { continue }
+        _parse_line $path $n $line touched $stamp $scope
+      }
     }
     return 1
   }
@@ -1267,7 +1864,20 @@ namespace eval ::op_param_lists {
   }
 
   ## ONE ROW. Nothing here runs, expands or substitutes anything the file says.
-  proc _parse_line {path lineno line tvar {stamp 1}} {
+  ##
+  ## ⚠ THE OPTIONAL TRAILING `pdkscope` IS THE PDK AXIS (issue 1388), AND THE
+  ## REQUIRED ARITY DOES NOT MOVE -- the same shape `stamp` and `write_body`'s
+  ## `old` already take. It is used for ONE thing: it QUALIFIES THE `touched`
+  ## MARKERS, so "the first row for this key in this file clears what came
+  ## before" becomes "the first row for this key IN THIS SCOPE clears what came
+  ## before". That single change is the whole of "a PDK section beats the
+  ## un-scoped rows", and it also stops a legitimate per-PDK `class` row from
+  ## being reported as a duplicate of the un-scoped one it is meant to
+  ## override -- a false alarm the un-qualified marker really did raise.
+  ## ⚠ IT IS NAMED `pdkscope`, NOT `scope`: this proc's own `scope` local is
+  ## the ROW's scope (`class` / `flavor`), an entirely different axis, and one
+  ## name for two axes is how the next reader writes a real bug here.
+  proc _parse_line {path lineno line tvar {stamp 1} {pdkscope {any {}}}} {
     variable classmap ; variable lists ; variable owned
     variable livelist ; variable version
     upvar 1 $tvar touched
@@ -1300,7 +1910,7 @@ namespace eval ::op_param_lists {
         return 0
       }
       set tok [lindex $f 1]
-      set ck "class:$tok"
+      set ck [list class $pdkscope $tok]
       if {[lsearch -exact $touched $ck] >= 0} {
         _say "$at: a second `class` row for \"$tok\" in one file; the later mapping wins: $line"
       } else {
@@ -1360,8 +1970,12 @@ namespace eval ::op_param_lists {
       ## THE FIRST TOUCH OF A KEY IN THIS FILE CLEARS WHAT AN EARLIER TIER PUT
       ## THERE. That is what makes the project file WIN rather than append.
       set k [_key $scope $key $ln]
-      if {[lsearch -exact $touched $k] < 0} {
-        lappend touched $k
+      ## ⚠ THE MARKER IS SCOPE-QUALIFIED, THE STORE KEY IS NOT. The store has
+      ## one PDK (a per-process constant), so `lists`/`owned` gain no field;
+      ## only the question "has this file already touched this key IN THIS PDK
+      ## SCOPE" does.
+      if {[lsearch -exact $touched [list $pdkscope $k]] < 0} {
+        lappend touched [list $pdkscope $k]
         set lists($k) {}
         set owned($k) 1
         ## FILE ORDER (ruling DD-8): a key keeps the position of its FIRST
@@ -1586,6 +2200,24 @@ namespace eval ::op_param_lists {
 
   ## THE HEADER BLOCK, EMITTED ONLY INTO A FILE THAT HAS NO LINES YET.
   ##
+  ## ⚠ AN EXISTING FILE NEVER GAINS THE PDK PARAGRAPH, AND THAT IS RIGHT
+  ## (issue 1388, ruling DD-11). The prose is the user's; only the `version`
+  ## line is xschem's. So the user with a file written before this item keeps
+  ## the header they have, which is still TRUE OF THEIR FILE -- every row in it
+  ## is un-scoped and every sentence in it still describes what happens. A
+  ## header that gained a paragraph about a feature the file does not use would
+  ## be xschem rewriting sentences a person typed, which this batch has already
+  ## reverted three items for.
+  ##
+  ## ⚠ TWO PRECEDENCE AXES, TWO SHORT LABELLED PARAGRAPHS, NOT ONE LONG ONE.
+  ## The existing `flavor` paragraph is untouched, INCLUDING its `e.g.` lines,
+  ## because row F5 reads that worked example back out of a freshly written
+  ## file and builds its case from it. The PDK paragraph sits ABOVE it and
+  ## names its own axis in its first two words, so a reader looking for one
+  ## rule is not made to read the other. Interleaving them was the shape that
+  ## made this a wall of text; labelling them is what keeps it readable. The
+  ## wording is a LOOK DEBT (issue 1388) -- a green suite is not an eyeball.
+  ##
   ## ⚠ THE PRECEDENCE PARAGRAPH MUST BE TRUE OF THE CODE BELOW IT. Both earlier
   ## attempts wrote "narrowest matching glob wins" into every settings file they
   ## emitted while implementing something else entirely -- a file lying to its
@@ -1593,8 +2225,15 @@ namespace eval ::op_param_lists {
   ## freshly written file, builds the two-row file the example describes and
   ## asserts the winner the FILE names, so the sentence and the code cannot
   ## drift apart without reddening. Change the wording and the case it builds
-  ## changes with it; change the rule and the row goes red. If you edit the
-  ## `e.g.` line, keep its shape:
+  ## changes with it; change the rule and the row goes red.
+  ##
+  ## ⚠ AND F5'S FIXTURE HAS NO `[pdk ...]` SECTIONS, WHICH IS HOW THE PDK AXIS
+  ## MADE THIS PARAGRAPH FALSE WITHOUT REDDENING IT (issue 1388). Row PK13
+  ## reads the SAME worked example out of the SAME emitted header and drives it
+  ## through a SECTIONED file, and PK13b drives it across the two tiers with
+  ## the PDK arriving late. Three rows, one sentence, because the sentence is
+  ## what the user reads.
+  ## If you edit the `e.g.` line, keep its shape:
   ##     e.g. `flavor <class> <glob>` above `flavor <class> <glob>` wins on cell
   ##          <cellname>;
   proc _header_lines {} {
@@ -1612,10 +2251,22 @@ namespace eval ::op_param_lists {
     lappend out {#   list  flavor <class> <cell-name glob> <listname>}
     lappend out {#   param class  <class> <listname> <label> <rawparam> <kind>}
     lappend out {#   param flavor <class> <cell-name glob> <listname> <label> <rawparam> <kind>}
+    lappend out {#   [pdk <name>]                a PDK section header}
     lappend out {#}
     lappend out {# scope:    class | flavor (a cell-name glob, matched case-insensitively)}
     lappend out {# listname: annotation | summary}
     lappend out {# kind:     0 -> i(dev[p]) , 1 -> bare dev[p] , 2 -> v(dev[p])}
+    lappend out {#}
+    lappend out {# PDK SCOPE: rows above the first `[pdk ...]` header apply to EVERY PDK,}
+    lappend out {# and that is what every row in an older file is. Rows under `[pdk sky130A]`}
+    lappend out {# apply only to a launch whose PDK is sky130A, and they BEAT the un-scoped}
+    lappend out {# rows for the same list wherever in this file you put the section.}
+    lappend out {# `[pdk *]` goes back to the every-PDK rows. A launch with NO PDK reads the}
+    lappend out {# un-scoped rows and nothing else. xschem takes the PDK from PDK in your}
+    lappend out {# environment, or from the workarea rc that declares it.}
+    lappend out {# The TIER still wins first: your personal file is read before this project's,}
+    lappend out {# so a row here replaces one there for the same list whatever section either}
+    lappend out {# is in. A section never changes the flavor file-order rule below.}
     lappend out {#}
     lappend out {# PRECEDENCE among `flavor` rows: when two globs of the SAME class both}
     lappend out {# match a cell name, THE FIRST ONE IN THIS FILE WINS. Nothing is ranked}
@@ -1632,6 +2283,10 @@ namespace eval ::op_param_lists {
     lappend out {# xschem edits only the rows it changed and leaves everything else in}
     lappend out {# this file exactly as you wrote it -- your comments, your ordering, and}
     lappend out {# rows a newer xschem wrote that this one does not understand.}
+    lappend out {# It edits them WHERE THEY ALREADY ARE: in your PDK's section when this}
+    lappend out {# file already has rows for that list there, otherwise in the un-scoped}
+    lappend out {# rows. It never adds a `[pdk ...]` section for you -- type one yourself}
+    lappend out {# and xschem maintains it from then on.}
     lappend out "version $version"
     return $out
   }
@@ -1673,14 +2328,96 @@ namespace eval ::op_param_lists {
   ## NOTHING IS STAMPED -- no timestamp, no pid, no hostname -- so writing the
   ## same store twice gives the same bytes and the file a team checks in diffs
   ## only when somebody changed something.
+  ## ⚠ WHERE A DIRTY GROUP IS REWRITTEN, WHEN THE FILE HAS PDK SECTIONS
+  ## (issue 1388). One pre-pass, so the answer is decided BEFORE a single line
+  ## is emitted and the walk below cannot rewrite the first occurrence it
+  ## happens to reach.
+  ##
+  ## THE RULE IS "EDIT THE ROWS WHERE THEY ALREADY ARE", and it is the
+  ## conservative arm on purpose: if this file already carries rows for a dirty
+  ## key in THIS launch's `[pdk ...]` section, the writer edits them THERE;
+  ## otherwise it edits the un-scoped rows, which is byte-for-byte what it did
+  ## before the PDK axis existed. So an existing file -- and the user has a
+  ## real one -- is never rewritten into the new shape behind their back, and a
+  ## per-PDK list is opted into by TYPING one header, once. The other arm, "a
+  ## Save under a PDK always writes into that PDK's section", is a live rule
+  ## debt (issue 1388): it reads the user's sentence more literally and it also
+  ## grows a section into a file whose owner never asked for one, and strands
+  ## the un-scoped rows as a stale list a no-PDK launch still reads back.
+  ##
+  ## ⚠ A SECTION FOR ANOTHER PDK IS NOT A CANDIDATE, EVER. Its rows were never
+  ## read into this store (`_scope_applies` is false for them), so rewriting
+  ## one from this session's model would be writing rows into a PDK this launch
+  ## never loaded -- the deletion shape ruling DD-7 exists to make structurally
+  ## impossible, arriving through the one door DD-7 does not watch.
+  ##
+  ## -> an array-shaped LIST of {<what> <id> <scope>} triples, `what` being
+  ##    `class` or `list`. A dirty thing with no entry has no applicable row in
+  ##    the file and is APPENDED, in the un-scoped section.
+  proc _merge_where {old scoped} {
+    set out {}
+    foreach line $old sc $scoped {
+      if {[lindex $sc 1] ne {row}} { continue }
+      set scope [lindex $sc 0]
+      if {![_scope_applies $scope]} { continue }
+      set f [regexp -inline -all {\S+} $line]
+      set what {} ; set id {}
+      if {[lindex $f 0] eq "class" && [llength $f] == 3 \
+          && [_is_dirty class [lindex $f 1]]} {
+        set what class ; set id [lindex $f 1]
+      } else {
+        set k [_row_id $f]
+        if {$k ne {} && [_is_dirty list $k]} { set what list ; set id $k }
+      }
+      if {$what eq {}} { continue }
+      set hit -1 ; set i 0
+      foreach e $out {
+        if {[lindex $e 0] eq $what && [lindex $e 1] eq $id} { set hit $i ; break }
+        incr i
+      }
+      if {$hit < 0} {
+        lappend out [list $what $id $scope]
+        continue
+      }
+      ## THE PDK SECTION WINS OVER THE UN-SCOPED ROWS, which is the same rank
+      ## the READER applies. Reader and writer disagreeing about which rows a
+      ## key "is" would put the edit in the section the launch does not read.
+      if {[lindex $scope 0] eq {pdk} && [lindex [lindex $out $hit] 2 0] eq {any}} {
+        set out [lreplace $out $hit $hit [list $what $id $scope]]
+      }
+    }
+    return $out
+  }
+
+  proc _merge_where_of {where what id} {
+    foreach e $where {
+      if {[lindex $e 0] eq $what && [lindex $e 1] eq $id} { return [lindex $e 2] }
+    }
+    return {}
+  }
+
   proc _merge_lines {old} {
     variable classmap ; variable dirtyclass ; variable version
     set out {}
     if {![llength $old]} {
       foreach l [_header_lines] { lappend out $l }
     }
+    ## THE SAME SCANNER THE READER USED (invariant I1), so a header the reader
+    ## honoured is a header here too.
+    set scoped [_scope_lines $old]
+    set where  [_merge_where $old $scoped]
+    set cur    [list any {}]
     set doneclass {} ; set donekey {}
-    foreach line $old {
+    foreach line $old sc $scoped {
+      if {[lindex $sc 1] ne {row}} {
+        ## A section header, well-formed or not, is the USER's line and is
+        ## copied verbatim like every comment. Only the scope it opens matters
+        ## here, and `_scope_lines` already resolved that.
+        set cur [lindex $sc 0]
+        lappend out $line
+        continue
+      }
+      set cur [lindex $sc 0]
       set f [regexp -inline -all {\S+} $line]
       ## ⚠ XSCHEM OWNS THE `version` LINE. THE USER OWNS EVERY COMMENT.
       ## RULING DD-11, issue 1296. This is the ONE line of an existing file
@@ -1699,13 +2436,17 @@ namespace eval ::op_param_lists {
       ## short under v2, so it is still reported, by the arity gate instead of
       ## the version gate -- a better message, on the row that is actually
       ## wrong.
+      ## ⚠ THE PDK AXIS DOES NOT MOVE IT (issue 1388): the version did not
+      ## change, so this arm is inert for every file already at `version 2`,
+      ## sectioned or not.
       if {[lindex $f 0] eq "version" && [llength $f] == 2 \
           && [lindex $f 1] ne $version} {
         lappend out "version $version"
         continue
       }
       if {[lindex $f 0] eq "class" && [llength $f] == 3 \
-          && [_is_dirty class [lindex $f 1]]} {
+          && [_is_dirty class [lindex $f 1]] \
+          && [_merge_where_of $where class [lindex $f 1]] eq $cur} {
         set tok [lindex $f 1]
         if {[lsearch -exact $doneclass $tok] >= 0} { continue }
         lappend doneclass $tok
@@ -1713,7 +2454,8 @@ namespace eval ::op_param_lists {
         continue
       }
       set k [_row_id $f]
-      if {$k ne {} && [_is_dirty list $k]} {
+      if {$k ne {} && [_is_dirty list $k] \
+          && [_merge_where_of $where list $k] eq $cur} {
         if {[lsearch -exact $donekey $k] >= 0} { continue }
         lappend donekey $k
         foreach l [_entry_lines $k] { lappend out $l }
@@ -1721,17 +2463,29 @@ namespace eval ::op_param_lists {
       }
       lappend out $line
     }
+    ## ⚠ AN APPENDED ROW LANDS AT THE END OF THE FILE, AND THE END OF A
+    ## SECTIONED FILE IS INSIDE A SECTION. Without this the writer would give a
+    ## brand-new un-scoped list the last section's PDK -- silently, and only
+    ## for users who had adopted sections, which is the worst possible
+    ## population to break. `[pdk *]` is emitted ONLY when something is
+    ## actually appended AND the walk ended somewhere other than the un-scoped
+    ## scope, so no existing file gains a line it did not need.
+    set tail {}
     foreach tok [lsort [array names dirtyclass]] {
       if {![_is_dirty class $tok]} { continue }
       if {[lsearch -exact $doneclass $tok] >= 0} { continue }
       if {![info exists classmap($tok)]} { continue }
-      lappend out "class $tok $classmap($tok)"
+      lappend tail "class $tok $classmap($tok)"
     }
     foreach k [_keys] {
       if {![_is_dirty list $k]} { continue }
       if {[lsearch -exact $donekey $k] >= 0} { continue }
-      foreach l [_entry_lines $k] { lappend out $l }
+      foreach l [_entry_lines $k] { lappend tail $l }
     }
+    if {[llength $tail] && [lindex $cur 0] ne {any}} {
+      lappend out [_scope_header [list any {}]]
+    }
+    foreach l $tail { lappend out $l }
     return $out
   }
 

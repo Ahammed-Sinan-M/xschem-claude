@@ -2542,4 +2542,158 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   in this session. Now a snapshot-and-compare, which is what the rows always
   meant.
 
-**The next free number is 1382.**
+- **1382** — the Results Display Window had **no close control of its own**.
+  Ruling DD-12 had already promised one — its stated cost reads "a user who
+  expects Escape to dismiss the window will press it and see nothing happen.
+  *The window has its own close control*" — and the only one was the window
+  MANAGER's `X`, which is chrome and not part of this window at all. Requested
+  by the user 2026-09-07 ("*In the RDW, add a Close button to dismiss the
+  window*"). **FIXED**: `.rdw.b.close`, `-command rdw::close` and nothing else,
+  at the foot of the column below `aA`, so the button and the WM's delete
+  protocol are two DOORS on one rule; Escape still ends the pick and never
+  closes, which is DD-12 and is now fenced by arithmetic (row CB2). Close is a
+  **withdraw** — the dumps are namespace state and survive it, which ruling
+  DD-16 leans on — fenced at source (CB3) and by a real press and reopen (CB6).
+  Two supporting single-definition fixes: `rdw::apply_list_state`'s greying loop
+  now walks `rdw::_buttons` instead of five literals, and `rdw::button`'s
+  unknown-id refusal stopped claiming there is no button called `close` (or
+  `fontsize`, which it had wrongly said since issue 1368). Also found and fixed
+  here: **FZ17's fixture was leaning on `aA` being the lowest widget in the
+  column** and went red with `balloon_show` untouched — now parked on the
+  button's own bottom edge. Rule debt **1382**, one look debt, one `:0` suite
+  debt.
+  **REPAIR PASS, same number.** An adversary could not break the button and
+  broke the column it sits in: Close pushed `winfo reqheight .rdw.b` to 243 px
+  against the 208 px `wm minsize .rdw 520 260` leaves it, and at the window's
+  OWN advertised minimum `winfo ismapped .rdw.b.fontsize` was **0** — issue
+  1368's `aA` control, evicted, because `-side bottom` allocates Close first.
+  The constant was written for item B3's five-button column and never re-judged
+  (1368 had already reduced its slack to 4 px). Now derived: `rdw::min_floor`
+  keeps `520 260` as a floor and `rdw::apply_minsize` raises it to `reqheight
+  .rdw − reqheight .rdw.p + reqheight .rdw.b` = 295, the `calc::min_floor` /
+  `calc::apply_minsize` shape this tree already uses for the same defect. Two
+  stale widget enumerations rewritten, and two comment overclaims corrected —
+  a misclick on Close costs no DUMPS (it does not end a running pick, which is
+  now a stated contract, rows CB8/CB10), and `rdw::_active_phrase` is a claim
+  about the LIST ACTIONS and not about the column. Rows CB7–CB10, `RW_FLOOR`
+  191 → **193**. Rule debt **1382_repair**.
+
+- **1383** — **four rows of `test_rdw_window_1245` are a standing red on `:0`**
+  (Xwayland), and nobody had filed it. `SL8`, `FZ11`, `FZ17` and `FZ18`, green
+  on `:99` and on the `--nogui` arm, red on `:0` at HEAD — measured with issue
+  1382 entirely out of the tree, so they are not that item's. `SL8` is a font
+  metric difference (the fixture picks 600 px by hand and the sentence does not
+  re-wrap there on the other server); the FZ trio answer `NO-BALLOON` — the tip
+  never appears after one `update`, which is the 3-vs-1 `<Configure>` traffic
+  the tree has measured before. ⚠ **One run in ten reported `ALL PASS (204
+  checks)`, which is the `--nogui` count: the `:0` client died and the suite
+  fell back to its headless arm.** A green `:0` line from this suite is not by
+  itself evidence — check the count. **NOT FIXED**; filed rather than
+  re-derived, per CLAUDE.md's standing-red rule and the four-times-filed
+  history of 0689/0690. The `test_rdw_window_1245` suite debt now points here.
+
+- **1384** — the schematic's status bar **never said what the RDW pick mode was
+  waiting for**. Requested by the user 2026-09-07 ("*status bar should suggest
+  'Click on instance for annotation/summary/all OP info in Results Display
+  Window'*") with a tooltip for the overflow. **FIXED**: the gate is
+  COMMAND-MODE ENTRY, the user's own restatement — `rdw::key`'s `none` branch
+  and nothing else, `intuitive_interface` not read at all. The other two
+  branches were DRIVEN at HEAD first and already behaved exactly as the user
+  described (one selected → that instance, no mode, CIW silent; two → a CIW
+  warning and a refusal that moved nothing), so no repair was owed. The slot is
+  `.statusbar.10`, xschem's own mode-prompt label: `.statusbar.1` was measured
+  and refused because callback.c:10177 rewrites it on EVERY event and
+  `statusmsg_hold()` expires after a fixed 5 s. `.statusbar.10` is *blanked* by
+  `update_statusbar()` instead, so the answer is `ase::ui::sod_prompt_pump`'s
+  80 ms re-assert, taken unchanged. `rdw::_hint_sync` is the ONE proc that
+  decides what the slot says and every exit is a door on it — twice over, the
+  transition synchronously and the pump as the net. Two new helpers beside
+  `balloon` in xschem.tcl: `balloon_off` (cancels a pending show found in
+  `after info`, clears only bindings that ARE balloons) and `balloon_clipped` /
+  `label_clipped` (arm a tip only when `font measure` overflows the label's own
+  width — measured threshold, 800 vs 815 px of main window). Rows HT1–HT10 and
+  HP1–HP2; `RW_FLOOR` 193 → **198**, `KX_FLOOR` 90 → **92**; FZ4 re-spelled to
+  count the three `::balloon` calls BY NAME. Rule debt **1384** (three
+  decisions), one look debt, one `:0` suite debt.
+
+- **1385** — **two rows of the RDW suites answer to state an earlier run left
+  behind**, and one of them flipped item A's `ALL PASS (90)` into a red with
+  nothing in the tree changed. `C2` of `test_rdw_keys_1245` searches for a
+  pixel where the snapped and un-snapped picks disagree; whether one exists
+  depends on the zoom, hence on the main window's width, which `set_geom`
+  restores **per schematic file** from `~/.xschem/geometry` and which **every**
+  Tcl `exit` rewrites (`Tcl_CreateExitHandler` → `xwin_exit` → `store_geom`).
+  Proved with `--preinit 'set initial_geometry ...'`, touching nothing:
+  1110x761 → ALL PASS, 900x761 → **C1** red, 700x761 → **C2** red. ⚠ The
+  corollary is a hole in CLAUDE.md's own `~/.xschem` rule: **an ordinary
+  `--script` run writes that file**. The second case is `FZ7` of
+  `test_rdw_window_1245`, which read `.rdw.b.fontsize` as `active` because the
+  PREVIOUS run's FZ11/FZ17/FZ18 left the X pointer on it — mitigated by issue
+  1384's new section parking the pointer, not fixed at FZ11. **NOT FIXED**:
+  the C-section fix needs a ruling (pin the geometry, widen the search, or
+  drive at a fixed zoom) and issue 1303's two filed numbers must be re-taken
+  under whichever wins. Rule debt **1385**.
+
+- **1386** — **eighteen rows of `test_rdw_keys_1245` are a standing red on
+  `:0`** (Xwayland), and nobody had filed it. Found while PAYING that file's
+  own `:0` suite debt during issue 1384. Measured at HEAD with both RDW UX
+  items out of the tree: `18 FAILED (72 passed)`; with 1384 in,
+  `18 FAILED (74 passed)` — the same count, the two extra passes being 1384's
+  own HP1/HP2, which are green on both servers. Stable core F1, B2–B5, V2, V3,
+  V7, D1, RA1–RA6, KD1, plus a two-row rim out of {F3, F6, C2, LK2, CP9}. Five
+  unrelated mechanisms — key delivery, focus grants, the seized-binding
+  gestures, the descend re-latch and the whole raise section, whose own look
+  debt already records that `:99` cannot reproduce what it tests. `C2` belongs
+  to issue 1385 instead. Same `:99` suite: ALL PASS (92), four runs.
+  **NOT FIXED**; the suite debt now points here, and a crew reporting this file
+  must give both arms.
+
+- **1387** — **two Tcl command modes seize one canvas, nobody decides, and
+  neither of them works in a tab.** Filed while repairing issue 1384; none of it
+  is 1384's. Four parts, all measured on `:99`. (1) `rdw::pick_start` asks
+  `winfo exists [xschem get current_win_path]`, which is **0 in a tab** (tabs
+  share the one real `.drw`; `top_path` is empty), so 1/2/3 with nothing
+  selected does nothing there **and says nothing, not even in the CIW** — a
+  refusal that names itself is this file's own rule. (2)
+  `ase::ui::sod_statusbar` still carries the `regsub {\.drw$}` arithmetic that
+  1384 corrected in its copy, and answers `.x1.statusbar.10` for a tab; the copy
+  could not correct the original because `rdw.tcl` deliberately does not call
+  into `ase_window.tcl`. (3) An RDW pick and an ASE select-on-design can be live
+  at once — each self-serialises only against its own kind — so
+  `<ButtonPress-1>` is seized twice, last arm winning silently, and TWO 80 ms
+  pumps write `.statusbar.10` with neither reading the other. 1384's synchronous
+  re-assert makes the label agree with the seize instead of contradicting it,
+  which is an improvement and not a decision. (4) `ase_window.tcl:1884` states
+  that an 80 ms re-assert costs "at most a sub-frame flicker"; measured with the
+  same mechanism it is **16-40 % visible** while the pointer moves, with the
+  slot's width swinging 8 <-> 471 px at ~12 Hz. Row **HT14** of
+  `test_rdw_window_1245.tcl` pins part 1's silence so a fix cannot land without
+  the hint following. **NOT FIXED**; part 3 needs a ruling, parts 2 and 4 are
+  ASE's file and want an ASE row each.
+
+- **1388** — **the settings file did not know which PDK it was for**, and the
+  identity work uncovered a sharper defect than the grammar: the startup
+  `catch {::op_param_lists::load}` (`xschem.tcl:17550`) runs while `xschem.tcl`
+  is sourced, and a PDK workarea is entered with `--script
+  <ws>/cadence_style_rc`, which `xinit.c:3793` sources **after** it — measured,
+  `env(PDK)` is still UNSET at the top of the `--script` phase. Of the four
+  candidate identities only `env(PDK)` survives measurement: `env(PDK_ROOT)` is
+  set by none of the three workareas (`::PDK_ROOT` is a *location* shared by
+  every PDK in one open_pdks install), `$::XSCHEM_LIBRARY_PATH` is **EMPTY** in
+  all three, and the registered `op_annot` descriptors are **byte-identical
+  between sky130A and gf180mcuD**, which is the user's own example. FIXED:
+  `[pdk <name>]` sections plus `[pdk *]`, un-scoped rows apply to every PDK,
+  PDK beats un-scoped as a **rank** (two reader passes, no rank field), another
+  PDK's rows are never parsed and never rewritten, a Save **edits the rows
+  where they already are** and invents no section, the grammar version does not
+  move, and the three shipped `cadence_style_rc` files declare the PDK with
+  `op_param_lists::set_pdk`, which re-reads the tiers. ⚠ A **second** defect was
+  found only by a real launch and not by any row: `set_pdk` compared `pdk`
+  before and after its own write, and the rcs set `env(PDK)` FIRST, so the two
+  were equal and the section was silently lost — the store now records the PDK
+  its rows were READ under. Section **PK** of `test_op_param_store_1245`,
+  `OL_FLOOR` 135 → **158**, including **PK20/PK21, the two-process fence owed
+  since issue 1380** and **PK7b**, the row that defect minted. Rule debt **1388** (which
+  scope a Save writes into), one look debt (the two-axis header).
+
+**The next free number is 1389.**

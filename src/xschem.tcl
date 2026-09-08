@@ -14835,6 +14835,108 @@ proc balloon {w help {pos 1} {motion_kill 0} {delay 1000}} {
     bind $w <FocusOut>  "after cancel [list balloon_show %W [list $help] $pos]; destroy %W.balloon"
 }
 
+# ---------------------------------------------------------------------------
+# TAKING A TIP BACK, AND ARMING ONE ONLY WHEN THE TEXT IS REALLY CUT OFF.
+# Issue 1384, for the RDW's status-bar hint -- the first tooltip in this tree
+# whose STRING CHANGES and whose widget is shared with something else.
+#
+# `balloon` bakes the help string into <Enter> at bind time and has no undo, so
+# the two callers it never had are the two this needs:
+#
+#   * RE-ARMING.  A label whose text changes needs the binding re-made or the
+#     tip shows the PREVIOUS sentence.  Re-binding alone is not enough: the
+#     <Enter> that already fired left an `after 1000 balloon_show <w> {old} 1`
+#     in flight, and `balloon`'s own <Leave> can only cancel the string it was
+#     bound with -- so a re-arm without this pops the old sentence one second
+#     later, over the new one.  `after info` is scanned instead of remembering
+#     the string, because then a caller that loses track still cannot leak one.
+#
+#   * DISARMING.  A mode prompt's tip must die with the mode: `.statusbar.10`
+#     goes back to being C's `DRAW WIRE!` slot (callback.c:9902), and a stale
+#     <Enter> there would explain a sentence that is no longer on the label.
+#
+# ⚠ IT CLEARS ONLY BINDINGS THAT ARE BALLOONS.  `bind $w <Enter> {}` DESTROYS a
+# binding, and FOUR status-bar labels carry a build-time tip of their own
+# (.statusbar.2, .4, .6 and .7 -- xschem.tcl:18723 and its siblings).  A blanket
+# clear on one of those would silently delete a tip nobody asked about, so the
+# script is tested first.  MEASURED before writing this: `.statusbar.10` and
+# `.statusbar.1` carry NO <Enter>, <Leave>, <Motion> or <FocusOut> binding at
+# all, so on the widget this was written for the test is free.
+proc balloon_off {w} {
+    foreach id [after info] {
+        if {[catch {lindex [after info $id] 0} scr]} continue
+        if {[lindex $scr 0] eq {balloon_show} && [lindex $scr 1] eq $w} {
+            catch {after cancel $id}
+        }
+    }
+    foreach ev {<Enter> <Leave> <Motion> <FocusOut>} {
+        if {[catch {bind $w $ev} old]} continue
+        if {[string first {balloon_show} $old] < 0} continue
+        catch {bind $w $ev {}}
+    }
+    catch {destroy $w.balloon}
+    return {}
+}
+
+# DOES THIS LABEL'S OWN WIDTH HOLD THIS STRING?  The question the tip is for:
+# a tooltip repeating text the reader can already see in full is noise.
+#
+# ⚠ IT ASKS THE WIDGET, NOT THE PACKER.  MEASURED on :99 at 1920x1080, the
+# sentence `Click on instance for annotation OP info in Results Display Window`
+# in TkDefaultFont on `.statusbar.10`, sweeping the main window's width:
+#     1400/1110/1000/900/850/820/815 px  ->  winfo width 471, font measure 467
+#      800 px -> 456   750 -> 406   700 -> 356   650 -> 306   500 -> 156
+# So `pack -side left` really does SHRINK the label once the bar runs out of
+# room rather than letting it hang over the edge, and `winfo width` alone is
+# the honest measure -- no `winfo x` arithmetic against the parent is needed.
+# The clipping threshold on that window is between 800 and 815 px wide.
+#
+# The label's own trim comes off: a Label draws its text inside
+# borderwidth + highlightthickness + padx on each side (1 + 0 + 1 here, so 4 px
+# of the 471). An UNMAPPED or not-yet-packed widget answers 1, which is not a
+# measurement -- it answers "fits", so a caller cannot arm a tip on a guess.
+proc label_clipped {w text} {
+    if {[catch {winfo exists $w} e] || !$e} { return 0 }
+    set f {} ; catch {set f [$w cget -font]}
+    if {$f eq {}} { set f TkDefaultFont }
+    set pad 0
+    foreach opt {-borderwidth -highlightthickness -padx} {
+        if {![catch {$w cget $opt} v] && [string is integer -strict $v]} { incr pad [expr {2 * $v}] }
+    }
+    set avail [expr {[winfo width $w] - $pad}]
+    if {$avail <= 1} { return 0 }
+    if {[catch {font measure $f $text} need]} { return 0 }
+    return [expr {$need > $avail ? 1 : 0}]
+}
+
+# ARM `balloon` ON $w WITH $text, BUT ONLY IF $text DOES NOT FIT IN $w.
+# Always disarms first, so this is also the one call a caller makes when the
+# text changed, when the window was resized, and when the tip is no longer
+# owed.  Answers 1 when a tip is now armed, 0 when none is.
+#
+# ⚠ IT IS NOT FREE TO CALL WHEN NOTHING CHANGED, AND THAT COST A SHIPPED
+# TOOLTIP.  The `balloon_off` above cancels any PENDING `balloon_show` -- which
+# is the whole point when the string moved, and a bug when it did not: a pointer
+# that is already on the widget has queued its show and will never send a second
+# <Enter> to re-queue one.  Issue 1384's status-bar hint re-armed on every
+# `winfo width` change, the label's width oscillated under it, and the tip was
+# unreachable by the only gesture that reaches it (measured 3/3).  A periodic
+# caller must therefore cache on the ANSWER -- the string and the clipped
+# verdict -- and not on the pixels.  Fenced there by row HT15 of
+# tests/headless/test_rdw_window_1245.tcl.
+# `pos 1` (widget-anchored) and not `pos 0`: issue 1368 measured a moved `pos 0`
+# tip landing under the pointer, being destroyed by its own <Leave> and
+# flickering forever -- 25 shows in 1.5 s.  A status bar sits on the bottom
+# edge of its window, which is exactly where `balloon_show`'s vertical FLIP
+# (issue 1368) is load-bearing.
+proc balloon_clipped {w text {pos 1} {delay 1000}} {
+    balloon_off $w
+    if {[catch {winfo exists $w} e] || !$e} { return 0 }
+    if {$text eq {} || ![label_clipped $w $text]} { return 0 }
+    if {[catch {balloon $w $text $pos 0 $delay}]} { return 0 }
+    return 1
+}
+
 ### pos:
 ## 0: set balloon close to mouse
 ## 1: set balloon below related widget
