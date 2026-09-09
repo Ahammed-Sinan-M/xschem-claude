@@ -2819,4 +2819,67 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   1389's lock is a per-process dict, so two xschem processes on one cell still
   reach it. §6 of the issue says what would turn the judgement over.
 
-**The next free number is 1393.**
+- **1393** — **the annotation level is taken only when THIS session owns the
+  nearest one.** Minted by the `descend_run_batch` (`doc/claude/descend_run_batch/`)
+  while closing 0643. `ase::ui::annot_ensure_loaded` (`src/ase_window.tcl:2782-2793`)
+  resolves the hierarchy level it stamps the results basis at from
+  `ase::session_for_current`, but takes it **only when
+  `[lindex $s 0] eq $key`** — i.e. only when the nearest ancestor session is the
+  one being refreshed. `session_for_current` (`src/ase.tcl:9263`) walks
+  deepest-first and returns the NEAREST session, deliberately (issue 0168: a
+  session bound to an intermediate cell simulates that cell as its deck's top).
+  With one session the two coincide and the guard is invisible; with a **second**
+  session bound to a descendant cell they diverge, `$level` stays `{}`, and
+  `annotate_op` leaves `raw->level` at `currsch` (`src/scheduler.c:2540-2542`
+  only overrides it `if(level >= 0)`), so `sch_waves_loaded()` (`src/draw.c:2853`)
+  cannot place the deck-absolute paths and every device row on the sheet renders
+  **blank, with no sentence**. Measured on the same bench that closed 0643, both
+  sides of the door: `db_attach $raw 0` → `raw_level=0 sim_sch_path='x1.x1.'`,
+  `db_attach $raw {}` → `raw_level=2 sim_sch_path=''`. **FILED, NOT BUILT, and
+  deliberately** — the reported bench runs one ASE-L session, where the guard can
+  only pass, and building an unreachable branch is the defect 1392 was just
+  written about; it also needs two nested ASE-L sessions, which no suite in the
+  tree sets up. The option set is three-way and turns on asking a *different*
+  question: (a) `ase::stack_level [ase::ui::design_path $key]` — the mint
+  `descend_run_batch` just added at `src/ase.tcl:6016` answers "where does MY
+  design sit on this stack", which is what the proc actually wants; (b) drop the
+  `eq $key` test — cheapest and **wrong**, it would stamp the outer session's raw
+  at the inner session's level; (c) refuse in words instead of drawing blanks,
+  on the argument that the silence is the real user-facing bug. Rule debt
+  **1393**; §6 names what would turn the not-built judgement over (a user report,
+  anything that makes a second session ordinary, or any change to
+  `session_for_current`'s scan direction).
+
+- **1394** — **a zero-instance child schematic turns a later `xschem netlist`
+  into a modal that hangs a scripted run.** ⚠ **PRE-EXISTING, reproduced at HEAD
+  `19f8e351` with no `ase::` code in the picture** — found by crew A of the
+  `descend_run_batch` while building a fixture, filed against the batch only
+  because the batch is what walked into it, and **not** reproducible on the real
+  `sky130_tests_ase/tb_bandgap` bench (whose descended netlist is byte-identical
+  to the top one). On a two-level fixture whose child has **zero instances**,
+  `descend ; go_back ; xschem netlist -noalert <f>` pops
+  `Please Set netlisting mode (Options menu)` and a scripted run **hangs on it
+  forever**. Two halves, both verified against the source rather than copied:
+  `load_schematic()` moves `netlist_type` to `CAD_SYMBOL_ATTRS` for any file with
+  `xctx->instances == 0` (`src/save.c:6469`), and `CAD_SYMBOL_ATTRS` is 5
+  (`src/xschem.h:229`), which is not one of the five formats the netlist
+  dispatcher tests — so it falls into the dispatcher's `else`, and that `else` is
+  the message box (`src/scheduler.c:9167-9169`). **`-noalert` cannot suppress
+  it**: `alert` (cleared at `src/scheduler.c:9089`) is passed to the five
+  `global_*_netlist()` back ends and is not consulted on that arm at all. Under
+  `--nogui` the modal is skipped and the wrong mode is used silently instead,
+  which is the quieter half of the same defect. ⚠ **What is NOT established is
+  crew A's stated cause** — "the parent reload does not put it back". The very
+  next lines *are* a restore (`src/save.c:6474-6480`) and `go_back` does reach
+  them (`src/actions.c:6505-6506`, `reset_undo` 1), so on a straight reading the
+  type should come back; the issue records that honestly and names two
+  candidates instead, the leading one being that `save_netlist_type` is
+  initialised to **0** per context (`src/xinit.c:913`, and `alloc_xschem_data()`
+  runs per window and per tab), 0 being no more a valid format than 5. Worst
+  property: the hang produces no exit code, no banner and no `FAIL`, so it is the
+  one shape `tests/banner_rule.tcl` and the two shell readers cannot classify.
+  In the meantime the RT rows drive the trip with a probe, RT11 stubs
+  `ase::netlist_in_place`, and the RT child fixture is given one instance —
+  workarounds to be reverted when this closes.
+
+**The next free number is 1395.**

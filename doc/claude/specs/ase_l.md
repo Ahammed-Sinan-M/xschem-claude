@@ -572,9 +572,14 @@ deck      : <deckpath>
 
 ### Netlist and Run must not RE-MAP the design window (issue 0616, 2026-08-23)
 
-`do_run`'s guard `[file normalize [xschem get schname]] ne $dpath` asks whether the
+*(The guard described in this paragraph was REPLACED on 2026-09-08 — issue 0643,
+`descend_run_batch`. See "Netlist and Run works from any level of the design"
+below for the contract in force. 0616's own reasoning, and the whole `raise_mode`
+table, are unchanged and still load-bearing.)*
+
+`do_run`'s guard `[file normalize [xschem get schname]] ne $dpath` asked whether the
 design is the **current xschem context**, because that is what `ase::netlist`'s own
-guard requires. It does **not** ask whether the design window is visible — and the
+guard required. It did **not** ask whether the design window is visible — and the
 two are routinely different: a session whose state carries `viewer {open 1 …}` has
 `viewer_restore` leave the context on the viewer canvas while the design window is
 fully visible and front. So the guard fires on a window that needs nothing.
@@ -597,8 +602,11 @@ take an optional trailing `raise_mode`.
 
 Three things are load-bearing and must not be "simplified":
 
-* **The context switch stays unconditional.** Drop it and `ase::netlist`'s "design is
-  not the current schematic" error comes back. It is also the *only* half covered by
+* **The context switch stays unconditional.** Drop it and `ase::netlist`'s
+  design-unreachable refusal comes back — since 0643 that sentence reads
+  *"design `<lib/cell>` is not open in this window"* (`ase::design_unreachable_msg`),
+  and it is reached for a design sitting on **another window's** stack, which is
+  exactly what the context switch exists to repair. It is also the *only* half covered by
   a test anywhere in the tree (`test_ase_window` W6m2/W6m3) — `test_ase_plot` P9 and
   `test_ase_hier_plot_0168` HL23-HL25 all stay green with it no-op'd.
 * **The cheap half of the raise stays in the `ifhidden` arm.** Dropping it was the
@@ -614,12 +622,81 @@ Three things are load-bearing and must not be "simplified":
 issue 0054 records that the user ratified raise-with-creep as the price of a working
 WSLg raise. Fix the caller.
 
-**Still broken on this button, filed not fixed:** issue **0643** — pressed while the
-user is *descended* into the design, the guard fires, `raise_design_editor`'s
-issue-0168 stack loop matches the descended window and returns 1 **without
-ascending**, so `do_run`'s post-check refuses the run: `Status: Error`, red, `run_id`
-empty, no simulation. That is exactly where the OP-annotation *run → descend → press
-6* workflow stands.
+### Netlist and Run works from any level of the design (issue 0643, 2026-09-08)
+
+**The old contract, and why it was wrong.** Pressed while the user was *descended*
+into the design, the equality guard fired; `raise_design_editor`'s issue-0168 stack
+loop matched the descended window and returned 1 **without ascending**; `do_run`'s
+post-check re-tested the same equality, it was still true, and the run was refused —
+`Status: Error`, red, `run_id` empty, no simulation, and the sentence *"ase: design
+is not the current schematic; open it via Session > Design Window first"*, which
+told the user to do the thing they had just done. That is exactly where the
+OP-annotation *run → descend → press 6* workflow stands, and the user's report was
+blunt: *"Where does this inane restriction come from? There is no such limitation in
+Cadence's ADE-L, which we want be better than."* ADE-L parity is the standard.
+
+**The contract now.**
+
+| the design is… | what happens |
+|---|---|
+| the current schematic | netlisted in place, exactly as before |
+| **anywhere on THIS window's hierarchy stack** | `ase::netlist` ascends to it, netlists, and puts the user back — **no refusal** |
+| on another window's stack | `ase::ui::design_window` routes to that window (0616, unchanged), then as above |
+| nowhere on this window's stack | **refused**, in new words |
+
+* **The door asks reachability, not currency.** `ase::ui::do_run`
+  (`src/ase_window.tcl:7228`) tests `[ase::stack_level $dpath] < 0` in place of the
+  equality, in the pre-check and again in the post-routing re-check. `ifhidden` and
+  the whole `raise_mode` table above are untouched; the new predicate makes the
+  route fire **less often**, not in different places.
+* **The walk belongs to `ase::netlist`, not to the door.** `ase::netlist`
+  (`src/ase.tcl:6390`) gained a third arm over `ase::with_design_current`
+  (`src/ase.tcl:6175`), which ascends with `xschem go_back 2`, evaluates the body
+  with `uplevel #0`, and re-descends by replaying `ase::hier_instnames` through
+  `xschem descend -fallback -inst`. A door that ascended would have to unwind on
+  every error arm below it.
+* **Why a round trip and not a relaxed guard.** `global_spice_netlist()` netlists
+  `xctx->sch[xctx->currsch]` — the level you are standing on
+  (`src/spice_netlist.c:359-373`). Simply dropping the guard would silently
+  netlist and simulate the sub-block alone: measured, 4685 bytes of op-amp against
+  the testbench's 14862, with a results file that looks healthy. The guard was a
+  symptom; the fix is to make the design current for the duration.
+* **It costs nothing the button was not already paying.** The trip is already made
+  twice per press — `xschem netlist` (66 ms) and `op_annot::save_cards` (177 ms).
+  The added walk measures **28–30 ms** over five two-level trips, one repaint, and
+  the resulting deck is **byte-identical** (`cmp`) to one taken at the top.
+* **The `~` safety doctrine is carried, not re-derived.** `go_back` calls
+  `load_backup_as()` whenever a `<cell>~.sch` exists, ending in `set_modify(1)`.
+  A clean entry buffer therefore has `autosave_backup` parked at 0 for the trip; a
+  modified one with `autosave_backup` **on** is carried and restored afterwards
+  with `xschem load_backup` (`descend` uses plain `load_schematic()` and would drop
+  the edit); a modified one with `autosave_backup` **off** is **REFUSED** before
+  anything moves, naming the cell and both remedies (issue 0626). The entry
+  `readonly` state is snapshotted and restored too — `descend_readonly` is 1 in
+  `cadence_style_rc`, and a restored buffer that no longer reports itself modified
+  is one close-without-prompt from losing the edit again.
+* **`Simulation > Run` (`ase::ui::do_run_existing`) needed no change at all** and
+  got none: it never re-netlists, so it never needed a current-schematic guard.
+  Confirmed by reading the whole chain and pinned as row R12.
+
+**The surviving refusal — one minted head, two truthful tails (DECISIONS D6).**
+The head is minted once, `ase::design_unreachable_msg {design {remedy {}}}`
+(`src/ase.tcl:6139`) → *"ase: design `<X>` is not open in this window"*. The tail
+is the caller's, because the two doors are reached from different places:
+
+| door | tail | why it is true there |
+|---|---|---|
+| `ase::netlist` (`src/ase.tcl:6420`) | `; open it via Session > Design Window first` | a CIW or script caller has **not** tried that route |
+| `ase::ui::do_run` (`src/ase_window.tcl:7307`) | `; Session > Design Window did not open it` | this arm runs **only after** `design_window ifhidden` has already tried and failed |
+
+Forcing one sentence on both doors would make one of them lie. The *fact* is one
+fact and is spelled in one place; only the remedy differs. The words *"is not the
+current schematic"* are gone from both doors, asserted as an absence by rows R8 and
+RT12.
+
+Pinned by `test_ase_core` **RT0–RT12** (203 → 216, `--nogui` and `:99`) and
+`test_ase_window`'s **R block** R1–R14 (32 → 49 headless, 245 → 267 on `:99`).
+Both refusal tails are **unratified UI copy** and carry a `rule` debt on 0643.
 
 ### Window numbering
 

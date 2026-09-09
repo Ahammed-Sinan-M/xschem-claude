@@ -10086,7 +10086,9 @@ if {[info exists has_x] && ($w29i eq {} || [info commands ::op_annot::write_save
 # assertion fails: `go_back` (actions.c:4766) calls `load_backup_as` (save.c:4191)
 # whenever a `<cell>~.sch` sits next to the cell, and that function ends in
 # `set_modify(1)` (save.c:4207). Re-measured today on
-# sky130_tests_ase/bandgap_opamp, which ships with exactly such a `~`:
+# sky130_tests_ase/bandgap_opamp with such a `~` beside it -- NOT a shipped one.
+# `*~.sch` is gitignored (.gitignore:75) and none has ever been tracked, which
+# is issue 0634; W19a below plants its own so a fresh clone can pass it:
 #
 #     descend x1 ; go_back        -> modified 0 -> 1        (autosave_backup 1)
 #     descend x1 ; go_back        -> modified 0 -> 0        (autosave_backup 0)

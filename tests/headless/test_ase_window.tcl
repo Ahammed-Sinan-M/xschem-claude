@@ -65,6 +65,17 @@
 #          without ngspice. Every generated <Return> goes through the
 #          focus-gated send_return helper (WSLg focus-async, the W6c
 #          diagnosis extended file-wide).
+#   R1-R14 the Netlist-and-Run DOOR asks "is the design REACHABLE" and no
+#          longer "is it CURRENT" (issue 0643, descend_run_batch item B), on a
+#          two-level scratch hierarchy that reproduces the user's reported
+#          `sch_path` `.x1.x1.`: the descended press runs without routing or
+#          moving the user (R4-R6), a design that is nowhere is still refused
+#          in the NEW words after ONE `ifhidden` route (R7-R9), the routing
+#          arm still works (R10), 1389's run_busy is still the first statement
+#          (R11), do_run_existing is untouched (R12), and R13/R14 press the
+#          real Simulation menu entry under X and read the status segment. The
+#          block is LAST in the file and runs in BOTH arms; R2 is the
+#          anti-vacuity anchor (the OLD predicate is false at that exact spot).
 #
 # Runs via full_audit's DEFAULT arm. Standalone repro from the repo ROOT:
 #   ./src/xschem --pipe -q --nolog --script tests/headless/test_ase_window.tcl
@@ -284,6 +295,91 @@ file mkdir [file join $scratch aselib nfet_clean schematic]
 set f [open [file join $scratch aselib nfet_clean schematic nfet_clean.sch] w]
 puts -nonewline $f $sch_text
 close $f
+
+# --- the TWO-LEVEL fixture, for the R reachability rows (issue 0643) --------
+# The user's report is a HIERARCHY report -- "I descend into x1 and again x1,
+# now I click N&>" -- so the door's rows need a stack with something on it, and
+# the flat nfet_clean above cannot supply one. hier_top -x1-> hier_mid -x1->
+# hier_leaf reproduces the reported shape exactly (`sch_path` `.x1.x1.`,
+# MEASURED) in three tiny cells that live entirely in the scratch tree.
+#
+# ⚠ DELIBERATELY NOT the shipped sky130_tests_ase/tb_bandgap the batch was
+# measured on, for two reasons: descending it and coming back would touch a
+# cell that ships with a `<cell>~.sch` beside it (CREW_BRIEF section 4, issue
+# 0626), i.e. WRITE in the repo tree; and the door under test does not care
+# what is in the cells, only that the design is on the stack. `type=subcircuit`
+# is what makes the symbol descendable at all.
+proc w_hier_write {p txt} {
+  file mkdir [file dirname $p]
+  set fh [open $p w]
+  puts -nonewline $fh $txt
+  close $fh
+}
+set hier_sym {v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {type=subcircuit
+format="@name @pinlist @symname"
+template="name=x1"
+}
+V {}
+S {}
+E {}
+B 5 -82.5 -2.5 -77.5 2.5 {name=A dir=inout}
+L 4 -80 0 -40 0 {}
+L 4 -40 -20 40 -20 {}
+L 4 40 -20 40 20 {}
+L 4 40 20 -40 20 {}
+L 4 -40 20 -40 -20 {}
+T {@symname} -38 -6 0 0 0.3 0.3 {}
+T {@name} -5 -32 0 0 0.2 0.2 {}
+}
+w_hier_write [file join $scratch aselib hier_mid  symbol hier_mid.sym]  $hier_sym
+w_hier_write [file join $scratch aselib hier_leaf symbol hier_leaf.sym] $hier_sym
+w_hier_write [file join $scratch aselib hier_top schematic hier_top.sch] \
+{v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {}
+V {}
+S {}
+E {}
+N 200 -100 280 -100 {}
+C {aselib/hier_mid} 360 -100 0 0 {name=x1}
+C {devices/lab_wire} 220 -100 0 0 {name=lT lab=TNET}
+}
+w_hier_write [file join $scratch aselib hier_mid schematic hier_mid.sch] \
+{v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {}
+V {}
+S {}
+E {}
+N 200 -100 280 -100 {}
+C {aselib/hier_leaf} 360 -100 0 0 {name=x1}
+C {devices/ipin} 200 -100 0 0 {name=pA lab=A}
+}
+w_hier_write [file join $scratch aselib hier_leaf schematic hier_leaf.sch] \
+{v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {}
+V {}
+S {}
+E {}
+N 200 -100 280 -100 {}
+C {devices/ipin} 200 -100 0 0 {name=pA lab=A}
+C {devices/gnd} 280 -100 0 0 {name=GND1 lab=GND}
+}
+# a cell that is on NO session's design list: the "design is nowhere" arm needs
+# somewhere real to be standing that is not the design
+w_hier_write [file join $scratch aselib hier_else schematic hier_else.sch] \
+{v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {}
+V {}
+S {}
+E {}
+N 0 0 100 0 {}
+}
+
 set f [open [file join $scratch library.defs] w]
 puts $f "DEFINE aselib [file join $scratch aselib]"
 puts $f "DEFINE sky130_fd_pr [file join $repo sky130A xschem_libs sky130_fd_pr]"
@@ -2856,6 +2952,300 @@ Values:
 
 } else {
   puts "gui legs skipped (no DISPLAY)"
+}
+
+# ===========================================================================
+# R -- THE NETLIST-AND-RUN DOOR IS REACHABILITY, NOT CURRENCY (issue 0643)
+# ===========================================================================
+# The user, 2026-09-08: "I descend into x1 and again x1. Now, I click the N&>
+# (Netlist and Run button) in ASE-L to get: `ase: design is not the current
+# schematic; open it via Session > Design Window first`. Where does this inane
+# restriction come from? There is no such limitation in Cadence's ADE-L."
+#
+# `ase::ui::do_run` used to pre-check `[file normalize [xschem get schname]] ne
+# $dpath`. Standing inside the design's OWN hierarchy that is TRUE -- schname is
+# the leaf, not the testbench -- and the routing arm it fell into brought the
+# same descended window back, so the second test failed identically and the
+# button was unusable from any depth. The predicate is now
+# `[ase::stack_level $dpath] < 0`: is the design on THIS window's stack at all?
+#
+# ⚠ LAST BLOCK IN THE FILE ON PURPOSE. These rows load schematics into the main
+# window and open a second session; running them here means nothing above can be
+# perturbed by them, and they run in BOTH arms (they are outside the `has_x`
+# block), so both floors move together.
+#
+# ⚠ EVERY PRESS BELOW HAS `ase::run` AND `ase::ui::run_started` RENAMED OUT.
+# The subject is WHICH ARM do_run takes, not what a simulator does: stubbing the
+# pair makes each row deterministic, simulator-free and identical under --nogui
+# and under X. run_started in particular must go -- the real one opens a log
+# TOPLEVEL and attaches a trace to an execute id that was never launched.
+
+# spy on ase::echo. NOT w_aecho_spy: that helper is defined inside the GUI
+# block above and does not exist on the --nogui arm.
+proc r_echo_on {} {
+  set ::r_echo {}
+  if {[info commands ::r_saved_echo] eq {}} {
+    rename ::ase::echo ::r_saved_echo
+    proc ::ase::echo {msg {tag {}}} { lappend ::r_echo [list $tag $msg] ; return 1 }
+  }
+}
+proc r_echo_off {} {
+  if {[info commands ::r_saved_echo] ne {}} {
+    catch {rename ::ase::echo {}}
+    rename ::r_saved_echo ::ase::echo
+  }
+}
+# a COUNT, not a boolean: "the refusal is stated" and "stated ONCE" are
+# different claims, and a duplicated sentence is its own defect (the w_echoed_n
+# idiom above, and issue 1389's measured double-echo)
+proc r_echoed_n {pat} {
+  set n 0
+  foreach e $::r_echo { if {[string match -nocase $pat [lindex $e 1]]} { incr n } }
+  return $n
+}
+proc r_run_on {} {
+  set ::r_ran {} ; set ::r_started {} ; set ::r_ranx {}
+  rename ::ase::run ::r_saved_run
+  proc ::ase::run {state {callback {}}} {
+    lappend ::r_ran [list [xschem get schname] [xschem get sch_path]]
+    return 4242
+  }
+  rename ::ase::run_existing ::r_saved_runx
+  proc ::ase::run_existing {state {callback {}}} { lappend ::r_ranx 1 ; return 4243 }
+  rename ::ase::ui::run_started ::r_saved_started
+  proc ::ase::ui::run_started {key id} { lappend ::r_started [list $key $id] }
+}
+proc r_run_off {} {
+  catch {rename ::ase::run {}} ; rename ::r_saved_run ::ase::run
+  catch {rename ::ase::run_existing {}} ; rename ::r_saved_runx ::ase::run_existing
+  catch {rename ::ase::ui::run_started {}} ; rename ::r_saved_started ::ase::ui::run_started
+}
+# ase::ui::design_window is renamed out too, because the door's contract with it
+# is "called ONCE, with ifhidden" (issue 0616) and the rows have to tell "not
+# called at all" (the reachable arm) apart from "called and it did not help"
+# (the surviving refusal). $do is the body the stub runs: {} leaves the design
+# unreachable, an `xschem load` makes the routing arm succeed.
+proc r_dw_on {{do {}}} {
+  set ::r_dw {} ; set ::r_dw_do $do
+  rename ::ase::ui::design_window ::r_saved_dw
+  proc ::ase::ui::design_window {key {raise_mode always}} {
+    lappend ::r_dw $raise_mode
+    if {$::r_dw_do ne {}} { uplevel #0 $::r_dw_do }
+    return 1
+  }
+}
+proc r_dw_off {} {
+  catch {rename ::ase::ui::design_window {}}
+  rename ::r_saved_dw ::ase::ui::design_window
+}
+
+set r_top   [file normalize [file join $scratch aselib hier_top schematic hier_top.sch]]
+set r_leaf  [file normalize [file join $scratch aselib hier_leaf schematic hier_leaf.sch]]
+set r_else  [file normalize [file join $scratch aselib hier_else schematic hier_else.sch]]
+set r_win   [xschem get current_win_path]
+
+if {[catch {
+
+library_new_view aselib hier_top ngspice_state1 ngspice_state1
+set r_spath [xschem cellview_path aselib/hier_top ngspice_state1]
+if {$r_spath eq {}} { error "R fixture: hier_top state view did not resolve" }
+set rkey [ase::session_key aselib hier_top ngspice_state1]
+ase::session_open $rkey [file normalize $r_spath]
+set rst [ase::session_state $rkey]
+## rundir into the SCRATCH tree. ase::run_lock_key (R11) resolves the backend's
+## raw_file hook off this, and the default would point somewhere under the
+## user's own ~/.xschem -- read-only territory for this suite (CREW_BRIEF
+## section 5), even for a path that is only computed.
+dict set rst rundir [file normalize [file join $scratch hier_run]]
+ase::session_update $rkey $rst
+set r_dpath [ase::ui::design_path $rkey]
+
+# --- R1/R2: reproduce the reported shape, and prove the rows are not vacuous -
+xschem load $r_top
+xschem descend -fallback -inst x1
+xschem descend -fallback -inst x1
+check "R1 two levels down inside the design: sch_path .x1.x1., schname is the leaf" \
+  [list [xschem get sch_path] [xschem get currsch] [file normalize [xschem get schname]]] \
+  [list {.x1.x1.} 2 $r_leaf]
+check_true "R1 design_path resolves the session's design cellview" \
+  [expr {$r_dpath eq $r_top}]
+# THE ROW THAT KEEPS R4 HONEST: the shipped equality predicate is FALSE right
+# here, so a green R4 is the door changing behaviour and not the situation.
+check_true "R2 the OLD `schname ne dpath` predicate WOULD have refused at this exact spot" \
+  [expr {[file normalize [xschem get schname]] ne $r_dpath}]
+
+if {[info commands ase::stack_level] eq {}} {
+  puts "SKIPPED: R3-R14 (ase::stack_level absent -- item A of descend_run_batch\
+ not in this tree; the door cannot be exercised without its predicate)"
+} else {
+
+  check "R3 ase::stack_level finds the design at level 0 while standing at level 2" \
+    [ase::stack_level $r_dpath] 0
+
+  # --- R4-R6: the reported gesture. Descended two levels, N&> must RUN -------
+  r_echo_on ; r_run_on ; r_dw_on
+  catch {ase::ui::do_run $rkey} r4err
+  set r4_ran   [llength $::r_ran]
+  set r4_dw    $::r_dw
+  set r4_ref   [r_echoed_n {*not open in this window*}]
+  set r4_old   [r_echoed_n {*not the current schematic*}]
+  set r4_where [list [xschem get sch_path] [xschem get currsch]]
+  r_dw_off ; r_run_off ; r_echo_off
+  check "R4 ISSUE 0643 descended two levels, do_run reaches ase::run exactly once" \
+    $r4_ran 1
+  check "R4 ...and refuses nothing (neither the new sentence nor the old one)" \
+    [list $r4_ref $r4_old] {0 0}
+  check "R5 ...and does NOT move the user: still two levels down" \
+    $r4_where {.x1.x1. 2}
+  # the door routes only when the design is UNREACHABLE. Standing inside it is
+  # not a reason to withdraw+deiconify anything (issue 0616's cost).
+  check "R6 ...and does NOT route through Session > Design Window at all" $r4_dw {}
+
+  # --- R7-R9: the SURVIVING refusal, for a design that is genuinely nowhere --
+  # Stand somewhere real that is not the design, and stub design_window into a
+  # no-op so the routing arm cannot rescue it -- the only way to reach the
+  # refusal deterministically, since the real design_window always ends in an
+  # `xschem load` that would make the design reachable.
+  xschem load $r_else
+  r_echo_on ; r_run_on ; r_dw_on
+  catch {ase::ui::do_run $rkey} r7err
+  set r7_ran $::r_ran
+  set r7_dw  $::r_dw
+  set r7_new [r_echoed_n {*not open in this window*}]
+  set r7_old [r_echoed_n {*not the current schematic*}]
+  set r7_cell [r_echoed_n {*hier_top*}]
+  set r7_tag {}
+  foreach e $::r_echo { if {[string match -nocase {*not open in this window*} [lindex $e 1]]} { set r7_tag [lindex $e 0] } }
+  set r7_msgs $::r_echo
+  r_dw_off ; r_run_off ; r_echo_off
+  check "R7 a design that is nowhere on this window's stack is still refused" \
+    [list [llength $r7_ran] $r7_new] {0 1}
+  check "R7 ...after ONE routing attempt, and it is ifhidden (issue 0616)" $r7_dw {ifhidden}
+  # THE USER'S ACTUAL COMPLAINT WAS THE SENTENCE. It told them to do the thing
+  # they had already done; it must never be said again, in either arm.
+  check "R8 the words `is not the current schematic` are gone from this door" $r7_old 0
+  check "R9 the refusal names the design cell it could not reach" $r7_cell 1
+  check "R9 ...and is tagged error, not note (nothing is running; this is a failure)" \
+    $r7_tag error
+  if {$r7_new != 1} { puts "  R7 echoes were: $r7_msgs" }
+
+  # --- R10: the routing arm still WORKS -------------------------------------
+  # Same standing position, but design_window really brings the design up. The
+  # door must then run, on the second look, with no refusal -- this is the
+  # foreign-context path W6m presses for real under X.
+  r_echo_on ; r_run_on ; r_dw_on [list xschem load $r_top]
+  catch {ase::ui::do_run $rkey} r10err
+  set r10_ran [llength $::r_ran]
+  set r10_dw  $::r_dw
+  set r10_ref [r_echoed_n {*not open in this window*}]
+  r_dw_off ; r_run_off ; r_echo_off
+  check "R10 an unreachable design that Design Window CAN reach runs after one route" \
+    [list $r10_ran $r10_dw $r10_ref] {1 ifhidden 0}
+
+  # --- R11: 1389's run_busy is still the FIRST statement ---------------------
+  # A refused launch must not withdraw+deiconify anything on its way to saying
+  # no (issue 0616's cost) and must not re-netlist. Asserted with the REAL lock
+  # table, not a stubbed predicate, so the row also proves run_busy still reads
+  # the raw path it shares with ase::run_deck's gate.
+  set r_lk {}
+  catch {set r_lk [ase::run_lock_key [ase::session_state $rkey]]}
+  if {$r_lk eq {}} {
+    puts "SKIPPED: R11 (the ngspice raw_file hook did not resolve a lock key)"
+  } else {
+    xschem load $r_else
+    set ::execute(pipe,999901) r_fake_pipe
+    ase::run_lock_set $r_lk 999901
+    r_echo_on ; r_run_on ; r_dw_on
+    catch {ase::ui::do_run $rkey} r11err
+    set r11_ran [llength $::r_ran]
+    set r11_dw  $::r_dw
+    set r11_bsy [r_echoed_n {*already running*}]
+    set r11_ref [r_echoed_n {*not open in this window*}]
+    r_dw_off ; r_run_off ; r_echo_off
+    ase::run_lock_clear $r_lk
+    catch {unset ::execute(pipe,999901)}
+    check "R11 1389 a locked results file refuses FIRST: no run, no routing, no reachability sentence" \
+      [list $r11_ran $r11_dw $r11_ref] {0 {} 0}
+    check "R11 ...and the refusal that IS said is the busy one" $r11_bsy 1
+  }
+
+  # --- R12: do_run_existing is untouched by any of this ----------------------
+  # It never netlists (ase::run_existing, src/ase.tcl:6204 -- "needs no
+  # current-schematic guard because no netlisting happens"), so it must not have
+  # grown a stack test. Standing on a cell that is not the design and with the
+  # design nowhere, Simulation > Run still reaches ase::run_existing.
+  xschem load $r_else
+  r_echo_on ; r_run_on ; r_dw_on
+  catch {ase::ui::do_run_existing $rkey} r12err
+  set r12_x  [llength $::r_ranx]
+  set r12_dw $::r_dw
+  set r12_rf [r_echoed_n {*not open in this window*}]
+  r_dw_off ; r_run_off ; r_echo_off
+  check "R12 do_run_existing ignores the stack entirely: runs, never routes, never refuses" \
+    [list $r12_x $r12_dw $r12_rf] {1 {} 0}
+
+  # --- R13/R14: the REAL menu press, under X only ---------------------------
+  # Headless can prove the arms; only a real window can prove the gesture and
+  # the status segment the user reads afterwards.
+  if {[info exists ::has_x] && [info commands winfo] ne {}} {
+    check "R13 open_state on the hierarchical design -> 1" \
+      [ase::open_state aselib hier_top ngspice_state1] 1
+    update
+    set rtop [ase::ui::window_for $rkey]
+    if {$rtop eq {} || ![winfo exists $rtop]} {
+      puts "SKIPPED: R13/R14 (the hier_top session window did not build)"
+    } else {
+      ## ⚠ open_state leaves ANOTHER window current (MEASURED 2026-09-08:
+      ## current_win_path = .x1.drw on untitled.sch), so a descend from here
+      ## fails with "instance not found". Switch the context back by hand --
+      ## design_window would do it too, but it also loads and raises, which is
+      ## the very thing R13 must NOT have happened before the press.
+      catch {xschem new_schematic switch $r_win}
+      xschem load $r_top
+      xschem descend -fallback -inst x1
+      xschem descend -fallback -inst x1
+      ase::ui::set_status $rkey idle
+      set r13_pre [list [xschem get sch_path] \
+                        [expr {[file normalize [xschem get schname]] ne $r_dpath}]]
+      r_echo_on ; r_run_on
+      $rtop.mb.sim invoke {Netlist and Run}
+      update
+      set r13_ran [llength $::r_ran]
+      set r13_ref [r_echoed_n {*not open in this window*}]
+      set r13_old [r_echoed_n {*not the current schematic*}]
+      r_run_off ; r_echo_off
+      check "R13 the real Simulation > Netlist and Run, pressed two levels down, RUNS" \
+        [list $r13_pre $r13_ran $r13_ref $r13_old] [list {.x1.x1. 1} 1 0 0]
+      check "R13 ...and the status segment is not reddened" \
+        [expr {[$rtop.status.stat cget -text] eq {Status: Error}}] 0
+
+      # R14: the same real gesture with the design genuinely nowhere -- the
+      # refusal must still reach the status segment AND the new sentence.
+      xschem load $r_else
+      ase::ui::set_status $rkey idle
+      r_echo_on ; r_run_on ; r_dw_on
+      $rtop.mb.sim invoke {Netlist and Run}
+      update
+      set r14_ran [llength $::r_ran]
+      set r14_new [r_echoed_n {*not open in this window*}]
+      set r14_old [r_echoed_n {*not the current schematic*}]
+      r_dw_off ; r_run_off ; r_echo_off
+      check "R14 the real press with the design nowhere refuses, in the new words" \
+        [list $r14_ran $r14_new $r14_old] {0 1 0}
+      check "R14 ...and the status segment goes red" \
+        [list [$rtop.status.stat cget -background] [$rtop.status.stat cget -text]] \
+        {red {Status: Error}}
+      ase::ui::close $rkey
+      update
+    }
+  }
+}
+
+catch {ase::session_close $rkey}
+
+} r_bigerr]} {
+  puts "UNEXPECTED ERROR (R block): $r_bigerr"
+  incr fail
 }
 
 } bigerr]} {

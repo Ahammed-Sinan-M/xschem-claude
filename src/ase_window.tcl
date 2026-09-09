@@ -7237,23 +7237,76 @@ proc ase::ui::do_run {key} {
     ase::ui::set_status $key fail
     return
   }
-  # ase::netlist's GUI guard requires the design to BE the current schematic:
-  # route through Design Window first when it is not. `ifhidden`, NOT the
-  # default: this guard tests the xschem CONTEXT, not visibility, so it fires
-  # routinely while the design window is fully visible and front (a restored
-  # waveform viewer leaves the context on the viewer canvas -- the user's
-  # reported case). The default arm would then withdraw+deiconify the whole main
-  # toplevel for no reason, and on WSLg a dropped re-map is a schematic window
-  # that simply vanished -- issue 0616, "when I press Netlist and Run, the
-  # schematic window disappears". `ifhidden` still restores a design window that
-  # really IS hidden, and still `raise`s a visible one to the front (the cheap
-  # half of the raise -- see raise_window_entry), so the schematic ends up on
-  # screen either way and no user is left hunting the Session menu.
-  if {[file normalize [xschem get schname]] ne $dpath} {
+  ## THE DOOR ASKS "IS THE DESIGN REACHABLE", NOT "IS IT CURRENT" (issue 0643).
+  ## The user, 2026-09-08: "I descend into x1 and again x1. Now, I click the N&>
+  ## ... `ase: design is not the current schematic; open it via Session > Design
+  ## Window first`. Where does this inane restriction come from? There is no such
+  ## limitation in Cadence's ADE-L, which we want be better than."
+  ##
+  ## They were right, and the equality test was the whole of it. Standing two
+  ## levels down inside the design's OWN hierarchy, `xschem get schname` is the
+  ## op-amp, not the testbench, so `ne $dpath` fired and the sentence told them
+  ## to do the very thing they had already done -- Session > Design Window
+  ## brings that same descended window back and changes nothing about the
+  ## comparison, so the button was simply unusable from depth. `ase::stack_level`
+  ## (src/ase.tcl) answers the question that actually gates the netlist: is the
+  ## design ON THIS WINDOW'S HIERARCHY STACK, at any level (>= 0), or nowhere
+  ## (-1)? Making it current for the duration is `ase::netlist`'s job now
+  ## (ase::with_design_current), and it puts the user back on the level they
+  ## were standing on -- MEASURED 34 ms for a two-level trip, against the 66 ms
+  ## the C netlister and the 177 ms op_annot::save_cards already spend making
+  ## the same trip on every press, which is the "no added cost" the user asked
+  ## for. It is NOT this door's job to walk the hierarchy: a door that ascended
+  ## would have to unwind on every error arm below it, and ase::netlist is the
+  ## one place that knows whether it got as far as needing to.
+  ##
+  ## ⚠ AND THE SAFETY IS DOWN THERE TOO, NOT HERE. This pre-check is a UX
+  ## router, not the netlister's guard: `ase::netlist` refuses on its own for an
+  ## unreachable design, so deleting this block would not netlist the wrong
+  ## deck. What it WOULD lose is issue 0616's routing (below) and a refusal that
+  ## can say no without going through `ase::run` -- see run_busy's header for why
+  ## a raise out of there is the wrong shape for a refusal. The reason the batch
+  ## did not simply DROP the old equality test is a different fact and it lives
+  ## one layer down: global_spice_netlist() netlists `xctx->sch[xctx->currsch]`,
+  ## the level you are STANDING on (src/spice_netlist.c:359-373), not the top, so
+  ## "netlist from wherever the user happens to be" would silently simulate the
+  ## op-amp alone -- no sources, no testbench, and a results file that looks
+  ## perfectly healthy. The old guard was a symptom of that, not superstition;
+  ## what changed is that the round trip now exists to satisfy it.
+  ##
+  ## `ifhidden`, NOT the default, and issue 0616's reasoning is UNCHANGED by the
+  ## new predicate -- it only fires less often. This tests the xschem CONTEXT,
+  ## not visibility, so it still fires while the design window is fully visible
+  ## and front (a restored waveform viewer leaves the context on the viewer
+  ## canvas -- the user's other reported case, and one the stack test does not
+  ## absorb: the viewer canvas is a different WINDOW, so the design is not on
+  ## its stack either). The default arm would then withdraw+deiconify the whole
+  ## main toplevel for no reason, and on WSLg a dropped re-map is a schematic
+  ## window that simply vanished -- issue 0616, "when I press Netlist and Run,
+  ## the schematic window disappears". `ifhidden` still restores a design window
+  ## that really IS hidden, and still `raise`s a visible one to the front (the
+  ## cheap half of the raise -- see raise_window_entry), so the schematic ends
+  ## up on screen either way and no user is left hunting the Session menu.
+  if {[ase::stack_level $dpath] < 0} {
     ase::ui::design_window $key ifhidden
     update
-    if {[file normalize [xschem get schname]] ne $dpath} {
-      catch {::ase::echo "ase: design is not the current schematic; open it via Session > Design Window first" error}
+    ## The surviving refusal is for a design that is genuinely NOWHERE on this
+    ## window's stack -- and it is reached only AFTER the routing above has
+    ## already tried and failed, so it must not send the user back to Session >
+    ## Design Window as if that were untried (issue 0643, decision D5). It names
+    ## the cell, because a session window carries no other clue which cellview
+    ## it could not reach.
+    if {[ase::stack_level $dpath] < 0} {
+      ## D6: the HEAD is minted once (ase::design_unreachable_msg, src/ase.tcl),
+      ## the TAIL is the caller's. `ase::netlist`'s copy of this refusal ends
+      ## "open it via Session > Design Window first", which is true THERE -- a
+      ## CIW or script caller has not tried the route. This arm has, one line
+      ## up, and failed, so pointing the user back at that menu item would tell
+      ## them to repeat a step that just silently did nothing. Two situations,
+      ## two truthful remedies, one fact spelled in one place.
+      catch {::ase::echo [ase::design_unreachable_msg \
+        [ase::ui::design_cell_name $key] \
+        "Session > Design Window did not open it"] error}
       ase::ui::set_status $key fail
       return
     }

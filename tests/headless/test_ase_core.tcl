@@ -26,6 +26,17 @@
 #                   The Tk sinks (.statusbar.12 fallback, opt-in popup) are
 #                   PS14-PS19 in test_ase_log_seam_0207.tcl -- a --nolog suite
 #                   has neither a statusbar nor a CIW to witness them with.
+#   RT* round trip: issue 0643 / descend_run_batch item A -- ase::stack_level,
+#                   ase::hier_instnames and the ase::with_design_current
+#                   ascend/netlist/re-descend, its autosave-backup decision
+#                   table, its read-only snapshot and ase::netlist's four arms.
+#   DX* at depth:   descend_run_batch item C -- the things that ALREADY worked
+#                   two levels down and must not silently regress: the
+#                   annotation basis (raw_level / sim_sch_path / the built
+#                   device path) with the session's level and without it, and
+#                   the end-to-end descended netlist, byte-for-byte against one
+#                   taken at the top, against the leaf-alone deck a person gets
+#                   without the round trip.
 #
 # The nfet fixture (nfet_test_claude MINUS its corner + simulator_commands
 # instances) is embedded verbatim below and written into a scratch
@@ -42,18 +53,23 @@
 # (ase_design_window.tcl); headless, ase::netlist self-loads and that arm of the
 # guard stays the thing under test.
 #
-# THE CHECK COUNT IS 203 IN BOTH ARMS, and that equality is a COINCIDENCE of two
+# THE CHECK COUNT IS 224 IN BOTH ARMS, and that equality is a COINCIDENCE of
 # announced skips cancelling -- it is NOT a claim that the arms run the same rows.
 # Headless, NT14 runs (its own premise is "there is no Tk") and RG6's behavioural
 # leg does not; under X, NT14 prints
 # `SKIPPED: NT14 headless-only sink safety (a display is present; see 0804)`
-# and RG6 prints its measurement instead. One row each way, so 203 = 203.
+# and RG6 prints its measurement instead. One row each way, so 224 = 224.
+# DX7 is the third row of this shape and it does NOT skip either way: it asserts
+# ase::netlist's arm (c) under a display and its arm (b) headless, because those
+# are the product's own two contracts for the same call from the same place.
 #
 # ⚠ THE COUNT IS A FLOOR AND IT ONLY EVER GOES UP. It was 173/172 when this
 # comment first claimed "differ by exactly one" (issue 0698's era), 184 before
-# the 1389 run-guard section, 197 when section RG landed, and 203 once RG6 was
-# rewritten to measure the keyboard and RG13/RG14 were added. If a run reports
-# fewer, a row went missing -- do not edit this number down to match it.
+# the 1389 run-guard section, 197 when section RG landed, 203 once RG6 was
+# rewritten to measure the keyboard and RG13/RG14 were added, 216 when section
+# RT landed (descend_run_batch item A) and 224 with section DX (item C). If a
+# run reports fewer, a row went missing -- do not edit this number down to
+# match it.
 
 set fail 0; set npass 0
 proc check {name got exp} {
@@ -2811,6 +2827,733 @@ check "NTD12 0664 G5 the FAULT does NOT burn the degraded latch: when the same\
   [list 1 1 1]
 note "NTD12 the DEGRADED line" [ntd_line_with $ntd11_log {NOTICE CHANNEL DEGRADED}]
 note "NTD12 the FAULT line"    [ntd_line_with $ntd11_log {NOTICE CHANNEL FAULT}]
+
+# --- RT: THE HIERARCHY ROUND TRIP (issue 0643 / issue 1393) ------------------
+# doc/claude/descend_run_batch/PLAN.md item A. The user's words, 2026-09-08:
+# "I descend into x1 and again x1. Now, I click the N&> (Netlist and Run button)
+# in ASE-L to get: `ase: design is not the current schematic; open it via
+# Session > Design Window first`. Where does this inane restriction come from?
+# There is no such limitation in Cadence's Analog Design Environment (ADE-L),
+# which we want be better than."
+#
+# WHY THE GUARD EXISTED, so no later crew deletes the replacement as dead
+# weight: global_spice_netlist() netlists xctx->sch[xctx->currsch] -- the level
+# you are STANDING ON (src/spice_netlist.c:359-373). Measured on the shipped
+# sky130_tests_ase/tb_bandgap: 14862 bytes and 8 .subckt at level 0; 4685 bytes
+# of bandgap_opamp alone after `descend x1, x1`. Drop the guard without
+# replacing it and the button silently simulates the op-amp with no sources and
+# no testbench, into a results file that looks healthy.
+#
+#   RT1  hier_instnames: {} at the top, the entered names when descended
+#   RT2  stack_level finds the design at its OWN level, from any depth, and
+#        answers -1 -- never raises -- for anything not on this stack
+#   RT3  the design already current: the script runs, nothing walks
+#   RT4  THE ROUND TRIP: the script runs AT the design, and the user comes back
+#        to the same level, the same sheet, the same view
+#   RT5  A3 row 1 (clean): autosave_backup is parked at 0 FOR THE TRIP and given
+#        back afterwards -- and the park is what keeps the design's own buffer
+#        from coming back flagged modified
+#   RT6  A3 row 3 (modified + autosave off): REFUSED, nothing moved
+#   RT7  A3 row 2 (modified + autosave on): CARRIED -- back at the same level,
+#        still modified, with the edit still in the buffer
+#   RT8  the entry read-only state survives the trip (cadence_style_rc:564)
+#   RT9  a design that is nowhere raises the MINTED head and moves nothing
+#   RT10 a re-descend that cannot complete says WHERE the person was left
+#   RT11 ase::netlist's four arms, by which one actually ran
+#   RT12 the minted refusal (D6): one head, a caller-chosen tail, and NOT the
+#        shipped "is not the current schematic" sentence
+#
+# ⚠ THE ROWS BELOW DRIVE THE TRIP WITH A PROBE, NOT A NETLIST, and RT11 stubs
+# ase::netlist_in_place. That is not squeamishness: MEASURED at HEAD with no
+# ase:: code in the picture, `descend ; go_back ; xschem netlist` on a
+# hand-written fixture whose child has ZERO instances pops the modal "Please Set
+# netlisting mode (Options menu)" and a scripted run HANGS on it forever --
+# load_schematic() switches netlist_type to CAD_SYMBOL_ATTRS for a file with
+# xctx->instances == 0 (save.c:6469) and the parent reload does not put it back.
+# Pre-existing, not reproducible on the real bench (tb_bandgap's round trip
+# produces a netlist byte-identical to one taken at the top), and not this
+# batch's to fix. The end-to-end byte-identity row is item C's, on that bench.
+#
+# THE FIXTURE is a second cell in the SAME scratch aselib, in the cadence
+# lib/cell/view layout the rest of this suite already uses, so nothing here
+# touches ::pathlist, ::XSCHEM_LIBRARY_PATH or the library.defs the earlier
+# sections depend on.
+set rtdir [file join $scratch aselib]
+file mkdir [file join $rtdir rt_top schematic]
+file mkdir [file join $rtdir rt_child schematic]
+file mkdir [file join $rtdir rt_child symbol]
+proc rt_wr {path lines} {
+  file mkdir [file dirname $path]
+  set fp [open $path w]
+  foreach l $lines { puts $fp $l }
+  close $fp
+}
+rt_wr [file join $rtdir rt_child symbol rt_child.sym] [list \
+  {v {xschem version=3.4.4 file_version=1.2}} \
+  "G \{type=subcircuit" \
+  "template=\"name=x1\"\}" \
+  {V {}} {S {}} {E {}} \
+  {L 4 -20 -20 20 -20 {}} \
+  {L 4 20 -20 20 20 {}} \
+  {L 4 20 20 -20 20 {}} \
+  {L 4 -20 20 -20 -20 {}}]
+## one instance in the child, deliberately: a ZERO-instance sheet is what flips
+## netlist_type to CAD_SYMBOL_ATTRS at save.c:6469 (see the warning above).
+rt_wr [file join $rtdir rt_child schematic rt_child.sch] [list \
+  {v {xschem version=3.4.4 file_version=1.2}} \
+  {G {}} {V {}} {S {}} {E {}} \
+  {N 0 0 100 0 {}} \
+  {C {devices/lab_pin} 0 0 0 0 {name=p1 lab=A}}]
+rt_wr [file join $rtdir rt_top schematic rt_top.sch] [list \
+  {v {xschem version=3.4.4 file_version=1.2}} \
+  {G {}} {V {}} {S {}} {E {}} \
+  {N 0 0 100 0 {}} \
+  {C {aselib/rt_child} 0 0 0 0 {name=x1}}]
+## the symbol RT6/RT7 place to make a real unsaved edit: a lab_pin, NOT
+## rt_child's own symbol -- a cell holding an instance of itself is a recursive
+## hierarchy, and this fixture has no business being one.
+set rtpinsym [file join $repo xschem_libs_newsym devices lab_pin symbol lab_pin.sym]
+set rttop   [file normalize [xschem cellview_path aselib/rt_top schematic]]
+set rtchild [file normalize [xschem cellview_path aselib/rt_child schematic]]
+check "RT0 the round-trip fixture resolves through the same cellview_path\
+ accessor ase::netlist uses, and the child is a descendable subcircuit view" \
+  [list [file tail $rttop] [file tail $rtchild] [file isfile $rttop] \
+        [file isfile $rtchild]] \
+  {rt_top.sch rt_child.sch 1 1}
+
+## The script every trip below runs: WHERE did it run? A trip that never made
+## the design current would still "succeed" without this.
+proc rt_where {} { return [list [xschem get currsch] [file tail [xschem get schname]]] }
+## and one that also reports the parked flag, for RT5
+proc rt_where_ab {} {
+  return [list [xschem get currsch] [file tail [xschem get schname]] \
+               [expr {[info exists ::autosave_backup] ? $::autosave_backup : {<unset>}}]]
+}
+proc rt_bak {sch} { return [regsub {\.sch$} $sch {~.sch}] }
+## Stand one level down inside the design, editable. `xschem set readonly 0`
+## because src/cadence_style_rc:564 sets descend_readonly 1 and a read-only
+## buffer can never be flagged modified (actions.c ro_suppress, issue 0035) --
+## which is exactly why rows RT6/RT7 need it and why RT8 exists.
+proc rt_descend {} {
+  xschem load $::rttop
+  xschem unselect_all
+  set r [xschem descend -fallback -inst x1]
+  xschem set readonly 0
+  return [list $r [xschem get currsch] [file tail [xschem get schname]]]
+}
+set ::rttop $rttop
+
+# --- RT1: hier_instnames -----------------------------------------------------
+xschem load $rttop
+set rt1a [list [ase::hier_instnames] [xschem get sch_path] [xschem get currsch]]
+set rt1b [rt_descend]
+check "RT1 hier_instnames is empty at the top and carries the entered instance\
+ names when descended, indexed BY LEVEL so element \$l is the instance that\
+ leads out of level \$l" \
+  [list $rt1a [ase::hier_instnames] [xschem get sch_path] $rt1b] \
+  [list {{} . 0} x1 .x1. {1 1 rt_child.sch}]
+
+# --- RT2: stack_level --------------------------------------------------------
+# NEVER RAISES: it is the predicate two doors ask before deciding what to SAY
+# (ase::netlist here, ase::ui::do_run in src/ase_window.tcl), and a raise out of
+# a predicate would turn "the design is somewhere else" into a bare Tcl error on
+# a button press. The garbage arguments are the ones a raise would come from:
+# an unbalanced brace is not a list, and {} is not a path.
+check "RT2 stack_level answers the design's OWN level from one level down, -1\
+ for a cell that is nowhere on this stack, and never raises on junk" \
+  [list [ase::stack_level $rttop] [ase::stack_level $rtchild] \
+        [ase::stack_level [file join $scratch aselib nfet_clean schematic nfet_clean.sch]] \
+        [catch {ase::stack_level {}} r1] $r1 \
+        [catch {ase::stack_level "a b \{c"} r2] $r2 \
+        [catch {ase::stack_level $scratch} r3] $r3] \
+  [list 0 1 -1 0 -1 0 -1 0 -1]
+
+# --- RT3: the design is already current --------------------------------------
+# No park, no walk, no `~` handling -- which is also what keeps every
+# undescended press byte-for-byte the behaviour it shipped with.
+xschem load $rttop
+set rt3dc [xschem get drawcount]
+set rt3 [ase::with_design_current $rttop {rt_where}]
+check "RT3 with the design already current the script runs in place, the level\
+ does not move, and the trip machinery is not entered at all" \
+  [list $rt3 [xschem get currsch] [file tail [xschem get schname]] \
+        [expr {[xschem get drawcount] - $rt3dc}]] \
+  {{0 rt_top.sch} 0 rt_top.sch 0}
+
+# --- RT4: THE ROUND TRIP -----------------------------------------------------
+# THE HEADLINE ROW. Everything else in this section is a property of the trip;
+# this is the trip.
+rt_descend
+set rt4view [list [xschem get xorigin] [xschem get yorigin] [xschem get zoom]]
+set rt4dc [xschem get drawcount]
+set rt4 [ase::with_design_current $rttop {rt_where}]
+check "RT4 the script runs AT the design with the design current, and the user\
+ comes back to the same level, the same sheet, the same sch_path and the same\
+ view -- and the canvas is repainted exactly once, at the end" \
+  [list $rt4 [xschem get currsch] [file tail [xschem get schname]] \
+        [xschem get sch_path] [ase::hier_instnames] \
+        [expr {$rt4view eq [list [xschem get xorigin] [xschem get yorigin] \
+                                 [xschem get zoom]] ? 1 : 0}] \
+        [expr {[xschem get drawcount] - $rt4dc}]] \
+  [list {0 rt_top.sch} 1 rt_child.sch .x1. x1 1 1]
+
+# --- RT5: A3 row 1 -- the park, and that it is not decoration ----------------
+# go_back is NOT read-only: it calls load_backup_as() whenever a <cell>~.sch
+# sits beside the cell (actions.c:6505) and that ends in set_modify(1)
+# (save.c:6197). The park makes the ascent a plain reload (save.c:6186 early
+# return). The control is the SAME ascent with the flag left alone: without it
+# the design's own buffer comes back flagged modified, which is issue 0626's
+# defect wearing the design's hat.
+file copy -force -- $rttop [rt_bak $rttop]
+rt_descend
+set ::autosave_backup 1
+set rt5in [ase::with_design_current $rttop {rt_where_ab}]
+set rt5parked [list $rt5in [xschem get currsch] [xschem get modified] $::autosave_backup]
+rt_descend
+set ::autosave_backup 1
+xschem go_back 2
+set rt5control [list [xschem get currsch] [xschem get modified]]
+file delete -force -- [rt_bak $rttop]
+check "RT5 A3 row 1: a CLEAN entry buffer parks autosave_backup at 0 for the\
+ trip and gets it back afterwards, so the ascent is a plain reload -- and the\
+ unparked control proves the park is load-bearing, not decoration" \
+  [list $rt5parked $rt5control] \
+  [list {{0 rt_top.sch 0} 1 0 1} {0 1}]
+
+# --- RT6: A3 row 3 -- modified + autosave OFF: REFUSE ------------------------
+# With the flag off there is no `~` to come back to (write_backup() is a no-op,
+# actions.c:206-208), so the trip would silently REVERT the edit -- issue 0626,
+# measured on the shipped bandgap_opamp. A refusal and not a warning: nothing in
+# Netlist-and-Run is worth an unsaved edit. It must move NOTHING and it must
+# name the cell and BOTH remedies, or it is a wall rather than a refusal.
+file delete -force -- [rt_bak $rtchild]
+rt_descend
+set ::autosave_backup 0
+xschem instance $rtpinsym 300 300 0 0 {name=pdirty lab=DIRTY}
+set rt6pre [list [xschem get currsch] [xschem get modified] [xschem get instances]]
+set rt6rc [catch {ase::with_design_current $rttop {rt_where}} rt6msg]
+check "RT6 A3 row 3: a MODIFIED entry buffer with autosave backup off is\
+ refused before anything moves, and the sentence names the cell, issue 0626 and\
+ both ways out (save it, or turn the option on)" \
+  [list $rt6pre $rt6rc [xschem get currsch] [xschem get instances] \
+        [rg_has $rt6msg {rt_child.sch}] [rg_has $rt6msg {0626}] \
+        [rg_has $rt6msg {Save this cell}] \
+        [rg_has $rt6msg {Options > Autosave backup}]] \
+  [list {1 1 2} 1 1 2 1 1 1 1]
+note "RT6 the refusal" $rt6msg
+
+# --- RT7: A3 row 2 -- modified + autosave ON: CARRIED ------------------------
+# op_annot only ever REFUSES here, because its walk never pops its entry level
+# and go_back's load_backup_as restores its entry buffer for it. This trip POPS
+# the entry level and returns by `descend`, and descend_schematic() uses plain
+# load_schematic() -- NOT load_backup_as(). So the edit comes back only because
+# of the explicit `xschem load_backup` (scheduler.c:7948). Refusing instead
+# would have left a user with one unsaved tweak unable to press Run at all
+# (DECISIONS.md D4).
+set ::autosave_backup 1
+rt_descend
+set ::autosave_backup 1
+xschem instance $rtpinsym 300 300 0 0 {name=pdirty lab=DIRTY}
+set rt7pre [list [xschem get currsch] [xschem get modified] [xschem get instances]]
+set rt7bak [file exists [rt_bak $rtchild]]
+set rt7rc [catch {ase::with_design_current $rttop {rt_where}} rt7res]
+check "RT7 A3 row 2: a MODIFIED entry buffer with autosave backup on is\
+ CARRIED -- the script still runs at the design, and the person comes back to\
+ the same level with the edit still in the buffer AND still flagged modified,\
+ because `xschem load_backup` puts back what descend's load_schematic dropped" \
+  [list $rt7pre $rt7bak $rt7rc $rt7res [xschem get currsch] \
+        [file tail [xschem get schname]] [xschem get instances] \
+        [xschem get modified] $::autosave_backup] \
+  [list {1 1 2} 1 0 {0 rt_top.sch} 1 rt_child.sch 2 1 1]
+file delete -force -- [rt_bak $rtchild]
+
+# --- RT8: the entry READ-ONLY state survives the trip ------------------------
+# src/cadence_style_rc:564 sets descend_readonly 1, so in the setup this user
+# runs EVERY descended level is a read-only browse buffer (actions.c:6410) and
+# set_modify(1) is suppressed there. Rows RT6/RT7 are only reachable after a
+# Ctrl-2, and once someone HAS done that the trip must give the flag back: the
+# final `descend` re-applies descend_readonly. MEASURED before the snapshot was
+# added, on the real bench: the carried edits came back (correct) while
+# `modified` came back 0, because load_backup_as' set_modify(1) landed on a
+# buffer the re-descend had just made read-only again -- one close-without-
+# prompt away from losing the edit a second time. PLAN.md A3/A4 do not mention
+# this; it was found by measuring.
+set ::descend_readonly 1
+xschem load $rttop
+xschem unselect_all
+xschem descend -fallback -inst x1
+set rt8ro [xschem get readonly]
+xschem set readonly 0
+ase::with_design_current $rttop {rt_where}
+set rt8after [xschem get readonly]
+xschem load $rttop
+xschem unselect_all
+xschem descend -fallback -inst x1
+set rt8keep [xschem get readonly]
+ase::with_design_current $rttop {rt_where}
+set rt8keep2 [xschem get readonly]
+set ::descend_readonly 0
+check "RT8 the trip restores the ENTRY read-only state, in both directions: a\
+ buffer the person had made editable comes back editable (or its restored edits\
+ could never be flagged modified), and a browse buffer comes back read-only" \
+  [list $rt8ro $rt8after $rt8keep $rt8keep2] {1 0 1 1}
+
+# --- RT9: a design that is nowhere -------------------------------------------
+rt_descend
+set rt9c [xschem get currsch]
+set rt9rc [catch {ase::with_design_current \
+             [file join $scratch aselib nfet_clean schematic nfet_clean.sch] \
+             {rt_where}} rt9msg]
+check "RT9 a design that is not on this window's stack raises the minted head\
+ and moves NOTHING -- no park, no go_back, no descend" \
+  [list $rt9rc $rt9msg [xschem get currsch] [file tail [xschem get schname]]] \
+  [list 1 {ase: design nfet_clean.sch is not open in this window} $rt9c rt_child.sch]
+
+# --- RT10: a re-descend that cannot complete ---------------------------------
+# Silence here strands a person part-way down their own hierarchy with no idea
+# why the sheet changed, so the sentence has to name the instance AND where they
+# are now. Driven at ase::hier_redescend directly: the failure it exists for is
+# a sheet that no longer holds the instance the person came through, and a name
+# that was never there is the same accident.
+xschem load $rttop
+set rt10rc [catch {ase::hier_redescend {no_such_inst} 1} rt10msg]
+check "RT10 a re-descend into an instance that is not there raises, names the\
+ instance, and says WHERE the person was left" \
+  [list $rt10rc [rg_has $rt10msg {no_such_inst}] \
+        [rg_has $rt10msg {rt_top.sch}] [rg_has $rt10msg {level 0}] \
+        [xschem get currsch]] \
+  {1 1 1 1 0}
+note "RT10 the stranded sentence" $rt10msg
+
+# --- RT11: ase::netlist's four arms, BY WHICH ONE RAN ------------------------
+# The body is stubbed so this row measures the DISPATCH and nothing else -- and
+# so it measures the same thing in both arms of the suite, which is the only way
+# a `::has_x` decision can be tested headless at all. `ase::netlist_in_place`
+# records the level and sheet it was called at, which is the whole precondition
+# the split exists to guarantee (and the precondition
+# ase::op_cards_capture inherits, issue 0436 -- it stays INSIDE that body).
+## ⚠ EIGHT `tcleval(): ... sim_is_ngspice failed / invalid command name "winfo"`
+## LINES ON STDERR ARE THIS ROW'S, HEADLESS ONLY, AND THEY ARE NOT A FAILURE.
+## Faking ::has_x makes set_sim_defaults (src/xschem.tcl:4259 -> sim_is_ngspice)
+## take its Tk path, and the trip's final `xschem redraw` evaluates floaters,
+## which asks token.c:6461 that question. C's own has_x is still 0, so there is
+## no Tk to answer with. Nothing asserts on it, nothing reddens, and under X the
+## fake is a no-op because ::has_x is already there. Recorded rather than
+## silenced: a suite that swallowed its own stderr would hide the next real one.
+proc rt_as_gui {script} {
+  set had [info exists ::has_x]
+  if {!$had} { set ::has_x 1 }
+  set rc [catch {uplevel 1 $script} res opts]
+  if {!$had} { catch {unset ::has_x} }
+  return -options $opts $res
+}
+proc rt_as_headless {script} {
+  set had [info exists ::has_x]
+  if {$had} { set saved $::has_x ; catch {unset ::has_x} }
+  set rc [catch {uplevel 1 $script} res opts]
+  if {$had} { set ::has_x $saved }
+  return -options $opts $res
+}
+rename ase::netlist_in_place ase::rt_saved_nip
+proc ase::netlist_in_place {state cell} {
+  lappend ::rt_nip [list [xschem get currsch] [file tail [xschem get schname]] $cell]
+  return STUBBED
+}
+set rtst [ase::state_default]
+dict set rtst design {lib aselib cell rt_top view schematic}
+dict set rtst rundir [file join $scratch rtrun]
+# (a) the design already IS current
+xschem load $rttop
+set ::rt_nip {}
+set rt11a [list [ase::netlist $rtst] $::rt_nip]
+# (b) headless: self-load, unchanged behaviour -- from ONE LEVEL DOWN, which is
+#     where a script has no window to clobber and no person to put back
+rt_descend
+set ::rt_nip {}
+set rt11b [list [rt_as_headless {ase::netlist $rtst}] $::rt_nip [xschem get currsch]]
+# (c) THE NEW ARM: a display, and the design is on this window's own stack
+rt_descend
+set ::rt_nip {}
+set rt11c [list [rt_as_gui {ase::netlist $rtst}] $::rt_nip \
+                [xschem get currsch] [file tail [xschem get schname]]]
+# (d) a display, and the design is genuinely nowhere
+set rtst2 [dict replace $rtst design {lib aselib cell nfet_clean view schematic}]
+xschem load $rttop
+set ::rt_nip {}
+set rt11d [list [catch {rt_as_gui {ase::netlist $rtst2}} rt11msg] $::rt_nip]
+rename ase::netlist_in_place {}
+rename ase::rt_saved_nip ase::netlist_in_place
+check "RT11 all four arms of ase::netlist, measured by WHERE the body actually\
+ ran: current -> in place; headless -> self-load to the top (unchanged); a\
+ display with the design on this stack -> the ROUND TRIP, body at the design,\
+ person back at level 1; nowhere -> refused with no body call at all" \
+  [list $rt11a $rt11b $rt11c $rt11d] \
+  [list {STUBBED {{0 rt_top.sch rt_top}}} \
+        {STUBBED {{0 rt_top.sch rt_top}} 0} \
+        {STUBBED {{0 rt_top.sch rt_top}} 1 rt_child.sch} \
+        {1 {}}]
+
+# --- RT12: the minted refusal (batch decision D6) ----------------------------
+# ⚠ THE SHIPPED SENTENCE IS THE WHOLE COMPLAINT. "ase: design ... is not the
+# current schematic; open its design window first (Session > Design Window)"
+# told the user to do the thing they had already done, because the guard could
+# not tell "the design is elsewhere" from "the design is open and you are
+# standing inside it". It must not come back, in any spelling.
+check "RT12 D6: ONE minted head for `the design is not on this window's stack`,\
+ with the remedy chosen by the caller -- and the shipped `is not the current\
+ schematic` wording is gone from the sentence the doors say" \
+  [list [ase::design_unreachable_msg aselib/rt_top] \
+        [ase::design_unreachable_msg aselib/rt_top {open it via Session > Design Window first}] \
+        [rg_has $rt11msg {is not the current schematic}] \
+        [rg_has $rt11msg {Session > Design Window}] \
+        [rg_has [rg_body ase::netlist] {is not the current schematic}]] \
+  [list {ase: design aselib/rt_top is not open in this window} \
+        {ase: design aselib/rt_top is not open in this window; open it via Session > Design Window first} \
+        0 1 0]
+note "RT12 the surviving refusal" $rt11msg
+xschem load $rttop
+
+# --- DX: WHAT ALREADY WORKS TWO LEVELS DOWN, PINNED --------------------------
+# doc/claude/descend_run_batch/PLAN.md item C, CREW_BRIEF section 3.
+#
+# ⚠ NOTHING IN THIS SECTION IS A FIX. Every row here is a PIN on behaviour the
+# tree already has and that items A and B must not have disturbed -- the driver
+# first believed the annotation basis was broken at depth, measured it, and
+# found it correct (DECISIONS.md D1). A pin with no teeth is worse than no pin,
+# so each row below carries its own negative control: the same call made the
+# other way must give the OTHER answer, or the row could pass on a constant.
+#
+#   DX0  the fixture really reproduces the report: three levels, `sch_path`
+#        `.x1.x1.`, standing on the leaf, and the design is a registered
+#        cellview so a session can bind to it
+#   DX1  from two levels down, ase::session_for_current answers the DESIGN's
+#        own level (0) and ase::ui::design_window finds the DESCENDED window
+#        without moving the person out of it
+#   DX2  THE PIN: op_annot::db_attach with that level stamps the raw at the
+#        design (raw_level 0), the hierarchy prefix is the two-component
+#        `x1.x1.`, the device path carries it, and the numbers render
+#   DX3  THE NEGATIVE CONTROL, i.e. "the bare door": the SAME file attached
+#        with no level stamps at currsch, the prefix is empty, the device path
+#        loses the hierarchy and the block paints BLANK
+#   DX4  the end-to-end descended netlist is BYTE-IDENTICAL to one taken at
+#        the top, and the person comes back to the same level and sheet
+#   DX5  ...and that is not free: the netlist a person standing there gets
+#        WITHOUT the round trip is the leaf alone. This is the defect the
+#        shipped guard existed to prevent (CREW_BRIEF section 1)
+#   DX6  ase::netlist's arm (c) IS that composition, read off its own body
+#   DX7  the real ase::netlist called from two levels down, end to end
+#
+# ⚠ WHY THE ANNOTATION FIXTURE CARRIES ITS OWN DEVICE TYPE. op_annot builds a
+# device path through the descriptor registered for the symbol's `type=` token,
+# and the ONE seam where the hierarchy enters that path is the third argument a
+# descriptor's devproc receives -- sim_sch_path. A fixture whose devproc returns
+# a constant cannot see a wrong level at all (the note above H1 in
+# test_annot_hier_0911.tcl says so about the same trap), so `dxs8fet` gets a
+# hierarchy-aware devproc and the rows read the built path, not just the getter.
+#
+# ⚠ AND THE RAW IS WRITTEN HERE, IN THE SCRATCH TREE. Never
+# ~/.xschem/simulations/ -- that directory holds the user's own bench results
+# and this suite has no business reading, let alone overwriting, them. No
+# simulator is run: an operating point is three numbers in a text file.
+set dxdir [file join $scratch aselib]
+proc dx_wr {p txt} {
+  file mkdir [file dirname $p]
+  set fh [open $p w]
+  puts -nonewline $fh $txt
+  close $fh
+}
+## the descendable box, twice -- `type=subcircuit` is what makes `descend` work
+set dx_boxsym {v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {type=subcircuit
+format="@name @pinlist @symname"
+template="name=x1"
+}
+V {}
+S {}
+E {}
+B 5 -82.5 -2.5 -77.5 2.5 {name=A dir=inout}
+L 4 -80 0 -40 0 {}
+L 4 -40 -20 40 -20 {}
+L 4 40 -20 40 20 {}
+L 4 40 20 -40 20 {}
+L 4 -40 20 -40 -20 {}
+T {@symname} -38 -6 0 0 0.3 0.3 {}
+T {@name} -5 -32 0 0 0.2 0.2 {}
+}
+dx_wr [file join $dxdir dx_mid  symbol dx_mid.sym]  $dx_boxsym
+dx_wr [file join $dxdir dx_leaf symbol dx_leaf.sym] $dx_boxsym
+## the annotated device. Its own type token, so registering a descriptor for it
+## cannot shadow a PDK's `nmos` for any row above (op_annot.tcl's `match` key
+## exists for exactly that collision).
+dx_wr [file join $dxdir dx_fet symbol dx_fet.sym] {v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {type=dxs8fet
+format="@name @pinlist @model"
+template="name=MZZ1 model=dxdev"
+}
+V {}
+S {}
+E {}
+B 5 -22.5 -2.5 -17.5 2.5 {name=D dir=inout}
+L 4 -20 0 0 0 {}
+L 4 -10 -10 10 -10 {}
+L 4 10 -10 10 10 {}
+L 4 10 10 -10 10 {}
+L 4 -10 10 -10 -10 {}
+}
+## the design: a source and a testbench net the leaf has never heard of, so the
+## deck taken at the top and the deck taken at the leaf CANNOT be confused
+dx_wr [file join $dxdir dx_top schematic dx_top.sch] \
+{v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {}
+V {}
+S {}
+E {}
+N 200 -100 280 -100 {}
+C {aselib/dx_mid} 360 -100 0 0 {name=x1}
+C {devices/lab_wire} 220 -100 0 0 {name=lT lab=TNET}
+C {devices/vsource} 200 -60 0 0 {name=V1 value=1.8}
+C {devices/gnd} 200 -20 0 0 {name=GND1 lab=GND}
+}
+dx_wr [file join $dxdir dx_mid schematic dx_mid.sch] \
+{v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {}
+V {}
+S {}
+E {}
+N 200 -100 280 -100 {}
+C {aselib/dx_leaf} 360 -100 0 0 {name=x1}
+C {devices/ipin} 200 -100 0 0 {name=pA lab=A}
+}
+dx_wr [file join $dxdir dx_leaf schematic dx_leaf.sch] \
+{v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {}
+V {}
+S {}
+E {}
+N 200 -100 280 -100 {}
+C {devices/ipin} 200 -100 0 0 {name=pA lab=A}
+C {aselib/dx_fet} 300 -100 0 0 {name=MZZ1}
+}
+## the hierarchy-aware devproc (see the warning above) and its descriptor
+proc dx_devproc {instname model path spiceprefix} { return "@m.${path}mzz" }
+catch {op_annot::register dxs8fet \
+  [list devproc dx_devproc params {{id id 0} {gm gm 1} {gds gds 1}}]}
+
+set dxtop [file normalize [xschem cellview_path aselib/dx_top schematic]]
+## Stand where the user stood: "I descend into x1 and again x1."
+proc dx_descend {} {
+  xschem load $::dxtop
+  xschem unselect_all ; xschem descend -fallback -inst x1
+  xschem unselect_all ; xschem descend -fallback -inst x1
+  return [list [xschem get currsch] [xschem get sch_path] \
+               [file tail [xschem get schname]]]
+}
+set ::dxtop $dxtop
+## one operating point over one device, named as a run FROM THE TOP names it
+proc dx_mkop {path dev} {
+  set fh [open $path w]
+  puts -nonewline $fh "Title: descend_run_batch item C fixture
+Date: Mon Jan 1 00:00:00 2026
+Plotname: Operating Point
+Flags: real
+No. Variables: 3
+No. Points: 1
+Variables:
+\t0\ti($dev\[id\])\tcurrent
+\t1\t$dev\[gm\]\tadmittance
+\t2\t$dev\[gds\]\tadmittance
+Values:
+0\t1.000000e-05
+\t1.000000e-04
+\t1.000000e-06
+"
+  close $fh
+}
+## what the sheet would paint for the annotated device, as one line
+proc dx_rows {} {
+  set r {}
+  catch {set r [::op_annot::text MZZ1]}
+  set r [string map [list "\n" { | }] [string trim $r]]
+  regsub -all { +} $r { } r
+  return $r
+}
+## byte-for-byte, in-process: 1 identical, 0 different, -1 unreadable
+proc dx_same {a b} {
+  if {![file isfile $a] || ![file isfile $b]} { return -1 }
+  set fa [open $a rb] ; set x [read $fa] ; close $fa
+  set fb [open $b rb] ; set y [read $fb] ; close $fb
+  return [expr {$x eq $y ? 1 : 0}]
+}
+proc dx_grep {f needle} {
+  if {![file isfile $f]} { return -1 }
+  set fh [open $f r] ; set t [read $fh] ; close $fh
+  return [expr {[string first $needle $t] >= 0 ? 1 : 0}]
+}
+
+# --- DX0: the fixture is the report ------------------------------------------
+set dx0 [dx_descend]
+check "DX0 the fixture reproduces the report -- three levels, sch_path .x1.x1.,\
+ standing on the leaf -- and the DESIGN resolves to a registered cellview a\
+ session can bind to" \
+  [list $dx0 [catch {ase::design_of_path $dxtop} dx0d] $dx0d \
+        [file tail [xschem get schname 0]]] \
+  [list {2 .x1.x1. dx_leaf.sch} 0 {aselib dx_top schematic} dx_top.sch]
+
+# --- DX1: the session and the design window, from two levels down ------------
+# ⚠ ase::ui::design_window IS IN THE ROW ON PURPOSE. It is the second half of
+# the user's own gesture ("... and then, Session Design Window so that the
+# schematic is linked to that ASE-L"), and it is the proc CREW_BRIEF section 6
+# names as the repair for the second-window trap. What it must NOT do here is
+# re-open the design somewhere else: raise_design_editor's SECOND scan
+# (src/ase_window.tcl, `xschem windows` field 6, the window's hierarchy stack)
+# is what sees a window that is standing INSIDE the design -- issue 0168's
+# HL23-HL25 -- and without it this row would come back at level 0 with the
+# person's navigation thrown away.
+set dxkey [ase::new_session aselib dx_top schematic]
+set dx1sfc [ase::session_for_current]
+set dx1dw [catch {ase::ui::design_window $dxkey} dx1r]
+check "DX1 two levels down, ase::session_for_current answers the DESIGN's own\
+ level and ase::ui::design_window finds the DESCENDED window -- it does not\
+ re-open the design at level 0 and throw the navigation away" \
+  [list $dx1sfc $dx1dw $dx1r [xschem get currsch] [xschem get sch_path] \
+        [file tail [xschem get schname]]] \
+  [list [list $dxkey 0 aselib dx_top schematic] 0 1 2 .x1.x1. dx_leaf.sch]
+
+# --- DX2/DX3: THE PIN, AND ITS NEGATIVE CONTROL ------------------------------
+# The annotation door passes a LEVEL:
+#   ase::ui::annot_ensure_loaded -> level from ase::session_for_current
+#     -> op_annot::db_attach $path $level
+#       -> xschem annotate_op $np $level
+#         -> src/scheduler.c  raw->level = level ; raw->schname = sch[level]
+# so `Simulation > Run` pressed while descended does NOT annotate blanks. That
+# is the claim these two rows exist to keep true. DX3 is the SAME file through
+# the SAME proc with the level withheld -- the "bare door" the driver first
+# measured and mistook for the shipped behaviour -- and it must give the other
+# answer in all four columns or DX2 is passing on a constant.
+set dxraw [file join $scratch dx_top_ase.raw]
+dx_mkop $dxraw {@m.x1.x1.mzz}
+set dxlvl [lindex [ase::session_for_current] 1]
+catch {xschem raw clear}
+set dx2att [::op_annot::db_attach $dxraw $dxlvl]
+check "DX2 THE PIN: the results file attached with the level the session\
+ reports is stamped at the DESIGN (raw_level 0), the hierarchy prefix is the\
+ two-component x1.x1., the device path carries it and the numbers render" \
+  [list $dxlvl $dx2att [xschem get raw_level] [xschem get sim_sch_path] \
+        [::op_annot::devpath MZZ1] [dx_rows]] \
+  [list 0 {1 {}} 0 {x1.x1.} {@m.x1.x1.mzz} {id = 10u | gm = 100u | gds = 1u}]
+catch {xschem raw clear}
+set dx3att [::op_annot::db_attach $dxraw {}]
+check "DX3 the NEGATIVE CONTROL, the bare door: the SAME file attached with no\
+ level stamps at currsch, the prefix is empty, the device path loses the\
+ hierarchy and the block paints BLANK -- so DX2 cannot pass on a constant" \
+  [list $dx3att [xschem get raw_level] [xschem get sim_sch_path] \
+        [::op_annot::devpath MZZ1] [dx_rows]] \
+  [list {1 {}} 2 {} {@m.mzz} {id = | gm = | gds =}]
+catch {xschem raw clear}
+
+# --- DX4: THE END-TO-END DESCENDED NETLIST -----------------------------------
+# ⚠ DRIVEN AT `with_design_current` + `netlist_in_place`, WHICH IS EXACTLY WHAT
+# ase::netlist's ARM (c) IS -- DX6 reads that off the product's own body so the
+# composition here cannot drift from it. Not through ase::netlist itself,
+# because that arm is chosen on `[info exists ::has_x]` and a headless suite
+# that FAKES ::has_x to reach it breaks the netlister it is trying to run:
+# set_sim_defaults asks `winfo exists .sim` (src/xschem.tcl) the moment ::has_x
+# is set, a --nogui process has no winfo at all, and sim_is_xyce -> the `netlist`
+# Tcl proc -> `ase: netlist not produced` (MEASURED, 2026-09-08). DX7 runs the
+# real dispatch in whichever arm can honestly reach it.
+set dxst [ase::state_default]
+dict set dxst design {lib aselib cell dx_top view schematic}
+set dxst_top  [dict replace $dxst rundir [file join $scratch dxnl_top]]
+set dxst_trip [dict replace $dxst rundir [file join $scratch dxnl_trip]]
+set dxst_full [dict replace $dxst rundir [file join $scratch dxnl_full]]
+xschem load $dxtop
+set dx4rc0 [catch {ase::netlist $dxst_top} dxnl_top]
+dx_descend
+set dx4rc [catch {ase::with_design_current $dxtop \
+             [list ase::netlist_in_place $dxst_trip dx_top]} dxnl_trip]
+check "DX4 the end-to-end DESCENDED netlist is BYTE-IDENTICAL to one taken at\
+ the top, and the person comes back to the same level, the same sheet and the\
+ same sch_path" \
+  [list $dx4rc0 $dx4rc [dx_same $dxnl_top $dxnl_trip] \
+        [file tail $dxnl_trip] [xschem get currsch] [xschem get sch_path] \
+        [file tail [xschem get schname]]] \
+  [list 0 0 1 dx_top.spice 2 .x1.x1. dx_leaf.sch]
+note "DX4 netlist bytes, top vs descended" \
+  [list [file size $dxnl_top] [file size $dxnl_trip]]
+
+# --- DX5: what a person standing there gets WITHOUT the round trip -----------
+# global_spice_netlist() netlists xctx->sch[xctx->currsch] -- the level you are
+# STANDING ON (src/spice_netlist.c). This row is the reason the shipped guard
+# existed and the reason items A/B replaced it rather than deleting it: the deck
+# taken two levels down is the LEAF, with no source, no testbench net and no
+# design subckt in it, and it looks perfectly healthy.
+dx_descend
+set dxbare [file join $scratch dxnl_bare dx_top.spice]
+file mkdir [file dirname $dxbare]
+xschem netlist -noalert $dxbare
+check "DX5 ...and it is not free: the netlist a person gets WITHOUT the round\
+ trip is the LEAF ALONE -- different bytes, no design subckt, no testbench net,\
+ no source. This is what the shipped guard existed to prevent" \
+  [list [dx_same $dxnl_top $dxbare] [dx_grep $dxbare {dx_leaf}] \
+        [dx_grep $dxbare {dx_mid}] [dx_grep $dxbare {TNET}] \
+        [dx_grep $dxbare {V1}] [dx_grep $dxnl_top {TNET}] \
+        [dx_grep $dxnl_top {V1}]] \
+  [list 0 1 0 0 0 1 1]
+note "DX5 netlist bytes, top vs bare-at-depth" \
+  [list [file size $dxnl_top] [file size $dxbare]]
+
+# --- DX6: arm (c) IS that composition ----------------------------------------
+# DX4 composes two procs by hand; this row is what keeps that composition
+# honest. If someone re-spells arm (c) -- a different helper, a different order,
+# a save/restore instead of the trip -- DX4 would keep passing about code the
+# product no longer runs, and this row is the one that goes red.
+set dx6b [rg_body ase::netlist]
+check "DX6 ase::netlist's arm (c) IS the composition DX4 drives: one line that\
+ hands ase::netlist_in_place to ase::with_design_current, guarded by\
+ ase::stack_level" \
+  [list [rg_has $dx6b {ase::with_design_current}] \
+        [rg_has $dx6b {ase::netlist_in_place $state $cell}] \
+        [rg_has $dx6b {ase::stack_level $path}] \
+        [rg_has $dx6b {is not the current schematic}]] \
+  {1 1 1 0}
+
+# --- DX7: the real ase::netlist, from two levels down ------------------------
+# ⚠ ONE ROW, TWO PREMISES, BY DESIGN -- and they are the product's own two
+# contracts, not a convenience. ase::netlist's header says arm (b) comes BEFORE
+# arm (c) deliberately: headless there is no window to clobber and no person to
+# put back, so a script gets `xschem load` and a person in a GUI window gets the
+# round trip. So the SAME call from the SAME place is asserted against the arm
+# that is real in the arm of the suite that is running -- and the netlist is
+# byte-identical to the top's either way, which is the half both contracts share.
+dx_descend
+set dx7gui [info exists ::has_x]
+set dx7rc [catch {ase::netlist $dxst_full} dx7nl]
+set dx7cmp -1
+if {!$dx7rc} { set dx7cmp [dx_same $dxnl_top $dx7nl] }
+if {$dx7gui} {
+  check "DX7 the real ase::netlist called two levels down (a display: arm (c),\
+ the round trip) produces the design's deck byte-for-byte and leaves the person\
+ where they were standing" \
+    [list $dx7rc $dx7cmp [xschem get currsch] [xschem get sch_path] \
+          [file tail [xschem get schname]]] \
+    [list 0 1 2 .x1.x1. dx_leaf.sch]
+} else {
+  check "DX7 the real ase::netlist called two levels down (--nogui: arm (b),\
+ the self-load, UNCHANGED behaviour) produces the design's deck byte-for-byte\
+ from the top of the file" \
+    [list $dx7rc $dx7cmp [xschem get currsch] [xschem get sch_path] \
+          [file tail [xschem get schname]]] \
+    [list 0 1 0 . dx_top.sch]
+}
+note "DX7 arm taken (1 = a display, arm (c); 0 = --nogui, arm (b))" $dx7gui
+
+catch {xschem raw clear}
+xschem load $dxtop
 
 } bigerr]} {
   puts "UNEXPECTED ERROR: $bigerr"
