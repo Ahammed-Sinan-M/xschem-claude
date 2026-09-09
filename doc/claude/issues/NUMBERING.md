@@ -2696,4 +2696,127 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   since issue 1380** and **PK7b**, the row that defect minted. Rule debt **1388** (which
   scope a Save writes into), one look debt (the two-axis header).
 
-**The next free number is 1389.**
+- **1389** — **ASE-L would start a second simulation on top of the first.** The
+  user's 14:07 bench run annotated blank and printed zilch in RDW; the cause was
+  not the annotator but a **double launch**. `/tmp/Xschem.log.1` carries two
+  `xschem netlist` lines and two `This run is starting the simulator…` lines
+  before either `simulation finished`, because both `Simulation > Netlist and
+  Run` and the `N&>` strip button are plain Tk button commands and **nothing
+  anywhere checked whether a run was in flight**. The deck says `set appendwrite`
+  (issue 0929), so run 2 appended its Operating Point plot to the raw run 1 had
+  not finished writing — `xschem raw points` 2, `xschem annotate_op` 423 vectors
+  and every row blank, against **8248 vectors / 212 devices** from the identical
+  deck with one dataset. FIXED: one predicate, `ase::run_in_flight`, keyed on the
+  **results file** (not the session, not the widget — two ASE-L sessions on one
+  cellview and a `Netlist and Run` racing a `Run` are the same hazard as a
+  double-click), with three consumers: `ase::run_deck`'s gate (the authority,
+  covering both buttons, `ase::run`, `run_existing`, a CIW paste and any script),
+  the two ASE-L doors, and `do_stop`'s fallback. The gate sits at the **top** of
+  `run_deck`, not "just before `eval execute`" as the plan asked: between those
+  two points `run_deck` deletes the raw and rewrites the deck, so a late refusal
+  would destroy the live run's results file — issue 0929's own symptom,
+  manufactured by the fix for it. Lock set after the `-1` check, cleared in
+  `run_done` from `meta`'s `rawlock`, and self-healing when `::execute(pipe,$id)`
+  is gone. ⚠ **Three defects were found by the adversary pass and fixed by the
+  integrator, and each had shipped green.** (1) *The CIW was FOCUSED, not merely
+  raised* — the user's own emphasised requirement. `raise_toplevel`'s mapped arm
+  is `wm withdraw` + `wm deiconify` and **a re-map is an activation**, so it and
+  `raise_activate_toplevel` are indistinguishable in the property that matters,
+  and the row that spied which one was called could not see it. Measured on all
+  three X servers here: a plain `raise` rises **without** the keyboard on
+  `:99`/openbox and is issue 0054's **no-op** on `:0`/Xwayland *and on the user's
+  own screen* (`172.20.160.1:0`, the Windows X server, `_NET_SUPPORTING_WM_CHECK`
+  **not found** — no EWMH WM at all). Shipped: plain raise, verify against the
+  toplevel holding the keyboard, re-map only if it did nothing. A focus restore
+  and a `-topmost` pulse were both tried and both rejected on the measurement.
+  (2) *The refusal named a remedy that was a no-op* — `do_stop` was keyed on the
+  session's `run_id` attr, so the refused session, a CIW/script run, and any
+  session closed and reopened mid-run all answered *"no simulation running for
+  this session"* over a live run: the user could neither run nor stop. `do_stop`
+  now falls back to the lock, through the same predicate. (3) *The residual race
+  §8 called unreached is reached by the originating gesture* — `do_run` calls
+  `update` in its design-window routing arm, so a second press dispatched there
+  launched while the outer press was refused **as a failure**: status `running` →
+  `fail`, a red *Error* over a healthy run, and the same sentence in the CIW
+  twice, once `note` and once `error`. Both doors now route a raise out of
+  `ase::run` through `ase::ui::run_raised`, which recognises the refusal by its
+  own minted sentence. Section **RG** of `test_ase_core.tcl`, 184 → **203** in
+  both arms (the arms are equal by coincidence — NT14 skips under X, RG6's
+  behavioural leg skips headless), ten neutralisations across four passes. The
+  refusal reads issue 1391's `ase::ui::menu_path_stop` and never retypes it (RG5
+  fences the absence of a copy; grep confirms the only two literals in `src/` are
+  both comments). Rule debt **1389** (the `note`-not-`error` tag and the wording),
+  look debt **1389** (on the user's own WM-less screen the CIW can only be raised
+  by a re-map, so the emphasised half is **not** delivered there), suite debt
+  `test_ase_core` (one `:0` run).
+
+- **1390** — **the dump coverage check could never pass under `preserve`.** On
+  the same 14:07 bench run, a red `#!` line said *"only **0 of the 78** devices
+  your schematic asks about are in it, so the rest of the rows will be blank"* on
+  a run whose annotation was perfect — and it fired on **every** run of that
+  bench. `ase::op_report_missing_dump` built its `have` set from the dump's block
+  headers **verbatim** and compared against `devs`, which `op_annot::devpath`
+  lowercases unconditionally; the user's `ngspice-ver50` is registered `-casemode
+  preserve`, so `show all` writes `M.x1.x23.XM2.M…` and the comparison could
+  never match. Reproduced one device, one file, spelling the only difference:
+  lowercase → silence, preserve-cased → `op_dump_partial`. The VALUES were always
+  fine — `save.c:4175 raw_lookup_name`'s fold rung resolves the lowercase query
+  against the stored mixed-case name, measured `1.37276e-12` either way — so this
+  was purely a diagnostic that lied. FIXED by running the C ladder's own shape in
+  Tcl: exact spelling first (an all-lowercase dump still answers on rung 1,
+  unchanged), then the case-folded alias, with two headers differing only in case
+  **declining** exactly as `raw_build_fold_table` stores −1 (DECISIONS.md D2). The
+  ratified sentence is untouched. Rows **Y6–Y10** of `test_op_dump_altshow.tcl`,
+  65 → **70**, paired lowercase/preserve twins required byte-identical; Y6 reds on
+  the shipped exact-only compare, Y10 on a naive fold with no D2 decline. Rule
+  debt **1390**: the fold is **unconditional** and does not consult the run's case
+  mode — `devs` carries no case, so an exact compare under `distinguish` is
+  today's defect unmoved, and gating on the *requested* mode would be the wrong
+  gate because `Raw.case_sensitive` is a property of the READ.
+
+- **1391** — **eight glyphs on the action strip and not a word between them.**
+  `OP,TR = --> X N&> > ! ~`, and no tooltip anywhere in `ase_window.tcl`. FIXED:
+  all eight carry a balloon tip, plus the temperature entry — but the
+  load-bearing half is the **mint**. Eleven `ase::ui::lbl_*` constants and five
+  `>`-separated menu-path composers now live in the same label section as
+  `lbl_outputs`/`lbl_save_all`, and **the menubar is built from them**, so the tip
+  and the menu entry are one string and cannot drift (the 0661 shape: a printed
+  `Outputs > Save All` beside a menu reading `Outputs > Save All… > …`, string
+  match 0). ⚠ **FIVE** strip buttons have a menubar twin, not the three the brief
+  listed nor the four the first draft's comments claimed in eight places across
+  three files — `OP,TR` is `Analyses > Choose…`. The count was corrected
+  everywhere against a walk of the shipped `ase::ui::strip_tips` table (5 menu
+  paths, 3 bare action names), and the issue now records what the mint does
+  **not** yet reach: all three bare-named actions also sit on a per-pane CONTEXT
+  menu spelled differently (`Add…`, `Delete`), which is not built from these
+  constants. One measured cost: `balloon` does a plain bind on `<FocusOut>` and
+  `$top.tb.temp` already carried `ase::ui::temp_commit` there — arming the tip
+  second **deleted the commit outright**, so a typed temperature clicked away from
+  never reached the deck; the builder arms the balloon first and the commit
+  appends with `+`, and row **W1s3** reads the composed script back and reds if
+  either half goes. Rows **W1s1–W1s6** of `test_ase_window.tcl`, 229 → **245**,
+  every one read off the LIVE widget and compared to the constant **and** a
+  literal golden. Item 1389's refusal consumes `ase::ui::menu_path_stop` from
+  here. Rule debt **1391** (nine unratified tooltip strings and the deliberate
+  mixed form), look debt **1391** (a tip is pixels; `balloon_show` returns early
+  unless the pointer is physically over the widget, so every row asserts the
+  `<Enter>` binding and no headless row can prove one appeared).
+
+- **1392** — **the blank-row diagnosis named a box that was already ticked.**
+  `cadence::_annot_cause` classified the user's bench `noparams` and told them to
+  *"Run the simulation again with device parameter saving turned on"* — which was
+  already on. That is what sent them to `Outputs > Save All…`, visible in their
+  action log at line 64, hunting a tick that was already there. The honest fourth
+  cause is *"the results file holds more than one operating point, so the device
+  numbers were not merged"*. Mechanism measured: on a 2-plot raw with a fresh
+  sidecar beside it, `_annot_devparams_present` answers 0 (savecurrents' `i(@…)`
+  is skipped on purpose), so the tail arm fires. **FILED, NOT FIXED, and
+  deliberately**: issue 1389 closes the only measured route in, so building the
+  fourth cause now would add a branch nobody can reach. ⚠ The adversary pass
+  recorded the consequence honestly: on that exact shape the shipped code printed
+  a wrong line and, after 1390, prints **nothing at all** —
+  `op_annot::opdump_autofill` refuses in silence on its `raw points != 1` gate.
+  1389's lock is a per-process dict, so two xschem processes on one cell still
+  reach it. §6 of the issue says what would turn the judgement over.
+
+**The next free number is 1393.**

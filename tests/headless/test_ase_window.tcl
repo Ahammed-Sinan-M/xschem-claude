@@ -22,7 +22,10 @@
 #          control the user's 2026-08-24 ruling moved OUT of the schematic's
 #          View menu; tests/headless/test_annot_show_menu.tcl keeps only the
 #          deletion half;
-#          W1s the action strip; W1r/W1u/W1t (issue 0650, R-0653-d req 2)
+#          W1s the action strip, W1s1-W1s6 (issue 1391) its EIGHT tooltips
+#          read back off the live <Enter> bindings plus the menubar twins
+#          they are built from and the `Simulation > Stop` path issue 1389
+#          prints; W1r/W1u/W1t (issue 0650, R-0653-d req 2)
 #          the OP-card remedy's menu path asserted against the LIVE
 #          Outputs entry and the LIVE Save All checkbutton, never
 #          against prose; W1c the per-pane context menus; re-open
@@ -1292,6 +1295,166 @@ if {[info exists ::has_x] && [info commands winfo] ne {}} {
   check "W1s strip buttons in order" $slbls {OP,TR = --> X N&> > ! ~}
   check "W1s plot button normal (item 13: ~ live)" \
     [$top.strip.plot cget -state] normal
+
+  # ==========================================================================
+  # W1s1-W1s6 -- ISSUE 1391: EVERY STRIP BUTTON SAYS WHAT IT DOES, AND SAYS IT
+  #              IN THE MENU'S OWN WORDS
+  # ==========================================================================
+  # Eight glyphs, no words: `OP,TR = --> X N&> > ! ~`. FIVE of them have a
+  # menubar twin (the brief said three; `OP,TR` -> `Analyses > Choose…` is the
+  # fifth), so the tip is BUILT from the twin's label rather than typed --
+  # the 0661 drift (a printed `Outputs > Save All` beside a menu reading
+  # `Outputs > Save All… > Save device OP parameters (gm, gds, vth, ...)`,
+  # `string match` 0 against both) is exactly what a hand-typed tip rebuilds.
+  #
+  # ⚠ THE TIP IS READ BACK OFF THE LIVE WIDGET, never off the constant alone.
+  # `balloon` (xschem.tcl:14826) bakes the string into <Enter> at attach time,
+  # so the binding IS the shipped tip; each row below asserts
+  # [live-binding, constant] == [golden, golden]. That is the W1t discipline:
+  # a constant compared to a constant is a tautology and would pass against a
+  # window that arms no tip at all.
+  proc w_tip {w} {
+    if {[catch {winfo exists $w} e] || !$e} { return NO-WIDGET }
+    if {[catch {bind $w <Enter>} scr]} { return NO-BINDING }
+    if {[catch {lsearch -exact $scr balloon_show} i]} { return UNPARSEABLE }
+    if {$i < 0} { return NO-TIP }
+    if {[catch {lindex [lindex $scr [expr {$i + 2}]] 0} t]} { return UNPARSEABLE }
+    return $t
+  }
+
+  # W1s1: one row per button, in strip order. The `chk` column is the constant
+  # the builder used; the golden is the string the user reads.
+  foreach {sfx glyph cexpr golden} [list \
+      ana    {OP,TR} {ase::ui::menu_path_choose_analyses} {Analyses > Choose…} \
+      var    {=}     {ase::ui::lbl_add_variable}          {Add Variable} \
+      out    {-->}   {ase::ui::lbl_add_output}            {Add Output} \
+      del    {X}     {ase::ui::lbl_delete_selection}      {Delete Selection} \
+      netrun {N&>}   {ase::ui::menu_path_netlist_and_run} {Simulation > Netlist and Run} \
+      run    {>}     {ase::ui::menu_path_run}             {Simulation > Run} \
+      stop   {!}     {ase::ui::menu_path_stop}            {Simulation > Stop} \
+      plot   {~}     {ase::ui::menu_path_waveform_viewer} {Tools > Waveform Viewer}] {
+    check "W1s1 1391 strip `$glyph` ($sfx) tip is on the LIVE widget and is the\
+ shared constant" \
+      [list [w_tip $top.strip.$sfx] [w_cx $cexpr]] [list $golden $golden]
+  }
+
+  # W1s2: the gap guard. A button with no tip is a RED ROW, not a gap -- a
+  # ninth button packed on the strip without a `ase::ui::strip_tips` entry
+  # lands here and not in a later crew's blind spot.
+  set w1s_notip {}
+  foreach b [winfo children $top.strip] {
+    if {[w_tip $b] in {NO-TIP NO-BINDING NO-WIDGET UNPARSEABLE}} {
+      lappend w1s_notip [winfo name $b]
+    }
+  }
+  check "W1s2 1391 EVERY child of the action strip carries a tip" $w1s_notip {}
+  # ⚠ AND THE TABLE COVERS THE STRIP, BOTH WAYS. `strip_tips` naming a button
+  # that no longer exists is as wrong as a button the table forgot, and the
+  # loop in `open` would silently `catch` the first away.
+  set w1s_kids {}
+  foreach b [winfo children $top.strip] { lappend w1s_kids [winfo name $b] }
+  set w1s_keys {}
+  foreach {k v} [w_cx {ase::ui::strip_tips}] { lappend w1s_keys $k }
+  check "W1s2b 1391 strip_tips keys == the packed buttons, in strip order" \
+    [list $w1s_keys $w1s_kids] \
+    [list {ana var out del netrun run stop plot} \
+          {ana var out del netrun run stop plot}]
+
+  # W1s3: the temperature entry. It is the one widget in the window with no
+  # word of its own, so it gets a tip -- and arming one there COSTS something,
+  # because `balloon` does a plain `bind` on <FocusOut> and that slot already
+  # carries `ase::ui::temp_commit`. MEASURED on :99 before the change: arming
+  # the tip second replaced the commit outright. So the builder arms first and
+  # appends the commit, and this row asserts the composed script still holds
+  # BOTH halves. It reds if either the tip or the commit-on-focus-out is lost.
+  set w1s_fo {}
+  catch {set w1s_fo [bind $top.tb.temp <FocusOut>]}
+  check "W1s3 1391 temperature entry tip, and the FocusOut commit SURVIVED it" \
+    [list [w_tip $top.tb.temp] [w_cx {ase::ui::lbl_sim_temperature}] \
+          [expr {[string first {balloon_show} $w1s_fo] >= 0}] \
+          [expr {[string first {ase::ui::temp_commit} $w1s_fo] >= 0}]] \
+    [list {Simulation temperature} {Simulation temperature} 1 1]
+
+  # W1s4: the five menubar twins are BUILT from the constants. Same W1t shape
+  # as W1r/W1u above -- live `entrycget -label`, the constant, and the golden.
+  proc w_mlabel {m cmd} {
+    if {![winfo exists $m]} { return NO-MENU }
+    for {set i 0} {$i <= [$m index end]} {incr i} {
+      if {[$m type $i] eq {separator}} { continue }
+      if {[catch {$m entrycget $i -command} c]} { continue }
+      if {$c eq $cmd} { return [$m entrycget $i -label] }
+    }
+    return NO-ENTRY
+  }
+  proc w_mcascade {mb sub} {
+    for {set i 0} {$i <= [$mb index end]} {incr i} {
+      if {[$mb type $i] eq {separator}} { continue }
+      if {[catch {$mb entrycget $i -menu} m]} { continue }
+      if {$m eq $sub} { return [$mb entrycget $i -label] }
+    }
+    return NO-CASCADE
+  }
+  check "W1s4 1391 Analyses > Choose… is built from the constants the OP,TR tip\
+ reads" \
+    [list [w_mcascade $top.mb $top.mb.analyses] \
+          [w_mlabel $top.mb.analyses [list ase::ui::choose_analyses $key]] \
+          [w_cx {ase::ui::lbl_analyses}] [w_cx {ase::ui::lbl_choose}]] \
+    [list Analyses "Choose…" Analyses "Choose…"]
+  check "W1s4b 1391 the three Simulation run/stop entries are built from the\
+ constants the N&> / > / ! tips read" \
+    [list [w_mcascade $top.mb $top.mb.sim] \
+          [w_mlabel $top.mb.sim [list ase::ui::do_run $key]] \
+          [w_mlabel $top.mb.sim [list ase::ui::do_run_existing $key]] \
+          [w_mlabel $top.mb.sim [list ase::ui::do_stop $key]] \
+          [w_cx {ase::ui::lbl_simulation}] [w_cx {ase::ui::lbl_netlist_and_run}] \
+          [w_cx {ase::ui::lbl_run}] [w_cx {ase::ui::lbl_stop}]] \
+    [list Simulation {Netlist and Run} Run Stop \
+          Simulation {Netlist and Run} Run Stop]
+  check "W1s4c 1391 Tools > Waveform Viewer is built from the constants the ~\
+ tip reads" \
+    [list [w_mcascade $top.mb $top.mb.tools] \
+          [w_mlabel $top.mb.tools [list ase::ui::open_viewer $key]] \
+          [w_cx {ase::ui::lbl_tools}] [w_cx {ase::ui::lbl_waveform_viewer}]] \
+    [list Tools {Waveform Viewer} Tools {Waveform Viewer}]
+
+  # W1s5: THE STRING ISSUE 1389 PRINTS. Its refusal of a second launch names
+  # the way out, and the way out is the Stop entry the user can see. This row
+  # composes the expectation from the two LIVE widget labels, so a rename of
+  # either moves the refusal or reds here -- it cannot leave the refusal
+  # pointing at a menu path that is no longer on screen.
+  set w1s5_seg {}
+  foreach seg [split [w_cx {ase::ui::menu_path_stop}] >] {
+    lappend w1s5_seg [string trim $seg]
+  }
+  check "W1s5 1391/1389 menu_path_stop is exactly the two LIVE labels, in order" \
+    [list [llength $w1s5_seg] [lindex $w1s5_seg 0] [lindex $w1s5_seg 1]] \
+    [list 2 [w_mcascade $top.mb $top.mb.sim] \
+            [w_mlabel $top.mb.sim [list ase::ui::do_stop $key]]]
+
+  # W1s6: the two twinless dialogs. `=` and `-->` have no menu entry to share a
+  # string with, so they share it with the WINDOW the click produces instead --
+  # the tip names the title bar the user is about to read. Opened and torn down
+  # here the way W1u does with the Save All dialog.
+  set w1s6_var {}
+  set w1s6_out {}
+  catch {
+    set dw [ase::ui::add_variable_dialog $key]
+    update idletasks
+    set w1s6_var [wm title $dw]
+    destroy $dw
+  }
+  catch {
+    set dw [ase::ui::output_editor $key -1]
+    update idletasks
+    set w1s6_out [wm title $dw]
+    catch {ase::ui::output_editor_cancel $key}
+    catch {destroy $dw}
+  }
+  update idletasks
+  check "W1s6 1391 the `=` and `-->` tips are the LIVE dialog titles they open" \
+    [list $w1s6_var [w_cx {ase::ui::lbl_add_variable}] \
+          $w1s6_out [w_cx {ase::ui::lbl_add_output}]] \
+    [list {Add Variable} {Add Variable} {Add Output} {Add Output}]
 
   # W1c: per-pane context menus = exactly Add.../Edit.../Delete (entrycget,
   # never posted)

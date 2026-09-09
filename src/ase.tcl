@@ -5647,19 +5647,100 @@ proc ase::op_report_missing {state meta exitcode} {
 #
 # A dump that covers them is SILENCE, deliberately: a run that worked must not
 # be told it failed, which is the defect issue 0975 was closed on.
+#
+# ⚠ THE COMPARISON FOLDS CASE, AND THAT IS ISSUE 1390. Its two sides are
+# spelled by different authorities and only one of them keeps case:
+# `op_annot::devpath` lowercases EVERY path out (op_annot::_lower, ~:584, and
+# its comment says why), while the dump's block headers carry whatever the RUN
+# wrote. The user's own ngspice-ver50 is registered `-casemode preserve`, so
+# `show all` writes `M.x1.x23.XM2.Msky130_fd_pr__pfet_01v8`, and the exact-case
+# compare this proc shipped with matched NOTHING. Measured 2026-09-08, one
+# device, same everything but the spelling:
+#
+#     lowercase dump -> verdict = (silence)
+#     preserve  dump -> verdict = op_dump_partial
+#
+# So under `preserve` the check could never pass, and it printed "only 0 of the
+# 78 devices your schematic asks about are in it" as a red #! line on the
+# user's 14:07 bench run, whose annotation was perfect.
+#
+# ⚠ THE NUMBERS WERE NEVER IN DOUBT, which is what makes this a diagnostic that
+# lies rather than a defect in the data. Measured the same day: merge a
+# `preserve`-cased dump, then ask for it in the schematic's lowercase spelling
+# -- `1.37276e-12`, resolved by rung 2 of save.c's one lookup ladder
+# (raw_lookup_name, ~:4175: exact spelling first, then the case-folded alias).
+#
+# RULING -- IT FOLDS UNCONDITIONALLY AND DOES NOT CONSULT THE RUN'S CASE MODE.
+# `distinguish` is the one mode where a fold is not free (raw_case_mode_parse,
+# save.c:2731, maps `preserve` to 0 and ONLY `distinguish` to 1), so this is
+# stated rather than assumed. Four reasons, in the order that decided it:
+#
+#   1. ONE SIDE CARRIES NO CASE AT ALL. `devs` is lowercase by construction, so
+#      there is no case-sensitive comparison here to be right or wrong about:
+#      an exact compare under `distinguish` is false on every device, which is
+#      today's defect unmoved rather than `distinguish` honoured.
+#   2. THE RUN'S REQUESTED MODE IS THE WRONG GATE, and gating on it would be a
+#      NEW false alarm one mode over. What suppresses the C fold rung is
+#      Raw.case_sensitive (raw_fold_index, save.c:4161), a property of the
+#      READ -- not of the mode the simulator was asked for. A `-casemode
+#      distinguish` run writes a mixed-case dump into a database that still
+#      folds, so its rows annotate exactly as `preserve`'s do.
+#   3. Raw.case_sensitive IS the honest gate and cannot be asked from here.
+#      This proc runs from ase::run_done, before this run's raw is attached,
+#      and the database that happens to be loaded describes ANOTHER run --
+#      steering by it is what netlist_case_mode's comment (save.c:3516)
+#      forbids in as many words. Nor is it reachable in practice: `grep -n
+#      'raw read .*-case\|raw case 1' src/*.tcl` still finds no caller
+#      (wave_viewer.tcl:3108's standing note, re-measured 2026-09-08 --
+#      `xschem raw case` answers 0 after the ordinary read), so the fold rung
+#      is live on every road a user can click and folding predicts the lookup
+#      that will actually run. Measured both ways on this tree: with
+#      case_sensitive 0 the lowercase query answers `1.37276e-12`; forced to 1
+#      it goes blank with the column still present.
+#   4. DIRECTION OF THE ERROR. This proc emits a WARNING, so folding can only
+#      make it quieter, and the only thing it quietens is a database a script
+#      deliberately made case-sensitive -- where op_annot's own blank rows are
+#      the evidence anyway. Not folding costs a red line on EVERY good run.
+#
+# ⚠ TWO DUMP NAMES DIFFERING ONLY IN CASE DECLINE, and that is save.c's policy
+# rather than a second one. raw_build_fold_table (~:4111) stores -1 for exactly
+# this and the fuzzy rung then refuses rather than guess (DECISIONS.md D2);
+# this table poisons the folded key and the device counts as missing. Two
+# BYTE-IDENTICAL headers are not a collision there and cannot arise here at
+# all -- op_annot::opdump_devices de-duplicates its own headers.
+#
+# The ladder keeps the C one's shape and stays O(names + devs): the exact
+# spelling first, so an all-lowercase dump answers on rung 1 and is byte for
+# byte what it always was, then the folded alias.
 proc ase::op_report_missing_dump {sim path raw devs} {
   set dump [::op_annot::opdump_path $raw]
   if {![file isfile $dump] || [file size $dump] == 0} {
     ase::sim_say op_dump_missing $sim $path $dump error
     return op_dump_missing
   }
-  set have [dict create]
   set names {}
   if {[catch {set names [::op_annot::opdump_devices $dump]}]} { set names {} }
-  foreach d $names { dict set have "@$d" 1 }
+  set have [dict create]
+  set fold [dict create]
+  foreach d $names {
+    set nm "@$d"
+    dict set have $nm 1
+    set k [string tolower $nm]
+    ## {} is the D2 poison marker and can never collide with a real name: a
+    ## block header is non-empty by opdump_devices' own regexp, so the shortest
+    ## entry this loop can store is `@x`.
+    if {[dict exists $fold $k] && [dict get $fold $k] ne $nm} {
+      dict set fold $k {}
+    } else {
+      dict set fold $k $nm
+    }
+  }
   set miss {}
   foreach d $devs {
-    if {![dict exists $have $d]} { lappend miss $d }
+    if {[dict exists $have $d]} { continue }
+    set k [string tolower $d]
+    if {[dict exists $fold $k] && [dict get $fold $k] ne {}} { continue }
+    lappend miss $d
   }
   if {![llength $miss]} { return {} }
   ase::sim_say op_dump_partial $sim $path \
@@ -5905,6 +5986,200 @@ proc ase::netlist {state} {
 
 # --- Run --------------------------------------------------------------------
 
+# --- 1389: ONE RUN AT A TIME, PER RESULTS FILE -------------------------------
+# The user's words, 2026-09-08: "update ASE-L to not be able to launch new sim
+# while one is already running (issue refusal text in CIW, which will be raised
+# (but not focused!))".
+#
+# WHAT IT COST, MEASURED ON THEIR OWN BENCH THAT MORNING. `Netlist and Run` was
+# pressed twice: /tmp/Xschem.log.1 carries two `xschem netlist` lines and two
+# `This run is starting the simulator...` lines BEFORE either `simulation
+# finished`. Because the deck says `set appendwrite` (issue 0929), run 2
+# APPENDED its Operating Point plot to the raw run 1 had not finished writing,
+# and the pre-run `file delete` below only protects SEQUENTIAL runs -- run 2
+# deleted a file run 1 had not written yet. The result was a raw with two
+# datasets, `xschem raw points` = 2, and op_annot::opdump_autofill correctly
+# refusing to merge -- 423 vectors and every annotated row blank, against 8248
+# vectors and 212 devices from the identical deck with one dataset.
+#
+# ⚠ THE KEY IS THE RAW PATH, not the session key and not the button. The
+# resource that must not have two writers is the RESULTS FILE. A key on the
+# widget catches a double-click and misses both of the other two shapes of the
+# same hazard: two ASE-L sessions open on one cell, and `Netlist and Run`
+# racing `Run`. The resolver is the backend's own `raw_file` hook -- the same
+# one ase::run_deck deletes through at :6014 -- so the lock and the deletion
+# can never disagree about which file this run owns.
+#
+# ⚠ A STALE LOCK SELF-HEALS, and that is not a nicety. `::execute(pipe,$id)`
+# is unset by execute_fileevent at EOF (src/xschem.tcl:317), so its absence
+# means the run is over HOWEVER it ended -- finished, killed by
+# `Simulation > Stop`, or died with ase::run_done never firing. Without this
+# arm a single crashed completion would brick Run for the rest of the session,
+# which is a worse defect than the one being fixed.
+namespace eval ase {
+  # raw path -> the execute id that is writing it. Never more than one entry
+  # per file, by construction: the only writer is ase::run_deck, after a
+  # successful launch.
+  variable runlocks [dict create]
+}
+
+# The lock key for a run of `state`: the absolute results-file path, or {} when
+# it cannot be worked out (no simulator, a backend whose raw_file hook raises,
+# a state with no design cell). {} is NOT a lock -- a launch that cannot say
+# which file it will write cannot be refused for writing one, and every such
+# state fails a few lines later for a better-named reason.
+proc ase::run_lock_key {state} {
+  set sim [ase::state_get $state simulator]
+  if {$sim eq {}} { return {} }
+  if {[catch {[ase::backend_hook $sim raw_file] $state} raw]} { return {} }
+  if {[string trim $raw] eq {}} { return {} }
+  return [file normalize $raw]
+}
+
+# THE PREDICATE. The execute id still writing `key`, or {} for "nothing in
+# flight" -- and a lock whose process is gone is DROPPED here rather than
+# merely reported false, so the table cannot accumulate the dead.
+proc ase::run_in_flight {key} {
+  variable runlocks
+  if {$key eq {} || ![dict exists $runlocks $key]} { return {} }
+  set id [dict get $runlocks $key]
+  if {[info exists ::execute(pipe,$id)]} { return $id }
+  dict unset runlocks $key
+  return {}
+}
+
+# Claim `key` for run `id`. Called ONLY after `execute` returned a real id: a
+# launch that did not launch must not leave a lock behind.
+proc ase::run_lock_set {key id} {
+  variable runlocks
+  if {$key eq {}} { return {} }
+  dict set runlocks $key $id
+  return $key
+}
+
+# Release `key`. Returns 1 if there was something to release. Idempotent, and
+# {} is a no-op, so ase::run_done's three-argument shape (no metadata --
+# tests/headless/test_ase_cosim.tcl calls it that way at six sites) clears
+# nothing rather than raising.
+proc ase::run_lock_clear {key} {
+  variable runlocks
+  if {$key eq {} || ![dict exists $runlocks $key]} { return 0 }
+  dict unset runlocks $key
+  return 1
+}
+
+# WHAT A REFUSED SECOND LAUNCH SAYS, minted once so the two consumers of the
+# predicate (ase::run_deck's gate and the two ASE-L doors) cannot say two
+# different things about one refusal.
+#
+# ⚠ THE WAY OUT IS READ, NEVER RETYPED. `ase::ui::menu_path_stop` is issue
+# 1391's mint (src/ase_window.tcl) and the Simulation menu is BUILT from it, so
+# renaming the entry moves this sentence with it. A literal `Simulation > Stop`
+# here would be the drift that mint exists to prevent -- measured once already
+# in this tree as `Outputs > Save All` vs `Outputs > Save All...` (issue 0661).
+# Guarded rather than given a fallback string, because a fallback IS the second
+# literal; a tree without the constant loses the remedy clause, not the notice.
+proc ase::run_busy_msg {key} {
+  set msg "ase: a simulation is already running for [file tail $key]"
+  if {[llength [info commands ::ase::ui::menu_path_stop]]} {
+    append msg "; stop it first ([::ase::ui::menu_path_stop])"
+  }
+  return $msg
+}
+
+# Bring the CIW to the front WITHOUT taking the keyboard, if this X server lets
+# us. Returns 1 if it was asked to rise.
+#
+# ⚠ THE OBVIOUS HELPER IS THE WRONG ONE, AND THIS WAS MEASURED THREE WAYS. The
+# plan for 1389 said to use `raise_toplevel` (src/xschem.tcl:7635) because its
+# sibling `raise_activate_toplevel` adds `xschem activate_window`, which IS the
+# focus. But raise_toplevel's mapped arm is `wm withdraw` + `wm deiconify`, and
+# a RE-MAP is an activation in its own right. Measured 2026-09-08 with a real
+# `.ciw` and a second toplevel holding the keyboard:
+#
+#   server                          plain `raise`      raise_toplevel
+#   :99 Xvfb + openbox 3.6.1        rises, NO focus    rises, TAKES focus
+#   :0  Xwayland (WSLg)             NO-OP              rises, TAKES focus
+#   the user's own screen           NO-OP              rises, TAKES focus
+#     (172.20.160.1:0, Windows X
+#      server, _NET_SUPPORTING_WM_CHECK
+#      not found -- no EWMH WM)
+#
+# So neither helper alone is right: raise_toplevel takes the keyboard the user
+# put their emphasis on ("raised (but not focused!)"), and the plain raise that
+# honours it is the measured no-op of issue 0054 (src/ciw.tcl:417) on two of
+# the three servers here.
+#
+# THE ORDER IS THEREFORE: plain raise, VERIFY it actually moved, and re-map only
+# when it did not. On a real window manager the user gets exactly what they
+# asked for. Where the server ignores a raise the CIW still comes forward and
+# the keyboard goes with it -- a platform limit, not a policy choice, and the
+# right way round because a refusal nobody sees is not a refusal.
+#
+# ⚠ AND NOT A FOCUS RESTORE ON THE FALLBACK PATH. `focus -force` back onto the
+# saved widget was tried, immediately and again at 250 ms: on :0 the compositor
+# re-focuses the freshly mapped window after both, so the line never helps and
+# can only yank the keyboard somewhere the user has since moved on from. A
+# `wm attributes -topmost` pulse was tried too -- it works on openbox and is
+# the same no-op on :0, and it drops the pane back down when cleared.
+#
+# ⚠ THE VERIFY COMPARES AGAINST THE TOPLEVEL THAT HOLDS THE KEYBOARD, not
+# against `wm stackorder`'s top. At refusal time that is the ASE-L window, i.e.
+# exactly the thing the CIW has to get in front of, and a transient dialog
+# legitimately above everything must not push us onto the focus-stealing arm.
+#
+# ⚠ EXISTENCE, NOT VISIBILITY, IS THE GUARD. A closed CIW is WITHDRAWN, not
+# destroyed (`wm protocol .ciw WM_DELETE_WINDOW {wm withdraw .ciw}`,
+# ciw.tcl:435), so xschem::notify_ciw_visible answers 0 for a pane that is
+# perfectly alive. Using that as the gate would drop the refusal into a widget
+# nobody can see -- the one case where the raise is the whole point. An
+# unmapped pane cannot be raised into view at all, so it takes the re-map arm
+# directly; `raise_toplevel`'s not-mapped branch deiconifies, which re-shows it.
+#
+# Everything is caught: a notice may never break the caller it is reporting to
+# (ase::echo's own rule, issue 0666), and this one is reporting a refusal.
+proc ase::run_ciw_raise {} {
+  if {![llength [info commands winfo]]} { return 0 }        ;# --nogui: no Tk
+  if {[catch {winfo exists .ciw} e] || !$e} { return 0 }     ;# --nolog: never created
+  ## who has the keyboard now -- the window the CIW must get in front of
+  set keeptop {}
+  if {![catch {focus} kw] && $kw ne {} && [winfo exists $kw]} {
+    set keeptop [winfo toplevel $kw]
+  }
+  set mapped 0
+  catch {set mapped [winfo ismapped .ciw]}
+  if {$mapped} {
+    catch {raise .ciw}
+    ## nothing to get in front of, or we are already it: the plain raise is all
+    ## this refusal is entitled to ask for.
+    if {$keeptop eq {} || $keeptop eq {.ciw}} { return 1 }
+    set above 0
+    catch {set above [wm stackorder .ciw isabove $keeptop]}
+    if {$above} { return 1 }
+  }
+  ## issue 0054's no-op, or a withdrawn pane. Re-map, and pay the focus.
+  if {![llength [info commands ::raise_toplevel]]} { return 0 }
+  if {[catch {::raise_toplevel .ciw}]} { return 0 }
+  return 1
+}
+
+# Say the refusal and put it in front of the user. Returns the message, so a
+# caller can raise with the very words the CIW got.
+#
+# ⚠ `note`, NOT `error`. Refusing is not the same as reporting a failure:
+# nothing has gone wrong, an earlier run is healthy and still writing, and an
+# `error` tag would paint the CIW red about a session that is fine. `note` is
+# ciw.tcl:452's own tag for "a result the user must NOTICE without it being an
+# error". The severity is user-visible copy the user has not ruled on -- see
+# doc/claude/issues/1389-*.md and the rule debt recorded with it.
+proc ase::run_refuse {key} {
+  set msg [ase::run_busy_msg $key]
+  catch {::ase::echo $msg note}
+  ase::run_ciw_raise
+  return $msg
+}
+
+
 # Netlist + run: regenerate the circuit netlist artifact, then hand off to
 # ase::run_deck (the shared post-netlist body). Every hook is resolved up
 # front so an unknown simulator errors before any netlisting / file I/O.
@@ -5962,6 +6237,28 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   set run_cmd     [ase::backend_hook $sim run_cmd]
   set log_file    [ase::backend_hook $sim log_file]
   ase::backend_hook $sim result_probe
+
+  ## 1389: IS SOMETHING ALREADY WRITING THIS RUN'S RESULTS FILE? This is the
+  ## authority, so every door is covered by one gate -- the two ASE-L buttons,
+  ## ase::run, ase::run_existing, a CIW paste and any script.
+  ##
+  ## ⚠ AT THE TOP, AND NOT "JUST BEFORE `eval execute`" AS THE PLAN ASKED FOR.
+  ## Between that line and this one run_deck DELETES THE RAW (:6014 below),
+  ## rewrites the deck and rewrites the log header. A refusal taken down there
+  ## would therefore destroy the live run's results file on its way out -- issue
+  ## 0929's symptom, manufactured by the fix written for it -- and would leave
+  ## the running simulator's deck rewritten underneath it. ase::run_precheck's
+  ## own header states the same rule for the same reason: everything above the
+  ## first `open` only READS, so a refusal from here leaves nothing behind.
+  ##
+  ## The refusal SAYS ITS PIECE FIRST (ase::run_refuse reaches the CIW and
+  ## raises that pane without focusing it), then raises with the very words the
+  ## user was shown, so a script caller's error text and the CIW line are one
+  ## string and not two.
+  set rawlock [ase::run_lock_key $state]
+  if {[ase::run_in_flight $rawlock] ne {}} {
+    return -code error [ase::run_refuse $rawlock]
+  }
 
   # casemode batch item 8 (B4): the pre-run gate, FIRST, before any artefact is
   # read, deleted, rebuilt or written. A refusal raises from here, so nothing
@@ -6207,10 +6504,15 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   ## that parameter for the metadata and two callbacks disagreeing about what
   ## argument four means is the defect neither branch would have caught alone.
   ## ase::run_log_header renders it; empty writes nothing.
+  ## `rawlock` (1389) rides here for one reason: ase::run_done must clear the
+  ## EXACT string this proc locked, not resolve the raw path a second time. The
+  ## two resolves would be taken at different instants over a state the session
+  ## may have edited in between (a changed rundir is one click), and the run
+  ## that leaked its lock would be the one whose settings moved.
   set meta [dict create cell $cell simulator $sim cmd $cmd dir $rd \
                         deck $deckpath started [clock seconds] \
                         opblock $opblock casenote $casenote optier $optier \
-                        using $using t0 [clock milliseconds]]
+                        using $using rawlock $rawlock t0 [clock milliseconds]]
   catch {ase::run_log_write $logpath $meta {} {}}
 
   set ::execute(callback) [list ase::run_done $logpath $state $callback $meta]
@@ -6224,6 +6526,11 @@ proc ase::run_deck {state netlistfile {callback {}}} {
     catch {unset ::execute(callback,$::execute(id))}
     return -code error "ase: cannot start simulator '$sim' ([lindex $cmd 0] not runnable)"
   }
+  ## 1389: AND ONLY NOW. A launch that did not launch must leave no lock -- put
+  ## above the `$id == -1` arm this line would brick Run for the session every
+  ## time a user mistyped a simulator path, because nothing would ever clear a
+  ## lock whose run_done can never fire.
+  ase::run_lock_set $rawlock $id
   return $id
 }
 
@@ -6357,6 +6664,13 @@ proc ase::run_log_write {logpath meta data exitcode} {
 # metadata the file is written exactly as it always was (see run_log_write).
 proc ase::run_done {logpath state callback {meta {}}} {
   variable last_run
+  ## 1389: THE LOCK GOES FIRST, before anything below can raise. Everything in
+  ## this proc is either caught or advisory, but "either" is not "provably
+  ## neither", and a completion that died holding the lock would refuse every
+  ## later run for the rest of the session. The key is the one ase::run_deck
+  ## locked, carried in `meta`, never re-resolved. Absent metadata (the
+  ## three-argument shape test_ase_cosim.tcl calls at six sites) clears nothing.
+  ase::run_lock_clear [ase::state_get $meta rawlock {}]
   set data {}
   if {[info exists ::execute(data,last)]} { set data $::execute(data,last) }
   set exitcode -1

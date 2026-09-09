@@ -42,10 +42,18 @@
 # (ase_design_window.tcl); headless, ase::netlist self-loads and that arm of the
 # guard stays the thing under test.
 #
-# The CHECK COUNTS differ by exactly one, and it is announced rather than silent:
-# 173 headless, 172 under X, because NT14's own premise is "there is no Tk" and it
-# prints `SKIPPED: NT14 headless-only sink safety (a display is present; see 0804)`
-# when a display exists. That is the ONLY difference between the two arms.
+# THE CHECK COUNT IS 203 IN BOTH ARMS, and that equality is a COINCIDENCE of two
+# announced skips cancelling -- it is NOT a claim that the arms run the same rows.
+# Headless, NT14 runs (its own premise is "there is no Tk") and RG6's behavioural
+# leg does not; under X, NT14 prints
+# `SKIPPED: NT14 headless-only sink safety (a display is present; see 0804)`
+# and RG6 prints its measurement instead. One row each way, so 203 = 203.
+#
+# ⚠ THE COUNT IS A FLOOR AND IT ONLY EVER GOES UP. It was 173/172 when this
+# comment first claimed "differ by exactly one" (issue 0698's era), 184 before
+# the 1389 run-guard section, 197 when section RG landed, and 203 once RG6 was
+# rewritten to measure the keyboard and RG13/RG14 were added. If a run reports
+# fewer, a row went missing -- do not edit this number down to match it.
 
 set fail 0; set npass 0
 proc check {name got exp} {
@@ -1247,6 +1255,432 @@ check "E4b 0618 run_done still accepts THREE arguments (test_ase_cosim's shape)"
   [list $e4b_rc $e4b_err] {0 {}}
 check_true "E4b 0618 with no metadata the file is execute(data,last), byte for byte" \
   [string equal [e_slurp $e4b_log] $::execute(data,last)]
+
+# ============================================================================
+# RG -- ISSUE 1389: ASE-L REFUSES A SECOND RUN ON A RESULTS FILE IT IS WRITING
+# ============================================================================
+# The user's report was "annotates blanks and prints zilch in RDW". MEASURED
+# 2026-09-08 on their own bench: `Netlist and Run` fired twice,
+# /tmp/Xschem.log.1 holds two `starting the simulator` lines before either
+# `simulation finished`, and because the deck carries `set appendwrite` (issue
+# 0929) run 2 APPENDED its Operating Point plot to the raw run 1 had not
+# finished writing. Two datasets, `xschem raw points` = 2,
+# op_annot::opdump_autofill correctly refusing to merge, and 423 vectors on the
+# sheet where the identical deck with one dataset gives 8248.
+#
+# The merge gate is not the defect; the double launch is. These rows are about
+# the double launch and nothing else.
+#
+#   RG1  a live run claims its raw path, and an ORDINARY launch still launches
+#   RG2  a second launch on the SAME raw is refused and `execute` IS NOT CALLED
+#   RG3  the live run's deck and results file are untouched by the refusal
+#   RG4  the refusal reaches the CIW channel, once, as a `note`
+#   RG5  it names the way out by READING 1391's constant -- and that constant
+#        reads `Simulation > Stop`: constant AND golden, the W1t discipline
+#   RG6  the CIW is RAISED, NOT ACTIVATED -- structural, plus a GUI leg that
+#        watches which of the two helpers the refusal actually reaches for
+#   RG7  two DIFFERENT results files do not block each other
+#   RG8  a launch that FAILS (`execute` -1) leaves no lock
+#   RG9  a stale lock (the process is gone) does not refuse, and is dropped
+#   RG10 an ordinary completion clears the lock IN ase::run_done -- not by the
+#        stale-lock sweep, which is what a table entry left behind would prove
+#   RG11 `Simulation > Stop` -- the remedy the sentence names -- frees it too,
+#        and the launch that follows is NOT refused
+#   RG12 the ASE-L doors refuse WITHOUT `set_status fail` and WITHOUT
+#        re-netlisting, because the earlier run is healthy and still Running
+#
+# ⚠ RG1, RG7 and RG11 ARE NOT DECORATION. A patch that simply broke launching
+# would satisfy RG2, RG3, RG4, RG5 and RG12 with full marks; those three are
+# the only rows that can tell "refuses a second run" from "refuses to run".
+
+## How many times `execute` was called while $script ran, plus what the script
+## did: {n rc result}. THE ROW THAT MATTERS IS THE ONE THAT COUNTS ZERO --
+## "the message said no" and "no simulator was started" are different claims,
+## and only the second one is the feature.
+proc rg_execs {script} {
+  set ::rg_n 0
+  rename ::execute ::rg_saved_execute
+  proc ::execute {status args} {
+    incr ::rg_n
+    return [eval [linsert $args 0 ::rg_saved_execute $status]]
+  }
+  set rc [catch {uplevel 1 $script} r]
+  rename ::execute {}
+  rename ::rg_saved_execute ::execute
+  return [list $::rg_n $rc $r]
+}
+## The CIW channel, spied at its own sink rather than at ase::echo, so a row
+## proves the sentence really travelled ase::echo -> notify_safe -> notify ->
+## ciw_echo. Under --nolog `.ciw` is never created, so the shipped ciw_echo
+## no-ops on its `winfo exists` guard and would see nothing.
+proc rg_ciw {script} {
+  set ::rg_said {}
+  set had [expr {[info commands ::ciw_echo] ne {}}]
+  if {$had} { rename ::ciw_echo ::rg_saved_ciw }
+  proc ::ciw_echo {line {tag {}}} { lappend ::rg_said [list $tag $line] ; return {} }
+  catch {uplevel 1 $script}
+  catch {rename ::ciw_echo {}}
+  if {$had} { rename ::rg_saved_ciw ::ciw_echo }
+  return $::rg_said
+}
+## A proc body with its comments dropped, so a sentence quoted in a comment
+## cannot satisfy a row about what the CODE says (test_ase_simcaps's a_body).
+proc rg_body {cmd} {
+  if {![llength [info commands $cmd]]} { return NOPROC }
+  if {[catch {info body $cmd} b]} { return "RAISED:$b" }
+  set out {}
+  foreach l [split $b "\n"] { if {[regexp {^\s*#} $l]} continue ; lappend out $l }
+  return [join $out "\n"]
+}
+proc rg_has {hay needle} { return [expr {[string first $needle $hay] >= 0 ? 1 : 0}] }
+## Is there a table entry for this key AT ALL? Deliberately NOT
+## ase::run_in_flight: that one DROPS a dead lock as it answers, so it can
+## never tell "run_done released it" from "nobody has looked yet".
+proc rg_tabled {key} {
+  if {![info exists ::ase::runlocks]} { return NOVAR }
+  return [expr {[dict exists [set ::ase::runlocks] $key] ? 1 : 0}]
+}
+proc rg_wr {path text} {
+  file mkdir [file dirname $path]
+  set fp [open $path w] ; puts -nonewline $fp $text ; close $fp
+}
+## Reap a run without waiting out its sleep: the door Simulation > Stop uses
+## (kill_running_cmds <id> -9), then the ordinary completion path.
+proc rg_reap {id} {
+  if {![string is integer -strict $id]} { return NOID }
+  if {![info exists ::execute(pipe,$id)]} { return GONE }
+  catch {kill_running_cmds $id -9}
+  catch {ase::wait $id}
+  return [expr {[info exists ::execute(pipe,$id)] ? {STILL-THERE} : {reaped}}]
+}
+
+# A simulator that stays up long enough to be raced. `sleep`, and NOT a stub
+# that reads stdin: `execute` opens the pipe in mode `r`, so the child inherits
+# this process's stdin and a stub calling `head` would eat the suite's script.
+if {[auto_execok sleep] eq {}} {
+  puts "SKIPPED: RG run-guard section (no sleep(1))"
+} else {
+proc ase_test_hold_run_cmd {state deckpath} { return [list sleep 30 2>@1] }
+ase::register_backend holdsim [dict create \
+  render_deck  [ase::backend_hook ngspice render_deck] \
+  run_cmd      ase_test_hold_run_cmd \
+  log_file     [ase::backend_hook ngspice log_file] \
+  result_probe [ase::backend_hook ngspice result_probe] \
+  raw_file     [ase::backend_hook ngspice raw_file]]
+
+# Its OWN rundir, for E2b's reason: the ngspice log_file/raw_file hooks are
+# <rundir>/<cell>_ase.*, so sharing E1's rundir would put these rows on top of
+# that leg's evidence. The circuit netlist is N1's real artifact, copied in --
+# every row here drives ase::run_deck (the shared post-netlist body and the
+# authority), so none of them needs the design to be the current schematic.
+set rg1dir [file normalize [file join $scratch run_rg1]]
+file mkdir $rg1dir
+set rg1nl [file join $rg1dir nfet_clean.spice]
+file copy -force -- [file join $rundir nfet_clean.spice] $rg1nl
+set rg1st  [nfet_state $models $rg1dir]
+dict set rg1st simulator holdsim
+set rg1raw  [file join $rg1dir nfet_clean_ase.raw]
+set rg1deck [file join $rg1dir nfet_clean_ase.spice]
+set rg1key  [ase::run_lock_key $rg1st]
+
+# --- RG1: the ordinary launch, and what it claims ---------------------------
+# THE POSITIVE HALF OF THE WHOLE SECTION. One `execute`, a real id, and a lock
+# keyed on the RAW PATH this run is about to write -- not on the session and
+# not on the widget, because two ASE-L sessions on one cellview and a
+# `Netlist and Run` racing a `Run` are the same hazard as a double-click.
+set rg1 [rg_execs {set ::rg1id [ase::run_deck $::rg1st $::rg1nl]}]
+check "RG1 an ordinary launch starts exactly one simulator and claims the results file it is about to write" \
+  [list [lindex $rg1 0] [lindex $rg1 1] \
+        [expr {[string is integer -strict $::rg1id] ? 1 : 0}] \
+        [ase::run_in_flight $rg1key] \
+        [expr {$rg1key eq [file normalize $rg1raw] ? 1 : 0}]] \
+  [list 1 0 1 $::rg1id 1]
+
+# The live run's two artifacts, as they stand now. `sleep` writes no results
+# file, so one is planted here: the point of RG3 is that a refusal does not
+# DELETE it, and run_deck's `file delete` of the raw is three lines below the
+# gate.
+rg_wr $rg1raw "ZZRG3 RESULTS-FILE SENTINEL\n"
+set rg1deckbytes [e_slurp $rg1deck]
+set rg1rawbytes  [e_slurp $rg1raw]
+
+# --- RG2: the second launch is REFUSED, and nothing was started -------------
+set rg2 [rg_execs {set ::rg2rc [catch {ase::run_deck $::rg1st $::rg1nl} ::rg2err]}]
+check "RG2 a second launch against a live results file is refused, and NO simulator is started" \
+  [list [lindex $rg2 0] $::rg2rc \
+        [expr {[string match {*already running*} $::rg2err] ? 1 : 0}]] \
+  {0 1 1}
+
+# --- RG3: and it did not touch the live run's artifacts ---------------------
+# This is why the gate is at the TOP of ase::run_deck and not "just before
+# `eval execute`" as the plan asked for: on its way down run_deck DELETES THE
+# RAW and rewrites the deck, so a refusal taken after those two lines would
+# destroy the running run's results file -- issue 0929's own symptom,
+# manufactured by the fix written for it.
+check "RG3 the refusal leaves the live run's deck and results file exactly as they were" \
+  [list [file isfile $rg1deck] [e_slurp $rg1deck] \
+        [file isfile $rg1raw]  [e_slurp $rg1raw]] \
+  [list 1 $rg1deckbytes 1 $rg1rawbytes]
+
+# --- RG4: the refusal reaches the CIW channel -------------------------------
+set rg4 [rg_ciw {catch {ase::run_deck $::rg1st $::rg1nl}}]
+set rg4busy {}
+foreach _p $rg4 { if {[string match {*already running*} [lindex $_p 1]]} { lappend rg4busy $_p } }
+check "RG4 the refusal arrives in the CIW, once, and as a note rather than an error" \
+  [list [llength $rg4busy] [lindex [lindex $rg4busy 0] 0]] \
+  {1 note}
+
+# --- RG5: it names the way out, read from 1391's constant -------------------
+# The constant AND a literal golden, which is what stops a
+# constant-compared-to-constant tautology. Rename the Stop entry and the
+# sentence follows it (the menubar is built from the same proc) while this
+# row's golden half reds -- which is exactly the review a rename deserves.
+# The fourth element is the anti-drift claim: the sentence's builder must not
+# contain a retyped copy of the menu path.
+set rg5msg [ase::run_busy_msg $rg1key]
+set rg5stop NOPROC
+catch {set rg5stop [ase::ui::menu_path_stop]}
+check "RG5 the refusal names Simulation > Stop by READING 1391's constant, never by retyping it" \
+  [list [rg_has $rg5msg $rg5stop] $rg5stop \
+        [rg_has $rg5msg [file tail $rg1key]] \
+        [rg_has [rg_body ase::run_busy_msg] {Simulation > Stop}]] \
+  [list 1 {Simulation > Stop} 1 0]
+
+# --- RG6: RAISED, NOT FOCUSED ----------------------------------------------
+# The user's own emphasis, and the place this item first got it WRONG. The plan
+# said to use `raise_toplevel`, on the grounds that its sibling
+# raise_activate_toplevel is the one that adds `xschem activate_window`. Both
+# ACTIVATE: raise_toplevel's mapped arm is withdraw+deiconify and a re-map is an
+# activation. Measured 2026-09-08 against a real `.ciw` and a second toplevel
+# holding the keyboard -- :99/openbox, :0/Xwayland and the developer's own
+# Windows X server (no EWMH WM at all) -- a plain `raise` is the ONLY thing that
+# rises without taking the keyboard, and it is issue 0054's measured no-op on
+# two of those three. Hence: plain raise, verify, re-map only if it did nothing.
+#
+# So the structural row below asserts the ORDER, not a helper name, and the
+# behavioural leg measures the PROPERTY -- where the CIW ended up and where the
+# keyboard is -- because a row that spies which proc was called could not see
+# this defect and did not.
+set rg6b [rg_body ase::run_ciw_raise]
+check "RG6 the refusal tries the focus-free raise first and keeps raise_toplevel as the fallback, never the activating sibling" \
+  [list [rg_has $rg6b {raise .ciw}] [rg_has $rg6b {wm stackorder .ciw isabove}] \
+        [rg_has $rg6b raise_toplevel] [rg_has $rg6b raise_activate_toplevel] \
+        [rg_has $rg6b activate_window] \
+        [expr {[string first {raise .ciw} $rg6b] < [string first {raise_toplevel} $rg6b] ? 1 : 0}]] \
+  {1 1 1 0 0 1}
+if {[info exists ::has_x] && [info commands winfo] ne {}} {
+  # BEHAVIOURAL, AND IT MEASURES THE THING THE USER ASKED FOR. `.ciw` does not
+  # exist under --nolog, so a real pane and a stand-in for the ASE-L window are
+  # stood up here; the keyboard starts in the stand-in, the refusal runs, and
+  # the row reads BOTH where the CIW ended up and whether the keyboard moved.
+  #
+  # ⚠ THE STRONG ARM IS GATED ON A PROBE, NOT ON A DISPLAY NAME. Two of the
+  # three X servers here ignore a plain raise outright (issue 0054), and on
+  # those the CIW can only be brought forward by a re-map, which takes the
+  # keyboard -- a platform limit this suite must not red over. So the probe
+  # below asks THIS server whether a plain raise moves anything at all, and the
+  # keyboard half is asserted only where it can be honoured. On :99, where the
+  # suites run, the probe answers yes and the strong arm is what executes.
+  catch {destroy .ciw} ; catch {destroy .rg6prb1} ; catch {destroy .rg6prb2}
+  toplevel .rg6prb1 ; toplevel .rg6prb2
+  wm geometry .rg6prb1 200x80+10+10 ; wm geometry .rg6prb2 200x80+10+120
+  update ; raise .rg6prb2 ; update ; raise .rg6prb1 ; update
+  set rg6plainraise 0
+  catch {set rg6plainraise [wm stackorder .rg6prb1 isabove .rg6prb2]}
+  destroy .rg6prb1 ; destroy .rg6prb2
+  note "RG6 does this X server honour a plain raise?" $rg6plainraise
+
+  toplevel .ciw ; wm geometry .ciw 300x120+10+10
+  toplevel .rg6ase ; wm geometry .rg6ase 300x120+10+200
+  entry .rg6ase.e ; pack .rg6ase.e
+  update ; focus -force .rg6ase.e ; update
+  set rg6focus0 [focus]
+  catch {ase::run_deck $rg1st $rg1nl}
+  update
+  set rg6above 0
+  catch {set rg6above [wm stackorder .ciw isabove .rg6ase]}
+  set rg6focus1 [focus]
+  catch {destroy .ciw} ; catch {destroy .rg6ase}
+  if {$rg6plainraise} {
+    check "RG6 GUI the refusal puts the CIW in front of the ASE-L window and leaves the keyboard where it was" \
+      [list $rg6above [expr {$rg6focus1 eq $rg6focus0 ? 1 : 0}]] {1 1}
+  } else {
+    # 0054's server. The CIW must still come forward; the keyboard is the
+    # platform's, not ours, and ase::run_ciw_raise's header records why.
+    check "RG6 GUI the refusal puts the CIW in front of the ASE-L window (this server ignores a plain raise, so the keyboard is not ours to keep)" \
+      $rg6above 1
+  }
+} else {
+  puts "gui leg skipped (no DISPLAY): RG6 behavioural raise"
+}
+
+# --- RG7: two different results files do not block each other ---------------
+# The same cell in a SECOND run directory -- two ASE-L sessions on one cellview
+# is the shape a session-keyed lock gets wrong in the other direction. Both
+# locks stand at once and neither refuses.
+set rg7dir [file normalize [file join $scratch run_rg7]]
+file mkdir $rg7dir
+set rg7nl [file join $rg7dir nfet_clean.spice]
+file copy -force -- $rg1nl $rg7nl
+set rg7st  [nfet_state $models $rg7dir]
+dict set rg7st simulator holdsim
+set rg7key [ase::run_lock_key $rg7st]
+set rg7 [rg_execs {set ::rg7id [ase::run_deck $::rg7st $::rg7nl]}]
+check "RG7 a run on a DIFFERENT results file is not blocked, and both locks stand at once" \
+  [list [lindex $rg7 0] [lindex $rg7 1] \
+        [expr {$rg7key ne $rg1key ? 1 : 0}] \
+        [ase::run_in_flight $rg7key] [ase::run_in_flight $rg1key]] \
+  [list 1 0 1 $::rg7id $::rg1id]
+
+# --- RG8: a launch that never launched leaves no lock -----------------------
+# `fakesim` (E2's missing-binary backend) makes `execute` return -1. Locking
+# before that check would brick Run for the whole session every time a user
+# mistyped a simulator path: nothing would ever clear a lock whose ase::run_done
+# can never fire.
+set rg8dir [file normalize [file join $scratch run_rg8]]
+file mkdir $rg8dir
+set rg8nl [file join $rg8dir nfet_clean.spice]
+file copy -force -- $rg1nl $rg8nl
+set rg8st  [nfet_state $models $rg8dir]
+dict set rg8st simulator fakesim
+set rg8key [ase::run_lock_key $rg8st]
+ase_no_modal {set rg8rc [catch {ase::run_deck $rg8st $rg8nl} rg8err]}
+check "RG8 a launch that failed to start leaves no lock behind" \
+  [list $rg8rc [expr {[string match {ase:*} $rg8err] ? 1 : 0}] \
+        [rg_tabled $rg8key] [ase::run_in_flight $rg8key]] \
+  {1 1 0 {}}
+
+# --- RG9: a stale lock does not refuse, and is dropped ----------------------
+# `::execute(pipe,$id)` is unset by execute_fileevent at EOF, so its absence
+# means the run is over however it ended. Without this arm one crashed
+# completion bricks Run for the rest of the session -- worse than the defect
+# being fixed.
+set rg9key [file normalize [file join $scratch run_rg9 zz_ase.raw]]
+set rg9id 999731
+catch {unset ::execute(pipe,$rg9id)}
+ase::run_lock_set $rg9key $rg9id
+check "RG9 a lock whose process is gone answers 'not in flight' and is dropped from the table" \
+  [list [rg_tabled $rg9key] [ase::run_in_flight $rg9key] [rg_tabled $rg9key]] \
+  {1 {} 0}
+
+# --- RG10: the ordinary completion clears it, in ase::run_done --------------
+# rg_tabled, not run_in_flight: the sweep DROPS a dead lock as it answers, so
+# only a direct look at the table can tell "ase::run_done released it" from
+# "nobody has asked yet". A run_done that stopped clearing would leave a 1 here
+# and every other row in this section would stay green.
+set rg10 [rg_reap $::rg7id]
+check "RG10 a finished run releases its results file in ase::run_done, not by the stale-lock sweep" \
+  [list $rg10 [rg_tabled $rg7key]] {reaped 0}
+
+# --- RG11: Stop is a real way out, and the next launch is allowed -----------
+# The sentence tells the user to press Simulation > Stop. This is that door
+# (ase::ui::do_stop's own `kill_running_cmds <id> -9`), followed by the launch
+# it unblocks.
+set rg11a [rg_reap $::rg1id]
+set rg11 [rg_execs {set ::rg11id [ase::run_deck $::rg1st $::rg1nl]}]
+check "RG11 after Stop the results file is free and the next launch really starts" \
+  [list $rg11a [lindex $rg11 0] [lindex $rg11 1] \
+        [ase::run_in_flight $rg1key]] \
+  [list reaped 1 0 $::rg11id]
+
+# --- RG12: the ASE-L doors ---------------------------------------------------
+# Both doors call `ase::ui::set_status $key fail` on any raise out of ase::run,
+# and a refused second launch has nothing wrong with it: the first run is alive
+# and the status must go on saying Running. `Netlist and Run` would also have
+# deleted and rebuilt the circuit netlist before the authority ever saw the
+# launch, so the sentinel below is what proves the door refused FIRST.
+set rg12path [file join $scratch rg_door.state]
+ase::state_save $rg12path $rg1st
+set rg12key [ase::session_key aselib nfet_clean schematic]
+ase::session_open $rg12key $rg12path
+rg_wr $rg1nl "ZZRG12 CIRCUIT NETLIST SENTINEL\n"
+set ::rg12status {}
+rename ::ase::ui::set_status ::rg12_saved_status
+proc ::ase::ui::set_status {key what} { lappend ::rg12status $what }
+set rg12a [rg_execs {ase::ui::do_run_existing $::rg12key}]
+set rg12b [rg_execs {ase::ui::do_run $::rg12key}]
+rename ::ase::ui::set_status {}
+rename ::rg12_saved_status ::ase::ui::set_status
+check "RG12 both ASE-L doors refuse without starting a simulator, without reddening a healthy session and without re-netlisting" \
+  [list [lindex $rg12a 0] [lindex $rg12b 0] $::rg12status \
+        [e_slurp $rg1nl] [ase::run_in_flight $rg1key]] \
+  [list 0 0 {} "ZZRG12 CIRCUIT NETLIST SENTINEL\n" $::rg11id]
+
+# --- RG13: the way out the sentence names is a way out FOR THE READER --------
+# The refusal tells the user to press `Simulation > Stop`. Measured 2026-09-08,
+# before this row existed, that was FALSE in exactly the cases the raw-path key
+# was chosen for: ase::ui::do_stop was keyed on the session's `run_id` attr, and
+# only the session that launched holds one. Two ASE-L sessions on one cellview
+# share a rundir, a results file and therefore the lock -- but B is refused,
+# told to press Stop, and B's Stop answered "no simulation running for this
+# session" over a run that was alive. The user could neither run nor stop.
+#
+# $rg11id was started by ase::run_deck directly, so NO session holds its run_id;
+# that is also the CIW/script door the issue says the authority covers, and the
+# close-and-reopen shape (ase::session_close drops every attr) in one.
+check "RG13 the session holds no run_id for this run, so only the lock can answer" \
+  [list [ase::session_getattr $rg12key run_id {}] [ase::run_in_flight $rg1key]] \
+  [list {} $::rg11id]
+set rg13said [rg_ciw {ase::ui::do_stop $rg12key}]
+catch {ase::wait $::rg11id}
+check "RG13 Stop from a session that did not launch really kills the run and frees the results file" \
+  [list $rg13said [ase::run_in_flight $rg1key] \
+        [expr {[info exists ::execute(pipe,$::rg11id)] ? 0 : 1}] [rg_tabled $rg1key]] \
+  [list {} {} 1 0]
+## and the honest sentence survives: with nothing running, Stop still says so.
+check "RG13 with nothing running Stop still says there is nothing to stop" \
+  [rg_ciw {ase::ui::do_stop $rg12key}] \
+  {{{} {ase: no simulation running for this session}}}
+
+# --- RG14: a refusal that arrives as a RAISE must not redden a healthy run ---
+# The door pre-checks are not the whole story, and the gap is the originating
+# gesture. ase::ui::do_run calls `update` inside its design-window routing arm,
+# so a second press queued as an X event dispatches BETWEEN that door's
+# run_busy check and its launch: the inner press passes the check, launches and
+# locks, and the outer press then meets the lock inside ase::run_deck. Measured
+# 2026-09-08 with the second press queued as a real `event generate -when tail`:
+# one simulator started (the guard's core job held) but the status segment went
+# `running` -> `fail`, a red Error over a live and healthy run, and the same
+# sentence reached the CIW TWICE -- once as `note`, once as `error`, which is
+# also the opposite of the note-not-error decision this refusal was built on.
+#
+# The rows are deterministic rather than a re-raced gesture, per CLAUDE.md's own
+# rule that a bug only one environment can reproduce is a test defect too: the
+# refusal text below is the AUTHORITY's own, taken from a real refused
+# ase::run_deck, so this cannot pass against a hand-typed sentence that has
+# drifted from the one the gate raises.
+## RG12 replaced the circuit netlist with its sentinel (that was its point);
+## put the real one back, or the preflight refuses before the gate is reached.
+file copy -force -- [file join $rundir nfet_clean.spice] $rg1nl
+set rg14id [ase::run_deck $rg1st $rg1nl]
+set rg14err {}
+catch {ase::run_deck $rg1st $rg1nl} rg14err
+set ::rg14status {}
+rename ::ase::ui::set_status ::rg14_saved_status
+proc ::ase::ui::set_status {key what} { lappend ::rg14status $what }
+set rg14a [rg_ciw {set ::rg14rc [ase::ui::run_raised $rg12key $rg14err]}]
+set rg14statusA $::rg14status
+set ::rg14status {}
+set rg14b [rg_ciw {set ::rg14rc2 [ase::ui::run_raised $rg12key {ase: cannot start simulator 'nosuch'}]}]
+set rg14statusB $::rg14status
+rename ::ase::ui::set_status {}
+rename ::rg14_saved_status ::ase::ui::set_status
+check "RG14 a raise that IS the refusal is neither said twice nor allowed to redden a live run" \
+  [list $rg14a $rg14statusA $::rg14rc] [list {} {} 0]
+check "RG14 and an ordinary failure still reddens and still speaks (non-vacuity)" \
+  [list $rg14b $rg14statusB $::rg14rc2] \
+  [list {{error {ase: cannot start simulator 'nosuch'}}} fail 1]
+## the wiring: neither door may re-inline the redden it just stopped doing.
+set rg14dr  [rg_body ase::ui::do_run]
+set rg14dre [rg_body ase::ui::do_run_existing]
+check "RG14 both doors route a raise out of ase::run through the one arm that can tell a refusal from a failure" \
+  [list [rg_has $rg14dr {ase::ui::run_raised $key $id}] \
+        [rg_has $rg14dre {ase::ui::run_raised $key $id}]] {1 1}
+rg_reap $rg14id
+
+catch {ase::session_close $rg12key}
+rg_reap $::rg11id
+}
 
 
 # ============================================================================

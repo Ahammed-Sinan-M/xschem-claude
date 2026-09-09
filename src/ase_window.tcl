@@ -518,8 +518,11 @@ proc ase::ui::build {key top} {
     -command [list ase::ui::simulators_dialog $key]
 
   menu $top.mb.analyses -tearoff 0
-  $top.mb add cascade -label Analyses -menu $top.mb.analyses
-  $top.mb.analyses add command -label "Choose\u2026" \
+  $top.mb add cascade -label [ase::ui::lbl_analyses] -menu $top.mb.analyses
+  # ⚠ LABELS FROM THE CONSTANTS, NOT TYPED HERE (issue 1391). The `OP,TR`
+  # strip button's tooltip is `ase::ui::menu_path_choose_analyses`, composed
+  # from these two; typing either string twice is how the 0661 drift happened.
+  $top.mb.analyses add command -label [ase::ui::lbl_choose] \
     -command [list ase::ui::choose_analyses $key]
 
   menu $top.mb.variables -tearoff 0
@@ -548,18 +551,23 @@ proc ase::ui::build {key top} {
     -command [list ase::ui::save_all_dialog $key]
 
   menu $top.mb.sim -tearoff 0
-  $top.mb add cascade -label Simulation -menu $top.mb.sim
+  $top.mb add cascade -label [ase::ui::lbl_simulation] -menu $top.mb.sim
   menu $top.mb.sim.netlist -tearoff 0
   $top.mb.sim.netlist add command -label Recreate \
     -command [list ase::ui::do_netlist_recreate $key]
   $top.mb.sim.netlist add command -label Display \
     -command [list ase::ui::view_netlist $key]
   $top.mb.sim add cascade -label Netlist -menu $top.mb.sim.netlist
-  $top.mb.sim add command -label {Netlist and Run} \
+  # ⚠ THESE THREE LABELS ARE READ BY MORE THAN THIS MENU (issue 1391). The
+  # `N&>` / `>` / `!` strip buttons tip from the composed paths, and issue
+  # 1389's second-launch refusal names `[ase::ui::menu_path_stop]` as the way
+  # out. Rename an entry here and the tip and the refusal follow it.
+  $top.mb.sim add command -label [ase::ui::lbl_netlist_and_run] \
     -command [list ase::ui::do_run $key]
-  $top.mb.sim add command -label Run \
+  $top.mb.sim add command -label [ase::ui::lbl_run] \
     -command [list ase::ui::do_run_existing $key]
-  $top.mb.sim add command -label Stop -command [list ase::ui::do_stop $key]
+  $top.mb.sim add command -label [ase::ui::lbl_stop] \
+    -command [list ase::ui::do_stop $key]
   $top.mb.sim add command -label Log -command [list ase::ui::show_log $key]
   $top.mb.sim add command -label "Options\u2026" \
     -command [list ase::ui::sim_options_dialog $key]
@@ -681,8 +689,8 @@ proc ase::ui::build {key top} {
   # forbids. Which raw the window reports is answered live at open time
   # (calc::results_source), not by whoever opened it.
   menu $top.mb.tools -tearoff 0
-  $top.mb add cascade -label Tools -menu $top.mb.tools
-  $top.mb.tools add command -label {Waveform Viewer} \
+  $top.mb add cascade -label [ase::ui::lbl_tools] -menu $top.mb.tools
+  $top.mb.tools add command -label [ase::ui::lbl_waveform_viewer] \
     -command [list ase::ui::open_viewer $key]
   $top.mb.tools add command -label Calculator -command calc::open
 
@@ -690,8 +698,23 @@ proc ase::ui::build {key top} {
   # key `temperature`, commit-validated numeric -> `.temp <T>` in the deck)
   frame $top.tb
   entry $top.tb.temp -width 7
+  # ⚠ THE TIP IS ARMED BEFORE THE TWO BINDS, AND THE FocusOut BIND IS `+`
+  # (issue 1391). `balloon` (xschem.tcl:14826) does a PLAIN `bind` on <Enter>,
+  # <Leave> and <FocusOut>, so whichever of the two is written second wins the
+  # FocusOut slot outright. MEASURED on :99 before this was written: arming the
+  # tip after the bind left
+  #     <FocusOut> = after cancel balloon_show %W {...} 1; destroy %W.balloon
+  # and `ase::ui::temp_commit` was simply gone -- a temperature typed and then
+  # clicked away from would never reach the deck, with nothing said. So the
+  # balloon goes first and the commit APPENDS. Order here is load-bearing;
+  # W1s3 reads the composed script back off the live widget and reds if either
+  # half is missing.
+  #
+  # This entry is the only widget in the window carrying no word of its own --
+  # the `°C` label beside it gives the unit, not the subject.
+  catch {::balloon $top.tb.temp [ase::ui::lbl_sim_temperature] 1 0 300}
   bind $top.tb.temp <Return>   [list ase::ui::temp_commit $key]
-  bind $top.tb.temp <FocusOut> [list ase::ui::temp_commit $key]
+  bind $top.tb.temp <FocusOut> +[list ase::ui::temp_commit $key]
   label $top.tb.degc -text "\u00b0C"
   pack $top.tb.temp -side left -padx {6 2} -pady 2
   pack $top.tb.degc -side left
@@ -745,6 +768,30 @@ proc ase::ui::build {key top} {
        $top.strip.netrun $top.strip.run $top.strip.stop $top.strip.plot \
        -side top -padx 2 -pady 1
   pack $top.strip -side right -fill y
+
+  # --- 1391: EVERY STRIP BUTTON GETS A TIP, FROM ONE TABLE --------------------
+  # Eight glyphs and not one word between them; `N&>` and `~` are not guessable
+  # and never were. The strings come from `ase::ui::strip_tips` (~:5477) so the
+  # FIVE with a menubar twin tip with the twin's own label, composed. Five,
+  # not four: `OP,TR` is `Analyses > Choose…` and is twinned like the rest.
+  #
+  # ⚠ ONE LOOP, NOT EIGHT CALLS. The suite asserts that EVERY child of
+  # $top.strip carries a tip, so a ninth button added without a `strip_tips`
+  # entry reds W1s2 rather than shipping bare -- which a hand-written list of
+  # eight calls could not do.
+  #
+  # ⚠ `catch`, like rdw.tcl:3226: `balloon` is pure Tk and the headless suites
+  # drive these procs with no display at all.
+  # ⚠ 300 ms, matching rdw.tcl:3226 rather than the 1000 ms default the rest of
+  # the tree takes. That figure is the user's "as soon as user hovers over it"
+  # and is still UNRATIFIED -- rule debt 1368; this inherits it rather than
+  # opening a second question.
+  # ⚠ INSTANCE <Enter> ONLY. MEASURED on :99: `bind Button <Enter>` is still
+  # `tk::ButtonEnter %W` after the call, so the buttons keep their hover
+  # highlight -- a class binding is not what `balloon` replaces.
+  foreach {sfx tip} [ase::ui::strip_tips] {
+    catch {::balloon $top.strip.$sfx $tip 1 0 300}
+  }
 
   # UI v2 body: EXACTLY three panes (spec "Panes") — Design Variables (left,
   # full height), Analyses (right top), Outputs (right bottom); each a
@@ -1635,7 +1682,8 @@ proc ase::ui::dialog_buttons {w row okcmd cancelcmd} {
 proc ase::ui::add_variable_dialog {key} {
   variable wins
   if {![dict exists $wins $key]} { return }
-  set w [ase::ui::dialog_frame [dict get $wins $key].addvar {Add Variable}]
+  set w [ase::ui::dialog_frame [dict get $wins $key].addvar \
+           [ase::ui::lbl_add_variable]]
   set ne [ase::ui::dialog_row $w 0 Name: name]
   set ve [ase::ui::dialog_row $w 1 Value: value]
   ase::ui::dialog_buttons $w 2 [list ase::ui::add_variable_ok $key] \
@@ -1748,8 +1796,10 @@ proc ase::ui::output_editor {key idx} {
   } else {
     set idx -1
   }
+  # ⚠ THE ADD TITLE IS THE `-->` STRIP BUTTON'S TOOLTIP (issue 1391): the tip
+  # names the window the click produces, so the two are one string.
   set w [ase::ui::dialog_frame [dict get $wins $key].edout \
-           [expr {$idx >= 0 ? {Edit Output} : {Add Output}}]]
+           [expr {$idx >= 0 ? {Edit Output} : [ase::ui::lbl_add_output]}]]
   set edrow($key,out) $idx
   set ne [ase::ui::dialog_row $w 0 Name: name]
   set xe [ase::ui::dialog_row $w 1 Expression: expr]
@@ -3651,7 +3701,7 @@ proc ase::ui::rsel_dblclick {key which} {
 # ---------------------------------------------------------------------------
 # R404's balloon: THE FULL PATH, on the row under the pointer.
 #
-# `balloon` (src/xschem.tcl:14917) is the tree's ONE tooltip mechanism and it
+# `balloon` (src/xschem.tcl:14826) is the tree's ONE tooltip mechanism and it
 # BAKES its string into a widget's <Enter> binding at attach time, so it cannot
 # carry a PER-ROW string. The renderer underneath it, `balloon_show`, can --
 # it takes the text as an argument -- so this is that renderer driven from a
@@ -5345,6 +5395,112 @@ proc ase::ui::remedy_op_params_menu {} {
   return "[ase::ui::lbl_outputs] > [ase::ui::lbl_save_all] > [ase::ui::lbl_save_op_params]"
 }
 
+# --- 1391: THE ACTION-STRIP LABELS, SAME SECTION, SAME REASON ----------------
+# The right vertical strip (`ase::ui::build`, ~:749) is EIGHT glyph buttons --
+# `OP,TR = --> X N&> > ! ~` -- and until this issue not one of them carried a
+# tooltip.
+#
+# ⚠ NOT the first tip in this file, and the plan for this issue said it was.
+# MEASURED: `ase::ui::rsel_tip` (~:3724) has driven `balloon_show` from a
+# <Motion> handler since R404, for the per-row full path in Results > Select.
+# That one is per-ROW so it cannot use `balloon`, which bakes ONE string in at
+# attach time; these eight are per-BUTTON and fixed, which is exactly the shape
+# `balloon` is for. Two shapes, two call sites, no second mechanism.
+#
+# FIVE of the eight have a menubar twin -- counted off the shipped table,
+# not off the brief, which listed three: `OP,TR` is `Analyses > Choose…`. A tip
+# written by hand would have
+# been a SECOND description of an action the menu already names, and the drift
+# the block above records
+# (`Outputs > Save All` vs `Outputs > Save All… > Save device OP parameters
+# (gm, gds, vth, ...)`, string match 0, issue 0661) would have been rebuilt one
+# widget over.
+#
+# So the twinned five are minted HERE, the menubar is BUILT from these procs,
+# and the tip is the composed menu path -- the tip and the entry are the same
+# string and cannot drift because they are the same string.
+#
+# ⚠ ISSUE 1389 (the run guard) READS `menu_path_stop`. Its refusal has to name
+# the way out of a refused second launch, and the way out is the Stop entry the
+# user can actually see. Renaming that entry moves the refusal with it; that is
+# the whole point of the mint and the reason item B landed before item A.
+#
+# ⚠ THE ROWS THAT KEEP THESE HONEST are W1s1/W1s2 in
+# tests/headless/test_ase_window.tcl: each tip is read back off the LIVE widget
+# (`bind $b <Enter>`) and compared to the constant AND to a literal golden, the
+# W1t discipline -- a constant-compared-to-constant tautology cannot pass.
+proc ase::ui::lbl_analyses         {} { return {Analyses} }
+proc ase::ui::lbl_choose           {} { return "Choose\u2026" }
+proc ase::ui::lbl_simulation       {} { return {Simulation} }
+proc ase::ui::lbl_netlist_and_run  {} { return {Netlist and Run} }
+proc ase::ui::lbl_run              {} { return {Run} }
+proc ase::ui::lbl_stop             {} { return {Stop} }
+proc ase::ui::lbl_tools            {} { return {Tools} }
+proc ase::ui::lbl_waveform_viewer  {} { return {Waveform Viewer} }
+
+# The THREE strip buttons with no menubar twin (`=`, `-->`, `X`), plus the
+# temperature entry, which is not a strip button at all -- four constants, three
+# of them tips on the strip. `=` and `-->` open a dialog, so
+# the constant is the dialog's own `wm title` and the tip names the window the
+# click produces (built at :1684 / :1800). `X` opens nothing and `OP,TR`'s
+# dialog is titled `Choose Analyses` while its menu entry reads `Choose…` --
+# that second spelling is SHIPPED and pre-dates this issue; it is recorded in
+# doc/claude/issues/1391-*.md and deliberately NOT renamed here, because a
+# ratified dialog title is not this issue's to change.
+proc ase::ui::lbl_add_variable     {} { return {Add Variable} }
+proc ase::ui::lbl_add_output       {} { return {Add Output} }
+proc ase::ui::lbl_delete_selection {} { return {Delete Selection} }
+proc ase::ui::lbl_sim_temperature  {} { return {Simulation temperature} }
+
+# `>`-separated menu paths, the shipped convention for a printed menu path in
+# this file (ase::ui::remedy_op_params_menu, above) and in xschem.tcl
+# (annot_remedy_menu, :17745). Nothing in these labels contains a `>`.
+proc ase::ui::menu_path_choose_analyses {} {
+  return "[ase::ui::lbl_analyses] > [ase::ui::lbl_choose]"
+}
+proc ase::ui::menu_path_netlist_and_run {} {
+  return "[ase::ui::lbl_simulation] > [ase::ui::lbl_netlist_and_run]"
+}
+proc ase::ui::menu_path_run {} {
+  return "[ase::ui::lbl_simulation] > [ase::ui::lbl_run]"
+}
+proc ase::ui::menu_path_stop {} {
+  return "[ase::ui::lbl_simulation] > [ase::ui::lbl_stop]"
+}
+proc ase::ui::menu_path_waveform_viewer {} {
+  return "[ase::ui::lbl_tools] > [ase::ui::lbl_waveform_viewer]"
+}
+
+# THE STRIP'S TIPS, ONE TABLE, KEYED BY THE BUTTON'S OWN WIDGET SUFFIX. The
+# builder walks this and so does the suite, which is what makes "a button with
+# no tip is a red row, not a gap" enforceable: a ninth button added without an
+# entry here reds W1s2 instead of quietly shipping bare.
+#
+# ⚠ MIXED FORM ON PURPOSE. FIVE tips are a menu path and THREE are a bare
+# action name -- the split the table below actually ships, verified by walking
+# it. That difference is information: it tells the reader whether the action has
+# a MENUBAR route at all. Inventing a path for the three that have none would be
+# prose, which is what the block above exists to forbid.
+#
+# ⚠ AND IT IS ONLY ABOUT THE MENUBAR. All three of the bare-named actions DO sit
+# on a per-pane CONTEXT menu (`Add…` at :854/:866, `Delete` at :872), spelled
+# differently there -- `Add Variable` vs `Add…`, `Delete Selection` vs `Delete`.
+# Those are not built from these constants and the reader hovering a glyph
+# cannot tell menubar from context. Recorded in doc/claude/issues/1391-*.md as
+# the coverage this mint does not yet reach; sweeping the context menus into it
+# is the follow-up, not a silent widening of this item.
+proc ase::ui::strip_tips {} {
+  return [list \
+    ana    [ase::ui::menu_path_choose_analyses] \
+    var    [ase::ui::lbl_add_variable] \
+    out    [ase::ui::lbl_add_output] \
+    del    [ase::ui::lbl_delete_selection] \
+    netrun [ase::ui::menu_path_netlist_and_run] \
+    run    [ase::ui::menu_path_run] \
+    stop   [ase::ui::menu_path_stop] \
+    plot   [ase::ui::menu_path_waveform_viewer]]
+}
+
 # --- 0650 / R-0653-d req 3: ONE WRITER FOR THE THREE BLANKETS ----------------
 # "The command must invoke THE SAME PROC THE MENU INVOKES, not poke the state
 # underneath it." The menu's own entry is `Save All\u2026` -> save_all_dialog, which
@@ -7017,8 +7173,64 @@ proc ase::ui::run_started {key id} {
   ase::ui::set_status $key running
 }
 
+# 1389: IS THIS SESSION'S RESULTS FILE ALREADY BEING WRITTEN? The lock key
+# (the raw path) when a run is in flight, else {}.
+#
+# ⚠ THE DOORS ASK BEFORE THEY ACT, and that is not belt-and-braces over
+# ase::run_deck's gate -- it is the only way to refuse WITHOUT
+# `ase::ui::set_status $key fail`. Both doors below turn the status segment RED
+# on any raise out of ase::run, and a refused second launch has nothing wrong
+# with it: the first run is alive and the status must go on saying Running.
+# Going through ase::run would also re-netlist the design (ase::netlist deletes
+# and rebuilds <cell>.spice) before the authority ever saw the launch.
+#
+# ONE PREDICATE (ase::run_in_flight, src/ase.tcl:6042 -- the only reader of the
+# lock table), THREE CONSUMERS: ase::run_deck's gate, this, and the lock
+# fallback in ase::ui::do_stop that makes the refusal's remedy clause true.
+# Three callers of one answer is invariant I1 kept; two procs each deciding
+# what "running" means is what it forbids.
+proc ase::ui::run_busy {key} {
+  set lk {}
+  if {[catch {ase::run_lock_key [ase::session_state $key]} lk]} { return {} }
+  if {[ase::run_in_flight $lk] eq {}} { return {} }
+  return $lk
+}
+
+# 1389: A RAISE OUT OF ase::run MAY BE THE REFUSAL ITSELF, and then it must not
+# redden a session whose earlier run is alive and healthy.
+#
+# ⚠ THE DOOR'S PRE-CHECK IS NOT ENOUGH, AND THE GAP IS THE ORIGINATING GESTURE.
+# ase::ui::do_run calls `update` in its design-window routing arm -- the arm
+# whose own comment says it fires routinely while the design window is fully
+# visible and front. Measured 2026-09-08 with the second press queued as a real
+# X event so it dispatches inside that `update`: the inner press passes
+# run_busy (no lock yet), launches and locks; the OUTER press then meets the
+# lock in ase::run_deck and used to arrive here as an ordinary failure. One
+# simulator started (the guard's core job held), but the status segment went
+# `running` -> `fail` -- a red Error over a live run -- and the same sentence
+# reached the CIW TWICE, once as `note` and once as `error`, which is also the
+# opposite of the note-not-error decision this refusal was built on.
+#
+# The discriminator is the minted sentence itself, not a code or a flag: the
+# gate returns exactly `ase::run_busy_msg` of the key it refused, and
+# ase::run_lock_set is the last statement before run_deck returns, so nothing
+# else can raise while this session's results file is locked. Anything that is
+# not that sentence still reddens, exactly as before.
+proc ase::ui::run_raised {key err} {
+  set lk [ase::ui::run_busy $key]
+  if {$lk ne {} && $err eq [ase::run_busy_msg $lk]} { return 0 }
+  catch {::ase::echo $err error}
+  ase::ui::set_status $key fail
+  return 1
+}
+
 # Simulation > Netlist and Run: re-netlist the design, then run.
 proc ase::ui::do_run {key} {
+  ## 1389: FIRST STATEMENT, above the design-window routing. A refused launch
+  ## must not withdraw+deiconify the schematic window on its way to saying no
+  ## (issue 0616's cost), and must not re-netlist.
+  set busy [ase::ui::run_busy $key]
+  if {$busy ne {}} { ase::run_refuse $busy ; return }
   set dpath [ase::ui::design_path $key]
   if {$dpath eq {}} {
     catch {::ase::echo "ase: cannot resolve the session's design cellview" error}
@@ -7047,8 +7259,7 @@ proc ase::ui::do_run {key} {
     }
   }
   if {[catch {ase::run [ase::session_state $key] [list ase::ui::run_finished $key]} id]} {
-    catch {::ase::echo $id error}
-    ase::ui::set_status $key fail
+    ase::ui::run_raised $key $id
     return
   }
   ase::ui::run_started $key $id
@@ -7058,9 +7269,13 @@ proc ase::ui::do_run {key} {
 # (hand-edited decks survive), so it needs no current-schematic routing and
 # works with the design window closed.
 proc ase::ui::do_run_existing {key} {
+  ## 1389: the same refusal, and the same reason it is not left to the catch
+  ## below -- that arm calls `set_status $key fail`, which would recolour a
+  ## session whose earlier run is still perfectly healthy.
+  set busy [ase::ui::run_busy $key]
+  if {$busy ne {}} { ase::run_refuse $busy ; return }
   if {[catch {ase::run_existing [ase::session_state $key] [list ase::ui::run_finished $key]} id]} {
-    catch {::ase::echo $id error}
-    ase::ui::set_status $key fail
+    ase::ui::run_raised $key $id
     return
   }
   ase::ui::run_started $key $id
@@ -7071,10 +7286,34 @@ proc ase::ui::do_run_existing {key} {
 # abort — close() then reports CHILDKILLED -> nonzero exitcode -> the normal
 # completion path (run_finished) turns the status segment red. Unix only: the
 # kill(1) path cannot work on Windows.
+#
+# ⚠ 1389: THE SESSION ATTR IS NOT THE ONLY WAY IN, because the refusal SENDS
+# people here. `run_id` is set by ase::ui::run_started, so only the session that
+# pressed the button holds it -- and the lock the refusal is about is keyed on
+# the RESULTS FILE, which several sessions share. Measured 2026-09-08, all three
+# reachable and all three ending in "no simulation running for this session"
+# over a run that was very much alive:
+#   * two ASE-L sessions on one cellview (ngspice_state1 + ngspice_state2, one
+#     rundir, one raw): B is refused, told to press Stop, and B's Stop is a
+#     no-op. B can neither run nor stop -- a dead end the sentence created;
+#   * a run started from the CIW or a script sets no run_id at all;
+#   * closing and re-opening the ASE-L window mid-run: ase::session_close drops
+#     every attr (ase.tcl:8588), so run_id goes 12 -> {} for the very session
+#     that launched.
+# So the attr is tried first (it is the exact run this session started) and the
+# lock answers for the rest. Same predicate as the refusal, ase::run_in_flight,
+# which is what makes "the sentence names a way out that works" checkable
+# rather than hopeful.
 proc ase::ui::do_stop {key} {
   global OS
   set id [ase::session_getattr $key run_id {}]
   if {$id eq {} || ![string is integer -strict $id] || ![info exists ::execute(pipe,$id)]} {
+    set id {}
+    if {![catch {ase::run_lock_key [ase::session_state $key]} lk]} {
+      set id [ase::run_in_flight $lk]
+    }
+  }
+  if {$id eq {}} {
     catch {::ase::echo "ase: no simulation running for this session"}
     return
   }
