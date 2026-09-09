@@ -1028,9 +1028,21 @@ the schematic's name, not the simulator's.
   at a time: an unknown library leaves the browser as it was before the
   defaulting, a known library with an unknown cell keeps the library chosen
   and its Cell column filled); Save State (always Save-As: Library
-  dropdown + editable Cell/View text fields prefilled with current; if
-  current view was opened read-only and target = same view, Overwrite needs
-  a confirmation popup); Close.
+  dropdown + editable Cell/View text fields prefilled with current; OK
+  **confirms before it overwrites an existing state**, title `Overwrite
+  State`, and the two reasons are answered by two mutually-exclusive
+  predicates, never one flag with two meanings —
+  `ase::ui::save_as_needs_confirm` (D8: the target IS my own file **and** that
+  file is effectively read-only — `readonly` attr, or unwritable) says *"The
+  state `<lib>/<cell>/<view>` was opened read-only. / Overwrite it?"*, and
+  `ase::ui::save_as_overwrites_other` (the target EXISTS and is **not** my own
+  file) says *"State `<lib>/<cell>/<view>` exists. Overwrite?"*. Both sentences
+  are minted in the `ase::ui::lbl_*` family (`src/ase_window.tcl:5578`), not
+  typed at the call site. Saving onto your own state is silent — that is what
+  Save means; a target that does not exist is not an overwrite and is created
+  silently (D9). An **untitled** session owns no file, so every existing target
+  is somebody else's and every one of them asks. Cancel writes nothing.);
+  Close.
 - **Setup** — Design (L/C/V dropdown dialog; after Cell chosen, View
   dropdown lists ONLY schematic views); Model Files (dialog: one row per
   model file + corner/section entry per row, e.g. `tt`); Simulators…
@@ -1122,6 +1134,21 @@ main window and the log window are exempt (2026-07-21, item 10).
     saving-as to a *different* existing view deliberately stays dirty (item 14
     D5) and the own-view save is unchanged. The session key is NOT re-homed
     (opaque handle; ~91 build() bindings bake it in) — see issue 0141.
+  - **⚠ D13 is RETIRED — the user overruled it on 2026-09-09.** D13 read
+    *"overwriting a DIFFERENT existing view needs NO confirm in v1 — the spec's
+    only confirm trigger is read-only + same-target"*, and it shipped: measured
+    that day with session `ngspice_state1` open and the sibling view
+    `debug_st1` present and writable, `ase::ui::save_as_needs_confirm` answered
+    **0** for `debug_st1`, so typing an existing sibling view into the Save-As
+    form destroyed it with no warning. The user's ruling was *"Just confirm if
+    overwriting an existing state"*; **undo was explicitly not asked for**, a
+    confirm was. `save_as_needs_confirm` keeps its D8 contract unchanged (five
+    pinned rows, `tests/headless/test_ase_dialogs.tcl` section H2); the new
+    case is the separate predicate `ase::ui::save_as_overwrites_other`
+    (`src/ase_window.tcl:6471`). D13's *other* half — that a titled save-as to
+    a different view writes through plain `ase::state_save` and stays dirty —
+    is unchanged. Decisions S-1…S-9,
+    `doc/claude/ase_l_ux_batch/DECISIONS.md`.
 - Simulation menu: Netlist, Run, Stop, View Netlist, View Log.
 - Netlist/log viewers: read-only text windows; log follows live output.
 - Double-click `ngspice_state1` view in LibMgr → opens ASE-L on that state.

@@ -174,6 +174,24 @@ if {[catch {
       $top.saveas.view delete 0 end
       $top.saveas.view insert 0 ngspice_state1
       $top.saveas.btns.proceed invoke
+      # ⚠ SINCE 2026-09-09 THIS RAISES AN OVERWRITE CONFIRM, AND WAITING FOR
+      # THE FORM ALONE HANGS FOREVER. Part A above created
+      # aselib/nfet_clean/ngspice_state1; Part B drives an UNTITLED session
+      # onto that now-existing view. An untitled session owns no file, so
+      # ase::ui::save_as_overwrites_other answers 1 and save_state_ok asks
+      # before writing (decision S-3 of batch ase_l_ux; the user retired D13 on
+      # 2026-09-09 -- "Just confirm if overwriting an existing state"). The form
+      # stays up BEHIND the confirm until do_save_state_as runs, so the loop
+      # below never sees it go. The adopt path this suite is about begins after
+      # the confirm is accepted: press it.
+      set sawc 0
+      for {set i 0} {$i < 100} {incr i} {
+        update
+        if {[winfo exists $top.confirm]} { set sawc 1; break }
+        settle 20
+      }
+      check_true "AD14b overwrite confirm appeared (untitled onto an existing view)" $sawc
+      if {$sawc} { $top.confirm.btns.proceed invoke }
       for {set i 0} {$i < 100} {incr i} {
         update
         if {![winfo exists $top.saveas]} break

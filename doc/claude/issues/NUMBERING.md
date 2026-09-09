@@ -2915,4 +2915,25 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   running session's choice, but the other window's bar may momentarily name the
   other one — recorded, not fixed).
 
-**The next free number is 1396.**
+- **1396** — Save State overwrote an existing state with no confirmation. `Session > Save
+  State` is always a Save-As and its only guard was `save_as_needs_confirm`, which by
+  decision **D13** asked only on read-only + same-target; a different existing state was
+  destroyed in silence. The user retired D13 on 2026-09-09 ("Just confirm if overwriting
+  an existing state"; undo explicitly not wanted). Fix: a second predicate
+  `ase::ui::save_as_overwrites_other`, the two sentences moved into the `lbl_*` family,
+  and two defects the fix itself introduced — `<Return>` arming the popup that the same
+  key raised, and a confirm orphaned by its own form's Escape — closed by
+  `ase::ui::confirm_safe_default` and `ase::ui::confirm_owned_by`. Rule debt **1396**
+  (the new sentence, the untitled-session rule S-3, and whether unwritable deserves a
+  third sentence).
+
+- **1397** — headless suites write the developer's real `~/.xschem/geometry` and evict
+  their entries. `store_geom` keeps the 100 most recent per-schematic geometries in
+  `$USER_CONF_DIR/geometry`; suites that open a schematic without redirecting
+  `::USER_CONF_DIR` write the real file. Measured: **50 of 101 lines were scratch paths**
+  after one session, i.e. half the developer's remembered window geometries permanently
+  displaced. Two fixes proposed, neither taken: a per-suite redirect closed by a lint row,
+  or one scratch `HOME` in the harness (measured to give an identical check count and
+  leave the file byte-identical).
+
+**The next free number is 1398.**

@@ -430,9 +430,12 @@ proc ase::ui::ask_save_close {key} {
 
 # Run Save State (Save-As) MODALLY for the close/quit paths: show the modeless
 # save_state_dialog, block until it is dismissed, and report whether the save
-# COMPLETED (1) or was cancelled (0). No grab (the RO-overwrite confirm is a
-# nested child). Completion is flagged by do_save_state_as via
-# dlg($key,saveas_result).
+# COMPLETED (1) or was cancelled (0). No grab (the overwrite confirm is a nested
+# child — since 2026-09-09 that is EITHER the read-only confirm or the new
+# "this state exists" one, save_state_ok :6481; both are the same modeless
+# ase::ui::confirm and both leave THIS dialog up, so the tkwait below still
+# ends only on a completed save or a dismissed form). Completion is flagged by
+# do_save_state_as via dlg($key,saveas_result).
 proc ase::ui::save_state_modal {key} {
   variable wins; variable dlg
   if {![dict exists $wins $key]} { return 0 }
@@ -5476,7 +5479,7 @@ proc ase::ui::listdlg_delete {key which} {
 # pass.
 #
 # ⚠ "ONE SOURCE" IS NOT YET TRUE OF THE WHOLE FILE, and the heading overclaimed
-# until this line was added. `ase::ui::save_all_report_discard` (below, ~:3016)
+# until this line was added. `ase::ui::save_all_report_discard` (below)
 # STILL hardcodes both labels and both spellings have already DRIFTED -- measured
 # in one process: the nudge prints `Outputs > Save All… > Save device OP
 # parameters (gm, gds, vth, ...)` while the discard prints `Outputs > Save All`
@@ -5551,6 +5554,33 @@ proc ase::ui::lbl_add_variable     {} { return {Add Variable} }
 proc ase::ui::lbl_add_output       {} { return {Add Output} }
 proc ase::ui::lbl_delete_selection {} { return {Delete Selection} }
 proc ase::ui::lbl_sim_temperature  {} { return {Simulation temperature} }
+
+# --- THE TWO OVERWRITE SENTENCES (batch ase_l_ux, decision S-7) --------------
+# `Session > Save State` is ALWAYS a Save-As (:6357), so OK can land on a file
+# that is already somebody's state. There are TWO reasons to stop and ask, and
+# until 2026-09-09 only the first of them existed at all:
+#   * the target is MY OWN file and it is read-only -> save_as_needs_confirm
+#   * the target is SOMEBODY ELSE'S existing state  -> save_as_overwrites_other
+# (:6422 and :6471; the chain that asks them is save_state_ok, :6481).
+#
+# Both sentences live HERE, in the lbl_* family, for the reason the block at
+# :5466 gives at length: `ase::ui::save_all_report_discard` kept its two labels
+# as inline literals and both spellings DRIFTED from the menu's own -- issue
+# 0661, where `string match` against BOTH constants returns 0. A sentence typed
+# inline in `save_state_ok` is that same defect pre-staged, and this arm now has
+# two of them a dozen lines apart.
+#
+# ⚠ THE READ-ONLY SENTENCE IS MOVED, NOT REWRITTEN. It is the shipped string
+# byte for byte, embedded `\n` included, so this mint changes zero pixels on the
+# arm it did not come to change. Only `lbl_overwrite_state` is new copy, and it
+# is the USER'S ruling (their words: "Just confirm if overwriting an existing
+# state"), recorded on the ledger as a rule debt, not a crew's wording.
+proc ase::ui::lbl_overwrite_state {lib cell view} {
+  return "State $lib/$cell/$view exists. Overwrite?"
+}
+proc ase::ui::lbl_overwrite_readonly {lib cell view} {
+  return "The state $lib/$cell/$view was opened read-only.\nOverwrite it?"
+}
 
 # `>`-separated menu paths, the shipped convention for a printed menu path in
 # this file (ase::ui::remedy_op_params_menu, above) and in xschem.tcl
@@ -6370,8 +6400,25 @@ proc ase::ui::saveas_cancel {key} {
 # read-only: the session was opened read-only (attr `readonly`, threaded by
 # ase::open_state's trailing arg) or the file itself is unwritable (the
 # LibMgr git-checkout discipline leaves non-checked-out files 0444).
-# D13: overwriting a DIFFERENT existing view needs NO confirm in v1 — the
-# spec's only confirm trigger is read-only + same-target.
+#
+# ⚠ D13 IS RETIRED, AND THE USER RETIRED IT (2026-09-09). D13 read
+# "overwriting a DIFFERENT existing view needs NO confirm in v1 — the spec's
+# only confirm trigger is read-only + same-target", and it was an accurate
+# description of the shipped window: measured that day with session
+# `ngspice_state1` open and the sibling view `debug_st1` present and writable,
+# THIS proc answered 0 for `debug_st1`, so typing an existing sibling view into
+# the Save-As form destroyed it with no warning at all. The user's ruling:
+# "Just confirm if overwriting an existing state." Undo was explicitly NOT
+# asked for; a confirm was.
+#
+# THIS PROC IS UNCHANGED ANYWAY (batch decision S-1,
+# doc/claude/ase_l_ux_batch/DECISIONS.md). D8's contract is still exactly "the
+# target IS my own file AND that file is effectively read-only"; the new case
+# is `ase::ui::save_as_overwrites_other`, immediately below. The four rows at
+# tests/headless/test_ase_dialogs.tcl section H2 still pins this one
+# — including the fourth, which still reads 0 for a different target and now
+# names the PREDICATE rather than the window's outcome (S-9), because the
+# window itself no longer makes the promise that row's old name made.
 proc ase::ui::save_as_needs_confirm {key lib cell view} {
   set target [xschem cellview_path "$lib/$cell" $view]
   if {$target eq {}} { return 0 }
@@ -6382,6 +6429,53 @@ proc ase::ui::save_as_needs_confirm {key lib cell view} {
   if {[ase::session_getattr $key readonly 0] eq {1}} { return 1 }
   if {![file writable [file normalize $target]]} { return 1 }
   return 0
+}
+
+# THE SECOND REASON A SAVE-AS STOPS TO ASK: 1 iff the resolved target EXISTS
+# and is NOT the session's own state file, else 0. The user's overrule of D13
+# (see the block above) lands here and NOT inside `save_as_needs_confirm`
+# (batch decision S-2, doc/claude/ase_l_ux_batch/DECISIONS.md).
+#
+# WHY A SECOND PREDICATE RATHER THAN ONE WIDENED BOOLEAN:
+#  * `save_as_needs_confirm` is a DOCUMENTED predicate with four pinned rows
+#    (tests/headless/test_ase_dialogs.tcl, section H2) and a spec paragraph.
+#    Widening it moves those rows and, worse, leaves ONE boolean carrying TWO
+#    sentences — the caller would then have to re-derive WHICH of the two
+#    reasons it just got in order to word the popup, i.e. compute the answer a
+#    second time, from the same inputs, in a different place. That is how a
+#    confirm ends up naming the wrong cause.
+#  * the two are MUTUALLY EXCLUSIVE BY CONSTRUCTION, not by luck: that one's
+#    only 1-arm requires `target == own`, this one requires `target != own`.
+#    So `save_state_ok` can ask them in order, show ONE popup, and never
+#    compose a sentence out of two reasons.
+#
+# `xschem cellview_path` is the SAME resolver `do_save_state_as` (:6749) uses to
+# choose the file it will write, so "exists" here is exactly "the bytes OK is
+# about to destroy" — a `file exists` on a path composed by hand would be a
+# second, drifting answer to the same question, and would disagree with the
+# writer on the legacy flat-layout fallback (library_defs.tcl:303).
+# S-3: an UNTITLED session owns no file — `ase::session_path` returns {}, issue
+# 0141's marker — so EVERY existing target is somebody else's. That is the case
+# where a clobber is most likely and least expected, so it is the case that
+# must ask. S-4: saving onto your own state stays silent; that is what Save
+# means. S-5: a target that does not exist is not an overwrite —
+# `do_save_state_as` creates the view (D9, row H3) and says nothing.
+# S-6: exists-but-unwritable still fires here (it exists) and the write then
+# fails through the existing error path; a third sentence for it is a separate
+# change.
+#
+# PURE, and it has to be: it is called from an OK handler that has not yet
+# decided to do anything. It resolves and compares, nothing else — it creates
+# no directory (contrast `ase::rundir`, which mkdirs and moves a global), writes
+# nothing, and raises nothing.
+proc ase::ui::save_as_overwrites_other {key lib cell view} {
+  set target [xschem cellview_path "$lib/$cell" $view]
+  if {$target eq {}} { return 0 }
+  set own [ase::session_path $key]
+  if {$own ne {} && [file normalize $target] eq [file normalize $own]} {
+    return 0
+  }
+  return 1
 }
 
 proc ase::ui::save_state_ok {key} {
@@ -6396,13 +6490,73 @@ proc ase::ui::save_state_ok {key} {
     catch {::ase::echo "ase: Library, Cell and View are all required" error}
     return
   }
+  # ONE confirm, EITHER reason, NEVER both. The two predicates are mutually
+  # exclusive by construction (target == own vs target != own, see
+  # save_as_overwrites_other above), so this is a CHAIN, not a composition:
+  # each arm hands `ase::ui::confirm` a whole sentence that already names its
+  # own cause. Read-only is asked first because it is the narrower arm and its
+  # cause is the one the user CANNOT see from the form — the form shows the
+  # l/c/v, it does not show the file's mode.
+  # One title for both arms: `Overwrite State`, the title the read-only arm has
+  # always used (S-7). It is the same question about the same file.
+  set title {Overwrite State}
+  set go [list ase::ui::do_save_state_as $key $l $c $v]
+  set cw {}
   if {[ase::ui::save_as_needs_confirm $key $l $c $v]} {
-    ase::ui::confirm $key {Overwrite State} \
-      "The state $l/$c/$v was opened read-only.\nOverwrite it?" \
-      [list ase::ui::do_save_state_as $key $l $c $v]
+    set cw [ase::ui::confirm $key $title [ase::ui::lbl_overwrite_readonly $l $c $v] $go]
+  } elseif {[ase::ui::save_as_overwrites_other $key $l $c $v]} {
+    set cw [ase::ui::confirm $key $title [ase::ui::lbl_overwrite_state $l $c $v] $go]
+  } else {
+    ase::ui::do_save_state_as $key $l $c $v
     return
   }
-  ase::ui::do_save_state_as $key $l $c $v
+  ase::ui::confirm_safe_default $cw
+  ase::ui::confirm_owned_by $w $cw
+}
+
+# A DESTRUCTIVE confirm must not be armed by the keystroke that RAISED it.
+#
+# ⚠ MEASURED 2026-09-09 by this item's adversary, on the shipped gesture.
+# `save_state_dialog` binds `<Return>` on all three of its fields (:6357), so
+# "type the view name, press Return" is the sanctioned way to submit the form.
+# `ase::ui::confirm` (:4039) then focuses OK and binds `<Return>` to
+# `confirm_ok`. The two compose into: Return raises the popup, Return destroys
+# the file — with the sentence on screen for the length of one keystroke. The
+# gate the user asked for would have been real for the mouse and theatre for
+# the keyboard.
+#
+# Fixed HERE and not in `ase::ui::confirm`, deliberately: that proc is shared
+# (Load State discards unsaved edits through it too, :6288) and its
+# "Return = proceed" contract is documented at :4036. Narrowing the change to
+# the caller that can lose a file leaves every other confirm exactly as it was.
+# Escape already destroyed; now Return does too, and OK is one click or one Tab.
+proc ase::ui::confirm_safe_default {w} {
+  if {$w eq {} || ![winfo exists $w]} { return }
+  catch {focus $w.btns.cancel}
+  catch {bind $w <Return> [list destroy $w]}
+}
+
+# Tie a confirm's life to the dialog that raised it.
+#
+# ⚠ ALSO MEASURED 2026-09-09. Escape on the Save-As form is the documented
+# item-10 dismissal, and it left the overwrite confirm ALIVE and orphaned —
+# a live destructive button pointed at a file, belonging to a form the user
+# had just backed out of; its OK still wrote. Re-opening the form was the same
+# defect wearing a second face: `dialog_frame` destroys the old form (:1666)
+# and the screen was then a form naming one view above a confirm naming
+# another, whose OK wrote the one the user could no longer see.
+#
+# `<Destroy>` fires for every descendant as well as for `$owner` itself, hence
+# the `%W` guard. By the time an ACCEPTED confirm runs its command the popup is
+# already gone (`confirm_ok` destroys first, then evals, :4064), so a successful
+# save reaches this handler with nothing left to drop.
+proc ase::ui::confirm_owned_by {owner w} {
+  if {$owner eq {} || $w eq {} || ![winfo exists $owner]} { return }
+  bind $owner <Destroy> [list ase::ui::confirm_drop $owner $w %W]
+}
+proc ase::ui::confirm_drop {owner w ev} {
+  if {$ev ne $owner} { return }
+  catch {destroy $w}
 }
 
 # --- viewer persistence (item 14) ---------------------------------------------
@@ -6620,7 +6774,12 @@ proc ase::ui::viewer_restore {key} {
 #    item-02 creation path; D9: the CELL must already exist — a nonexistent
 #    cell errors cleanly, auto-creating cells would invent behavior), then
 #    the seeded file is overwritten with THIS session's serialization;
-#  - a DIFFERENT existing view -> plain state_save overwrite (D13).
+#  - a DIFFERENT existing view -> plain state_save overwrite (D13's WRITE half,
+#    which stands; D13's "and needs no confirm" half was overruled by the user
+#    on 2026-09-09 and now goes through ase::ui::save_as_overwrites_other,
+#    :6471 — on THAT arm this proc now runs only after the confirm is
+#    accepted; the own-target and missing-view arms reach it directly, as
+#    before, and so do the suites, which call this worker and not the OK).
 # UNTITLED ADOPT (issue 0141): when this session was never saved (own eq {} —
 # a Launch-ASE untitled session), the first successful Save-As ADOPTS the
 # target as the session's real identity via ase::session_adopt (path set,
@@ -6628,6 +6787,8 @@ proc ase::ui::viewer_restore {key} {
 # the still-open window loses its "(unsaved)"/"*" cues and shows "State: <v>".
 # This is gated on own eq {}, so a TITLED different-view save-as still stays
 # dirty (D5/D13, deliberate) and the own-view save (first arm) is untouched.
+# (D13's no-confirm half is retired — see save_as_overwrites_other, :6471 —
+# but its dirty half, the part cited here, is unchanged.)
 # On success: LibMgr pane refresh (headless-safe catch), notice, the Save-As
 # dialog dies. Returns 1 on success, 0 on a reported error (dialog kept up).
 # item 14 (D5): the viewer snapshot runs FIRST, so every arm writes the
