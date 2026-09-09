@@ -53,12 +53,12 @@
 # (ase_design_window.tcl); headless, ase::netlist self-loads and that arm of the
 # guard stays the thing under test.
 #
-# THE CHECK COUNT IS 224 IN BOTH ARMS, and that equality is a COINCIDENCE of
+# THE CHECK COUNT IS 230 IN BOTH ARMS, and that equality is a COINCIDENCE of
 # announced skips cancelling -- it is NOT a claim that the arms run the same rows.
 # Headless, NT14 runs (its own premise is "there is no Tk") and RG6's behavioural
 # leg does not; under X, NT14 prints
 # `SKIPPED: NT14 headless-only sink safety (a display is present; see 0804)`
-# and RG6 prints its measurement instead. One row each way, so 224 = 224.
+# and RG6 prints its measurement instead. One row each way, so 230 = 230.
 # DX7 is the third row of this shape and it does NOT skip either way: it asserts
 # ase::netlist's arm (c) under a display and its arm (b) headless, because those
 # are the product's own two contracts for the same call from the same place.
@@ -67,9 +67,10 @@
 # comment first claimed "differ by exactly one" (issue 0698's era), 184 before
 # the 1389 run-guard section, 197 when section RG landed, 203 once RG6 was
 # rewritten to measure the keyboard and RG13/RG14 were added, 216 when section
-# RT landed (descend_run_batch item A) and 224 with section DX (item C). If a
-# run reports fewer, a row went missing -- do not edit this number down to
-# match it.
+# RT landed (descend_run_batch item A), 224 with section DX (item C) and 230
+# with section C4 (the sim_entry state key, the 2026-09-08 registry/choice
+# ruling). If a run reports fewer, a row went missing -- do not edit this
+# number down to match it.
 
 set fail 0; set npass 0
 proc check {name got exp} {
@@ -186,13 +187,51 @@ set d [ase::state_default]
 # ase::omit_if_empty, so an empty one is NOT serialized and every state file
 # written before it existed still round-trips byte-identically — F3/G3 in
 # test_ase_final{,_gf180} are the golden files that assert exactly that.
-check "R1 default has exactly the 17 schema keys" [lsort [dict keys $d]] \
-  [lsort {version simulator design rundir temperature models variables analyses outputs save_all_v save_all_i save_op_params options includes pre_commands cosim viewer}]
+check "R1 default has exactly the 18 schema keys" [lsort [dict keys $d]] \
+  [lsort {version simulator sim_entry design rundir temperature models variables analyses outputs save_all_v save_all_i save_op_params options includes pre_commands cosim viewer}]
 check "R1 cosim defaults to empty and is omitted from the serialized form" \
   [list [dict get $d cosim] [expr {[string first "cosim" [ase::state_serialize $d]] >= 0}]] {{} 0}
 check "R1 a NON-empty cosim IS serialized" \
   [expr {[string first "cosim {build never}" \
      [ase::state_serialize [dict replace $d cosim {build never}]]] >= 0}] 1
+# --- C4: sim_entry, the choice of registered simulator (the 2026-09-08 ruling)
+# The user: registering a simulator "is something that can make it to disk right
+# away as soon as done", but *whether* a registered one "gets assigned as 'the
+# one to use' is an option that is part of the ASE-L state. If changed, that
+# results in dirtiness." Being a schema key is the whole implementation of that
+# — ase::session_dirty compares serialized states, so the dirty mark, the save
+# and the quit prompt come for free.
+#
+# ⚠ IT OBEYS THE SAME LAW AS `cosim` AND `save_op_params`, AND FOR THE SAME
+# REASON: default `{}`, member of ase::omit_if_empty. Anything else writes a
+# `sim_entry` line into all 104 committed .state files and reddens the five
+# load->save byte-identity rows (F3 in test_ase_final, G3 in
+# test_ase_final_gf180, R4 below, V4 in test_ase_view, R2 in test_ase_persist).
+#
+# THREE VALUES, and `{}` is NOT the same as "the PATH program": {} means this
+# state has no opinion and the installation default runs; `none` is the
+# deliberate PATH choice issue 0932 established; `{name <entry>}` names a
+# registry entry, two words so no registry name has to be reserved.
+check "C4 sim_entry defaults to empty" \
+  [ase::state_get $d sim_entry <absent>] {}
+check "C4 sim_entry is in ase::omit_if_empty" \
+  [expr {[lsearch -exact $ase::omit_if_empty sim_entry] >= 0}] 1
+check "C4 sim_entry is OMITTED from the serialized default state" \
+  [expr {[string first "sim_entry" [ase::state_serialize $d]] >= 0}] 0
+check "C4 sim_entry sits beside simulator in the canonical order" \
+  [lsearch -exact $ase::schema_keys sim_entry] \
+  [expr {[lsearch -exact $ase::schema_keys simulator] + 1}]
+check "C4 a state that picks the PATH program IS serialized -- {} and none are different answers" \
+  [list [expr {[string first "sim_entry none" \
+       [ase::state_serialize [dict replace $d sim_entry none]]] >= 0}] \
+        [expr {[string first "sim_entry {name zz-build}" \
+       [ase::state_serialize [dict replace $d sim_entry {name zz-build}]]] >= 0}]] \
+  {1 1}
+check "C4 a state file written before the key existed loads with the key empty and serializes without it -- the byte-identity contract in one line" \
+  [list [ase::state_get [dict remove $d sim_entry] sim_entry {}] \
+        [expr {[string first "sim_entry" \
+           [ase::state_serialize [dict remove $d sim_entry]]] >= 0}]] \
+  {{} 0}
 # --- C2/C3: the save_op_params gate key (plan step S4, polarity 0927) --------
 # doc/claude/suggestions/next_session_prompt_op_annotation.md S4 + the S4 plan's
 # first decision. The gate key MUST default to `{}` and MUST join

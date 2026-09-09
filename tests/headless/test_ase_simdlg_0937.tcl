@@ -58,9 +58,15 @@
 #   $top.simrow.browse       the file browser button
 #   $top.simrow.status       the editor's OWN feedback surface
 #   $top.simrow.btns.proceed / .cancel
-#   procs: ase::ui::simulators_dialog simdlg_fill simdlg_status simdlg_commit
+#   procs: ase::ui::simulators_dialog simdlg_fill simdlg_status
 #          simdlg_editor simdlg_browse simdlg_ok simdlg_remove simdlg_use
 #          simdlg_none_label
+#   1395:  there is NO ase::ui::simdlg_commit any more. It was the dialog's own
+#          `catch {ase::sim_write_conf}` after every gesture and the tree's only
+#          caller of the writer; the write now lives on ase::sim_register /
+#          sim_unregister, so the Command-window door persists too. S10a still
+#          measures that the dialog's Add reaches the file -- through the
+#          mutation instead of through the gesture.
 #   1370:  $top.status.sim  carries "Simulator: [ase::sim_label <backend>]";
 #          ase::ui::refresh_status_all walks every open session and is called
 #          from the LAST LINE of ase::ui::simdlg_fill
@@ -88,6 +94,13 @@
 # Arms:
 #   tests/headless/devdisplay.sh exec ./src/xschem --pipe -q --nolog --script tests/headless/test_ase_simdlg_0937.tcl
 #   ./src/xschem --nogui --pipe -q --nolog --script tests/headless/test_ase_simdlg_0937.tcl   (structural rows only)
+#
+# ============================================================================
+# FLOOR: 55 checks on the display arm, 5 on the structural one. RAISED, NEVER
+# LOWERED. It was 48 / 5 before issue 1395, with S10b red -- that row asserted
+# the pre-ruling contract (the dialog's choice reaching disk) and was rewritten
+# in place rather than deleted; S40-S46 are the new contract's own rows.
+# ============================================================================
 
 set fail 0; set npass 0
 proc check {name got exp} {
@@ -765,9 +778,44 @@ if {$FIXOK && [info exists ::has_x] && [info commands winfo] ne {}} {
           [expr {[string first {mybuild5} $S10TXT] >= 0}]] \
     [list 1 1 1]
 
-  ## The 0932 half, seen from the dialog: "use the program on my PATH" is a
-  ## choice, and the file has to carry it or the next start silently puts the
-  ## first entry back in force.
+  ## --- S10b: THE CHOICE DOES NOT GO IN THE FILE (issue 1395) -----------
+  ## THIS ROW USED TO ASSERT THE OPPOSITE, and the old contract is written
+  ## here rather than deleted, because it was a real guarantee and it moved
+  ## rather than went away. It read: *choosing "use the program on my PATH" in
+  ## the dialog is written down too, so the next start does not quietly put one
+  ## of yours back in charge*, and its second term was that the saved list now
+  ## contains `ase::sim_select {}`.
+  ##
+  ## THE USER RULED THAT WRONG, verbatim 2026-09-08: *whether* a registered
+  ## simulator "gets assigned as 'the one to use' is an option that is part of
+  ## the ASE-L state. If changed, that results in dirtiness. User must
+  ## explicitly save and, if user initiates an Xschem shutdown, then she must
+  ## get a warning and a prompt to save." A pick that wrote itself to
+  ## ~/.xschem/ase_simulators reached disk with no save gesture behind it, from
+  ## a window the user might be about to abandon, and overwrote the
+  ## installation default with one bench's opinion.
+  ##
+  ## 0932's ACTUAL GUARANTEE -- a deliberately cleared choice is not silently
+  ## undone at the next start -- did not go away with it. It lives where the
+  ## default lives now, and is measured by row R8 of
+  ## tests/headless/test_ase_simreg_0931.tcl against a saved file whose own
+  ## selection line is empty. What THIS row measures is the new half: the
+  ## gesture changes the SESSION and leaves the file exactly as it was.
+  ##
+  ## A CLEAN BENCH FIRST. Rows S3 and S4 above have already made a pick in this
+  ## session, so without this the "not dirty before" term would be measuring
+  ## nothing at all -- and the pick that follows must be a real CHANGE, or an
+  ## unchanged state would answer "not dirty" for the wrong reason.
+  set S10CLEAN [pcall ase::session_update $key \
+                  [pcall ase::sim_choice_set [pcall ase::session_state $key] entry mybuild5]]
+  pcall ase::session_save $key
+  set S10DIRTY0 [pcall ase::session_dirty $key]
+  set S10WAS {}
+  set S10MT0 ZZNOFILE
+  if {$CONFFILE ne {NOPROC} && $CONFFILE ne {} && [file exists $CONFFILE]} {
+    set S10WAS [slurp $CONFFILE]
+    set S10MT0 [file mtime $CONFFILE]
+  }
   set S10VAR [wcget $top.simdlg.use -textvariable]
   if {$S10VAR ne {NOWIDGET} && $S10VAR ne {NOOPT} && $S10VAR ne {}} {
     catch {set ::$S10VAR [mint ase::ui::simdlg_none_label]}
@@ -775,13 +823,25 @@ if {$FIXOK && [info exists ::has_x] && [info commands winfo] ne {}} {
     update
   }
   set S10TXT2 {}
+  set S10MT1 ZZNOFILE
   if {$CONFFILE ne {NOPROC} && $CONFFILE ne {} && [file exists $CONFFILE]} {
     set S10TXT2 [slurp $CONFFILE]
+    set S10MT1 [file mtime $CONFFILE]
   }
-  check {S10b choosing "use the program on my PATH" in the dialog is written down too, so the next start does not quietly put one of yours back in charge} \
-    [list [pcall ase::sim_selected] \
-          [expr {[string first "ase::sim_select \{\}" $S10TXT2] >= 0}]] \
-    [list {} 1]
+  ## THE FILE'S OWN SELECTION LINE IS THE SHARP TERM. It names the installation
+  ## DEFAULT, which is still mybuild5 -- the first entry registered after this
+  ## file's last simreset -- while the session is now running the PATH program.
+  ## Byte-comparing the whole file catches a write that happened to land in the
+  ## same second, which an mtime alone would not.
+  check {S10b choosing "use the program on my PATH" in the dialog changes THIS BENCH and nothing else -- the saved list is not touched, byte for byte, and the session is now unsaved work the user has to decide about} \
+    [list $S10CLEAN $S10DIRTY0 \
+          [pcall ase::sim_selected] \
+          [pcall ase::session_dirty $key] \
+          [expr {$S10WAS ne {} && $S10TXT2 eq $S10WAS}] \
+          [expr {$S10MT0 ne {ZZNOFILE} && $S10MT1 eq $S10MT0}] \
+          [expr {[string first "ase::sim_select \{\}" $S10TXT2] >= 0}] \
+          [expr {[string first {ase::sim_select mybuild5} $S10TXT2] >= 0}]] \
+    [list 1 0 {} 1 1 1 0 1]
 
   # --- S8: REMOVE WORKS ON THE ONE IN USE, AND SAYS WHAT HAPPENS NEXT ----
   # Measured in all three arms at 439d1087: "removing the in-force entry
@@ -1119,22 +1179,34 @@ if {$FIXOK && [info exists ::has_x] && [info commands winfo] ne {}} {
   update
   set top22 [ase::ui::window_for $key2]
 
-  # --- S21: IT FOLLOWS THE GESTURE, WITH NO SESSION UPDATE BEHIND IT -----
-  # The bar is refreshed by ase::session_notify, and NOTHING about picking a
-  # simulator updates the session -- the registry is not session state. So
-  # without a refresh on the dialog's own path the bar keeps the name the
-  # window opened with until the run starts, which is exactly the moment the
-  # user was trying to predict. The two dirty terms are the witness that no
-  # session update happened on either side of the gesture.
+  # --- S21: IT FOLLOWS THE GESTURE ---------------------------------------
+  # The bar is refreshed by ase::session_notify. Before issue 1370 nothing on
+  # the dialog's own path refreshed it, so it kept the name the window opened
+  # with until the run started -- exactly the moment the user was trying to
+  # predict.
+  #
+  # ⚠ THE TWO DIRTY TERMS HAVE REVERSED, AND THE REVERSAL IS THE POINT. They
+  # used to read `0 0` and their comment read *the witness that no session
+  # update happened on either side of the gesture* -- because the registry is
+  # not session state and the choice used to live in the registry. Issue 1395
+  # moved the CHOICE into the state on the user's ruling, so a pick made here
+  # is now unsaved work: `0` before, `1` after. The bar still has to follow the
+  # gesture, which is what the first three terms are; what changed is that the
+  # session now knows it was changed. Rows S40-S45 below are that half's own
+  # measurements.
+  #
+  # THE `0` BEFORE IS NOT FREE. S20a re-opened this session from its file, so
+  # the picks rows S3/S4/S10b made are gone; if that ever stopped being true
+  # this term reds rather than the row passing vacuously.
   set S21WAS [barsim $key]
   set S21D [ase::session_dirty $key]
   dlg_use $key beta20
   set S21B [barsim $key]
   dlg_use $key alpha20
   set S21A [barsim $key]
-  check {S21 changing "Use this one:" changes the bottom bar there and then -- the user does not have to start a run to find out which simulator a run would start} \
+  check {S21 changing "Use this one:" changes the bottom bar there and then -- the user does not have to start a run to find out which simulator a run would start -- and the bench is now unsaved work} \
     [list $S21WAS $S21B $S21A $S21D [ase::session_dirty $key]] \
-    [list alpha20 beta20 alpha20 0 0]
+    [list alpha20 beta20 alpha20 0 1]
 
   # --- S22: EVERY OPEN SESSION FOLLOWS IT -------------------------------
   # The registry is process-global; the dialog is per-session (0937's own
@@ -1761,6 +1833,234 @@ if {$FIXOK && [info exists ::has_x] && [info commands winfo] ne {}} {
           [scount $SRCW {to find out which spellings}]] \
     [list 1 1 1 1 1 0]
   catch {ase::sim_caps_clear}
+
+  # =====================================================================
+  # S40-S45: ISSUE 1395 -- WHICH SIMULATOR TO USE IS THE BENCH'S OWN, AND
+  #          IT IS UNSAVED WORK UNTIL THE USER SAYS OTHERWISE
+  # =====================================================================
+  # THE USER'S RULING, verbatim 2026-09-08: "Yes, registering a simulator (so
+  # that future Xschems see the 'new' simulator instance) is something that can
+  # make it to disk right away as soon as done. But, registering a simulator is
+  # not part of the simulator state that accompanies a test-bench cell in the
+  # library manager. *Whether* the 'new' simulator just registered gets assigned
+  # as 'the one to use' is an option that is part of the ASE-L state. If
+  # changed, that results in dirtiness. User must explicitly save and, if user
+  # initiates an Xschem shutdown, then she must get a warning and a prompt to
+  # save."
+  #
+  # MEASURED BEFORE THE FIX, through these very widgets (row S21's old terms):
+  # picking another simulator in the combobox left ase::session_dirty at 0, so
+  # the title grew no marker, Save State had nothing to save, and the
+  # xschem-quit sweep walked straight past the window without asking. The pick
+  # went to ~/.xschem/ase_simulators instead -- the one place the ruling says it
+  # must not go.
+  #
+  # EVERY ROW BELOW DRIVES THE REAL COMBOBOX through dlg_use -- the variable the
+  # widget is bound to, then the proc its <<ComboboxSelected>> binding calls --
+  # so none of them can pass on a tree where the gesture is wired to something
+  # else.
+  proc wtitle {w} {
+    if {![wex $w]} { return NOWIDGET }
+    if {[catch {wm title $w} t]} { return NOTITLE }
+    return $t
+  }
+  ## THE CONF FILE IS REAL HERE and these two registrations write it, so "the
+  ## file was not touched" below is a statement about a file that exists and
+  ## that this suite has just seen change. ::USER_CONF_DIR is this suite's own
+  ## scratch (see the redirect above); nothing here can reach the developer's.
+  simreset
+  catch {ase::sim_caps_clear}
+  pcall ase::sim_register one41 $STUB
+  pcall ase::sim_register two41 $STUB2
+  catch {destroy $top20.simdlg}
+  winv $top20.mb.setup $SIMLBL
+  update
+
+  # --- S40: THE PICK DIRTIES THE BENCH AND LEAVES THE FILE ALONE --------
+  ## A SAVED, CLEAN BENCH THAT ALREADY HAS A CHOICE, so the pick that follows is
+  ## a real CHANGE. Without the pre-set choice a "clean before / dirty after"
+  ## could be produced by any first write to the key.
+  set S40SET [pcall ase::session_update $key \
+                [pcall ase::sim_choice_set [pcall ase::session_state $key] entry one41]]
+  pcall ase::session_save $key
+  pcall ase::ui::simdlg_fill $key
+  update
+  set S40D0 [pcall ase::session_dirty $key]
+  set S40BOX0 ZZNOVAR
+  catch {set S40BOX0 $::ase::ui::simuse($key)}
+  set S40WAS ZZNOFILE ; set S40MT0 ZZNOFILE
+  if {$CONFFILE ne {NOPROC} && $CONFFILE ne {} && [file exists $CONFFILE]} {
+    set S40WAS [slurp $CONFFILE]
+    set S40MT0 [file mtime $CONFFILE]
+  }
+  set S40T0 [wtitle $top20]
+  dlg_use $key two41
+  set S40D1 [pcall ase::session_dirty $key]
+  set S40BOX1 ZZNOVAR
+  catch {set S40BOX1 $::ase::ui::simuse($key)}
+  set S40NOW ZZNOFILE ; set S40MT1 ZZNOFILE
+  if {$CONFFILE ne {NOPROC} && $CONFFILE ne {} && [file exists $CONFFILE]} {
+    set S40NOW [slurp $CONFFILE]
+    set S40MT1 [file mtime $CONFFILE]
+  }
+  check {S40 THE HEADLINE picking another simulator in "Use this one:" is a change to THIS test bench -- it is unsaved work from that moment, it is what will run, and the saved simulator list on disk is not touched by it, byte for byte} \
+    [list $S40SET $S40D0 $S40BOX0 $S40D1 $S40BOX1 \
+          [pcall ase::sim_selected] \
+          [lindex [pcall ase::sim_choice_of [pcall ase::session_state $key]] 0] \
+          [lindex [pcall ase::sim_choice_of [pcall ase::session_state $key]] 1] \
+          [expr {$S40WAS ne {ZZNOFILE} && $S40NOW eq $S40WAS}] \
+          [expr {$S40MT0 ne {ZZNOFILE} && $S40MT1 eq $S40MT0}]] \
+    [list 1 0 one41 1 two41 two41 entry two41 1 1]
+
+  # --- S41: AND THE TITLE SAYS SO ---------------------------------------
+  ## ase::ui::refresh_title appends ` *` to a dirty session's title, and the
+  ## dialog's own gesture has to be enough to make that happen -- the marker is
+  ## repainted by ase::session_notify, which only fires from
+  ## ase::session_update. A gesture that set the registry and not the state
+  ## would leave the title clean while the run had already changed.
+  ##
+  ## THE MARKER IS NOT RETYPED FROM THE SOURCE: the row asserts that the clean
+  ## title is a prefix of the dirty one and that the dirty one is longer, so a
+  ## re-wording of the marker costs nothing here.
+  set S41T1 [wtitle $top20]
+  check {S41 the window title marks the bench as changed the moment the simulator is picked, so the user can see there is something to save} \
+    [list [expr {$S40T0 ne {NOWIDGET} && $S40T0 ne {NOTITLE}}] \
+          [expr {[string first {Analog Sim Environment} $S40T0] == 0}] \
+          [expr {[string match {* \*} $S40T0] ? 1 : 0}] \
+          [expr {[string match {* \*} $S41T1] ? 1 : 0}] \
+          [expr {[string first $S40T0 $S41T1] == 0}]] \
+    [list 1 1 0 1 1]
+
+  # --- S42: SAVE IS WHAT MAKES IT STICK, AND IT REALLY COMES BACK -------
+  ## The other half of the ruling: the user must save on purpose. After Save
+  ## State the bench is clean, and re-reading the state file from disk
+  ## (ase::session_load -- Session > Load State, which discards everything in
+  ## memory) still answers the simulator that was picked. That is the row that
+  ## proves the choice is in the FILE FORMAT and not merely in a dict: it goes
+  ## through ase::state_save / ase::state_load, the same pair the 104 committed
+  ## .state files go through.
+  pcall ase::session_save $key
+  set S42D0 [pcall ase::session_dirty $key]
+  set S42RC [pcall ase::session_load $key]
+  set S42CH [pcall ase::sim_choice_of [pcall ase::session_state $key]]
+  set S42TXT {}
+  catch {set S42TXT [slurp [pcall ase::session_path $key]]}
+  check {S42 saving the bench is what makes the pick stick -- afterwards there is nothing left to save, and re-reading the bench from disk still says the simulator the user chose} \
+    [list $S42D0 $S42RC $S42CH [pcall ase::session_dirty $key] \
+          [expr {[string first {sim_entry} $S42TXT] >= 0}]] \
+    [list 0 1 [list entry two41] 0 1]
+
+  # --- S45: THE COMBOBOX IS THIS BENCH'S, NOT THE PROGRAM'S -------------
+  ## ase::sim_selected answers what is in force in the PROCESS -- one answer for
+  ## every open window. The choice is the bench's. So the two can differ, and
+  ## the combobox must follow the bench: the Command-window door
+  ## (`ase::sim_select <name>`, this user's own first door) changes what is in
+  ## force without touching any bench at all.
+  ##
+  ## THE SECOND TERM IS THE WITNESS that they are genuinely two different
+  ## sources: the bottom bar names what is in force, so it says the OTHER one.
+  ## That divergence is the known limitation recorded as D5 in
+  ## doc/claude/ase_simchoice_batch/DECISIONS.md -- the run resolves it, because
+  ## ase::run_deck applies the running bench's own choice before it starts
+  ## anything.
+  pcall ase::session_update $key \
+    [pcall ase::sim_choice_set [pcall ase::session_state $key] entry one41]
+  pcall ase::sim_select two41
+  pcall ase::ui::simdlg_fill $key
+  update
+  set S45BOX ZZNOVAR
+  catch {set S45BOX $::ase::ui::simuse($key)}
+  check {S45 the "Use this one:" box shows the simulator THIS bench asks for, not whichever one the program happens to be running for somebody else} \
+    [list $S45BOX [pcall ase::sim_selected] [barsim $key]] \
+    [list one41 two41 two41]
+
+  # --- S46: THE REFUSAL ARM STILL REFUSES -------------------------------
+  ## A name the registry does not know must not become this bench's choice.
+  ## ase::sim_apply_choice never raises -- it is called from inside a run -- so
+  ## the refusal is taken from the registry itself before anything is written:
+  ## ase::sim_select refuses exactly this and changes nothing while doing it.
+  ## Storing it instead would dirty the bench with a pick that cannot run and
+  ## would then show it back as the truth, which is the one thing this arm
+  ## exists to prevent.
+  ##
+  ## THE SENTENCE IS THE MINT'S, quoted from ase::sim_why and never from a
+  ## literal here (ruling D5-4).
+  set S46CH0 [pcall ase::sim_choice_of [pcall ase::session_state $key]]
+  dlg_use $key ghost46
+  set S46BOX ZZNOVAR
+  catch {set S46BOX $::ase::ui::simuse($key)}
+  check {S46 picking a simulator that is not in the list is refused in the registry's own words, and the bench keeps the choice it had} \
+    [list $S46CH0 [pcall ase::sim_choice_of [pcall ase::session_state $key]] \
+          $S46BOX \
+          [expr {[wtext $top20.simdlg.status] eq [mint ase::sim_why noentry ghost46 {} [list one41 two41]]}]] \
+    [list [list entry one41] [list entry one41] one41 1]
+
+  # --- S44: A BENCH THAT ASKS FOR A SIMULATOR THAT IS GONE --------------
+  ## A saved bench outlives the registry: the entry it names can be removed, or
+  ## the bench can be opened on a machine that never had it. That must not be a
+  ## stack trace in the middle of a run, and it must not be silence either.
+  ## ase::sim_apply_choice never raises; it says the ONE sentence that already
+  ## exists for a name nobody registered, and leaves in force whatever was in
+  ## force. The dialog then shows the bench's own answer rather than quietly
+  ## substituting one -- that name is what the user has to go and fix.
+  ##
+  ## THE SENTENCE IS COUNTED, NOT JUST SEEN. ase::sim_said joins everything said
+  ## since the clear, so a second sentence would still leave the first one
+  ## visible; the length of the record is what pins "one".
+  pcall ase::session_update $key \
+    [pcall ase::sim_choice_set [pcall ase::session_state $key] entry ghost44]
+  pcall ase::sim_said_clear
+  set S44FORCE0 [pcall ase::sim_selected]
+  set S44RC [catch {ase::sim_apply_choice [ase::session_state $key]} S44RES]
+  set S44N -1
+  catch {set S44N [llength $::ase::sim_said]}
+  set S44SAID [pcall ase::sim_said]
+  set S44FILL [pcall ase::ui::simdlg_fill $key]
+  update
+  set S44BOX ZZNOVAR
+  catch {set S44BOX $::ase::ui::simuse($key)}
+  check {S44 a bench that asks for a simulator nobody has registered any more explains itself once and carries on -- it does not stop the run with an error, and it does not quietly pretend to be something else} \
+    [list $S44RC $S44N \
+          [expr {$S44SAID ne {NOPROC} && $S44SAID eq [mint ase::sim_why noentry ghost44 {} [list one41 two41]]}] \
+          [pcall ase::sim_selected] $S44FORCE0 \
+          [expr {$S44FILL eq {NOPROC} ? {NOPROC} : {ran}}] $S44BOX] \
+    [list 0 1 1 two41 two41 ran ghost44]
+
+  # --- S43: AND THE QUIT ASKS ------------------------------------------
+  ## The last clause of the ruling: "if user initiates an Xschem shutdown, then
+  ## she must get a warning and a prompt to save." src/xschem.tcl's quit path
+  ## calls ase::ui::prompt_all_on_quit, which walks every open session and asks
+  ## about each DIRTY one. MEASURED BEFORE THE FIX: it never fired, because a
+  ## simulator pick did not dirty anything.
+  ##
+  ## ask_save_close IS STUBBED, not invoked for real -- it is a modal dialog and
+  ## no headless or Xvfb run can press a button in it. The stub answers Cancel,
+  ## which aborts the quit and leaves this window open for the teardown; a
+  ## `no` answer would close the session out from under it.
+  ##
+  ## THE CLEAN CONTROL IS HALF THE ROW. A sweep that asked about every window
+  ## regardless would pass the dirty half on its own.
+  set ::s43_fired 0
+  set s43_had [expr {[llength [info commands ase::ui::ask_save_close]] ? 1 : 0}]
+  if {$s43_had} {
+    rename ase::ui::ask_save_close ::s43_real
+    proc ase::ui::ask_save_close {k} { incr ::s43_fired ; return cancel }
+  }
+  pcall ase::session_load $key
+  set S43CLEAN [pcall ase::session_dirty $key]
+  set S43R0 [pcall ase::ui::prompt_all_on_quit]
+  set S43F0 $::s43_fired
+  dlg_use $key one41
+  set S43DIRTY [pcall ase::session_dirty $key]
+  set S43R1 [pcall ase::ui::prompt_all_on_quit]
+  set S43F1 $::s43_fired
+  if {$s43_had} {
+    rename ase::ui::ask_save_close {}
+    rename ::s43_real ase::ui::ask_save_close
+  }
+  check {S43 quitting xschem with a simulator picked and not saved stops and asks about this bench, and quitting with nothing changed does not} \
+    [list $s43_had $S43CLEAN $S43R0 $S43F0 $S43DIRTY $S43F1 $S43R1] \
+    [list 1 0 1 0 1 1 0]
 
   catch {destroy $top20.simrow}
   catch {destroy $top20.simdlg}

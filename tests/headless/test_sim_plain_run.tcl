@@ -101,6 +101,15 @@ proc wfile {path content} {
 }
 
 set scratch [test_scratch sim_plain_run]
+
+## ⚠ THIS SUITE REGISTERS SIMULATORS, AND REGISTRATION NOW REACHES THE DISK
+## (2026-09-08). ase::sim_register persists the registry into
+## $::USER_CONF_DIR/ase_simulators at the moment it changes, which is the
+## developer's own ~/.xschem/ase_simulators here. The stubs below are /bin/sh
+## and deliberately broken files; writing them over the user's real list would
+## take away the build they actually use. This suite is not ABOUT the saving,
+## so it opts out of it -- the one test seam ase::sim_touch honours.
+catch {set ::ase::sim_autosave 0}
 set ::netlist_dir $scratch
 
 # A case-capable ngspice, if this machine has one. Everything that needs a real

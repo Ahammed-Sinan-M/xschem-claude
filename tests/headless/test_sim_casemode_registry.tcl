@@ -60,6 +60,15 @@ proc strip_tcl_comments {body} {
 }
 
 set tmp [test_scratch sim_casemode_registry]
+
+## ⚠ THIS SUITE REGISTERS SIMULATORS, AND REGISTRATION NOW REACHES THE DISK
+## (2026-09-08). ase::sim_register persists the registry into
+## $::USER_CONF_DIR/ase_simulators at the moment it changes, which is the
+## developer's own ~/.xschem/ase_simulators here. The stubs below are /bin/sh
+## and deliberately broken files; writing them over the user's real list would
+## take away the build they actually use. This suite is not ABOUT the saving,
+## so it opts out of it -- the one test seam ase::sim_touch honours.
+catch {set ::ase::sim_autosave 0}
 set fixdir [file join [file dirname [info script]] fixtures]
 proc reset {} { ase::sim_clear ; set ::sim_case_mode fold }
 

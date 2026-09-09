@@ -45,6 +45,7 @@ Tcl dict, human-readable, git-friendly. One `key value` per line via
 ```tcl
 version     1
 simulator   ngspice
+sim_entry   {}                 ;# empty -> no choice of its own; see below
 design      {lib sky130_tests cell test_nfet_final view schematic}
 rundir      {}                 ;# empty -> $netlist_dir default
 models      {{file $::SKYWATER_MODELS/sky130.lib.spice section tt}}
@@ -59,6 +60,29 @@ includes    {}
 pre_commands {{cmd {pre_osdi $::SG13G2_OSDI/psp103.osdi}}}
 ```
 
+- `sim_entry` is **which registered simulator this test bench runs** — the
+  registry entry, not the backend. `simulator` above is the BACKEND
+  (`ngspice`): which `ase::backend::<sim>::` table renders and runs the deck.
+  `sim_entry` is one level down: which program on this machine, with which
+  `-args`, case mode and `--no-spiceinit`. Three values:
+
+  | value | meaning |
+  |---|---|
+  | absent or `{}` | this state makes no choice of its own; run `ase::sim_default` |
+  | `none` | deliberately the program the system finds on the `PATH` |
+  | `{name <entry>}` | that registry entry |
+
+  The two-word form exists so no registry name has to be reserved. A reader
+  meeting a bare one-word value that is not `none` takes it as an entry name —
+  a hand-written file is forgiving — and `{name none}` is how an entry actually
+  called `none` is spelled. `ase::sim_default` holds the SAME three values, so
+  one decoder (`ase::sim_choice_decode`) reads both and neither store has to
+  know how the other spells "the program on the PATH". It is in
+  `omit_if_empty` with `cosim` and `save_op_params`, and its default is `{}`,
+  so the 104 committed `.state` files never gain the key and keep
+  round-tripping byte-identically. Changing it
+  DIRTIES the session like any other key: explicit save, and a prompt on
+  shutdown. Issue 1395; ordering here follows `ase::schema_keys`.
 - `variables` become `.param` lines; schematic references them symbolically
   (`W=Wn`) — plain ngspice resolves `.param` at netlist level.
 - `analyses` render into one `.control` block (op → `op`, dc → `dc V2 0 1.8
@@ -211,6 +235,11 @@ was: the bare backend name, `auto_execok`'s file, and a byte-identical command.
   list carries `ase::sim_select {}`, so a cleared choice survives a restart
   instead of the first entry being put silently back in force — and it
   therefore overrides an rc's own `::ASE_SIMULATOR` at the next start.
+  ⚠ **Amended by issue 1395**: what that line records is now
+  `ase::sim_default`, the installation default, and never the choice a session
+  has made for itself. The property 0932 was written to protect is unchanged —
+  a deliberately cleared default is still a line in the file and still not the
+  absence of one.
 * **The saved list is written beside itself and moved into place.** A failed
   write used to truncate the user's list before the first line was written and
   then raise out of a proc that promises not to; now the file they have keeps
@@ -221,6 +250,49 @@ was: the bare backend name, `auto_execok`'s file, and a byte-identical command.
   test process too: the in-process rows clear the registry first and every
   fresh-start claim is measured in a child with `HOME` redirected into the
   suite's scratch tree.
+
+### The registry is environment; the choice is state (issue 1395)
+
+The user's ruling, 2026-09-08: *registering* a simulator so future xschems can
+see it may reach disk the moment it is done, and is **not** part of the state
+that accompanies a test bench; *which* registered simulator is assigned as the
+one to use **is** part of that state — it dirties, it must be saved explicitly,
+and an xschem shutdown with it unsaved must warn and prompt.
+
+That draws one line through this section:
+
+| | environment | state |
+|---|---|---|
+| **what** | the registry: every entry's name, program, `-args`, backend, case mode, `-n` — and `ase::sim_default`, what a session with no choice of its own runs | `sim_entry`: which entry THIS test bench runs |
+| **lives in** | `$USER_CONF_DIR/ase_simulators`, plus the rc layer | the `.state` file beside the test bench |
+| **when it is written** | at the mutation, immediately, unasked | on an explicit Session > Save State |
+| **dirties a session** | no | yes |
+
+Three consequences, and each of them was a defect before 1395:
+
+* **Persistence hangs off the MUTATION, not the gesture.** `ase::sim_register`
+  and `ase::sim_unregister` save; the Simulators dialog does not save *for*
+  them. Both doors — the dialog and `ase::sim_register` typed into the CIW —
+  therefore persist, which is what `src/xschem.tcl`'s Configure-simulators help
+  has always promised. Gated on `ase::sim_origin eq session`, because
+  `ase::sim_load_conf` **sources** the saved list and every line in it is a real
+  `sim_register` call: without the gate the reader rewrites the file it is
+  reading.
+* **`ase::sim_clear` does NOT save.** It is teardown — "forget every registered
+  simulator and every choice" — and a teardown that autosaved would let a test
+  or a stray script blank the user's list. The rule, in one line: *a mutation
+  that expresses a user's choice persists; a teardown does not.*
+* **`ase::sim_use` is a cache, not a store of record.** It still means "what is
+  in force right now" and every `ase::sim_status` caller reads it unchanged; the
+  store of record is the running session's `sim_entry`, and `sim_write_body`
+  writes `ase::sim_default` in its place.
+
+**Known limitation.** Two ASE-L windows open on different test benches share one
+`ase::sim_use`. The run applies the running session's `sim_entry`, so "the
+window you clicked in wins" for the run — the half that decides which program
+actually starts — but a status bar in the other window may momentarily name the
+other choice, because the bar renders from the process-global cache. Recorded,
+not fixed; closing it means a per-window registry view.
 
 ### What that program can actually do (issue 0948)
 

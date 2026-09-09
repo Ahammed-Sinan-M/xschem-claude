@@ -4933,7 +4933,10 @@ This window does NOT choose the simulator program. That lives in ASE-L,
 under Setup > Simulators..., where each entry carries the program, its
 extra arguments, the case mode it asks for (fold / preserve / distinguish)
 and whether to pass --no-spiceinit. The saved list is
-~/.xschem/ase_simulators and it comes back at the next start.
+~/.xschem/ase_simulators: it holds every simulator you have registered,
+from the dialog or from the CIW, and comes back at the next start.
+Which one a test bench runs is not in that list. That is part of the
+ASE-L state and is saved with the session.
 
 Cancel restores the whole configuration to what it was when this window
 opened: every row and the ~/.xschem/simrc file itself -- so a 'Reset to

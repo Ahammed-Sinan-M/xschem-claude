@@ -295,6 +295,19 @@ proc ase::ui::open {key lib cell view} {
   ## answered the new entry -- a name on the bar for a simulator that would NOT
   ## run, until the run itself healed it.
   ##
+  ## 1395: AND AS OF THAT ISSUE THAT DOOR ALSO PERSISTS. `ase::sim_register`
+  ## and `ase::sim_unregister` write the saved list themselves (ase::sim_touch),
+  ## so the CIW pair above now survives the restart it always promised -- the
+  ## dialog is no longer the only door that reaches disk.
+  ##
+  ## ⚠ AND THE CHOICE HALF OF THAT DOOR DOES NOT, DELIBERATELY. `ase::sim_select`
+  ## writes nothing: the user's ruling is that *which* registered simulator is
+  ## the one to use is part of the ASE-L state, so it DIRTIES the session and
+  ## waits for an explicit save. Registering is environment and lands at once;
+  ## choosing is state and is saved with the bench. The dialog's own combobox
+  ## goes through ase::ui::simdlg_use, which sets the state key and never the
+  ## file.
+  ##
   ## ⚠ NO ARGUMENT. The registry is process-global and this hook has no session
   ## to name, so it repaints EVERY open bar. Same single-slot discipline as
   ## session_notify, and set here rather than at file scope for the same reason
@@ -4469,10 +4482,18 @@ proc ase::ui::sim_options_dialog {key} {
 # forgot itself, because nothing in the tree called the writer.
 #
 # ONE WRITER, TWO FRONT DOORS. Everything below drives the SAME procs the CIW
-# route drives -- ase::sim_register / sim_unregister / sim_select / sim_list /
-# sim_status / sim_entry_why -- and saves through ase::sim_write_conf. No
-# validation, no path resolution and no persistence is re-implemented here; a
-# second copy of any of them is how the two doors would start disagreeing.
+# route drives -- ase::sim_register / sim_unregister / sim_entry / sim_list /
+# sim_status / sim_entry_why. No validation, no path resolution and no
+# persistence is re-implemented here; a second copy of any of them is how the
+# two doors would start disagreeing.
+#
+# AND AS OF ISSUE 1395 THERE IS NO PERSISTENCE HERE AT ALL, not even one line.
+# The write lives on the mutation (ase::sim_register / sim_unregister call
+# ase::sim_touch), which is what makes the OTHER door stick too; see the
+# tombstone where ase::ui::simdlg_commit used to be. The in-force combobox
+# writes to the SESSION rather than to the file, because which simulator is the
+# one to use is ASE-L state and the user must save it on purpose --
+# ase::ui::simdlg_use carries the ruling in full.
 #
 # AND NO SENTENCE IS WRITTEN HERE. Ruling D5-4: every user-facing sentence
 # about a simulator is minted in ase::sim_why (src/ase.tcl) and only RENDERED
@@ -4594,8 +4615,28 @@ proc ase::ui::simdlg_fill {key} {
   set dlg($key,simnames) $names
   set none [ase::ui::simdlg_none_label]
   $w.use configure -values [linsert $names 0 $none]
-  set sel [ase::sim_selected]
-  if {$sel eq {}} { set simuse($key) $none } else { set simuse($key) $sel }
+  ## 1395: THE COMBOBOX SHOWS THIS SESSION'S CHOICE, NOT THE PROCESS-GLOBAL ONE.
+  ## ase::sim_selected answers what is in force RIGHT NOW, which is one answer
+  ## for every open window; the choice is per-session state (the user's ruling
+  ## -- it dirties, it is saved with the bench, it is prompted for on quit) and
+  ## this dialog belongs to exactly one session. Reading the global here would
+  ## show window two's pick in window one's dialog, and would show it again
+  ## after the pick was abandoned unsaved.
+  ##
+  ## A SESSION THAT HAS EXPRESSED NO CHOICE SHOWS THE INSTALLATION DEFAULT, not
+  ## a blank: the blank line in this combobox is the "none of mine" one, and a
+  ## bench that has never been asked would then read as a deliberate PATH
+  ## choice everywhere a default is registered. ase::sim_choice_of and
+  ## ase::sim_default_choice are the only readers of the encoding; no value of
+  ## the state key is ever spelled here (an entry genuinely called `none` is
+  ## why).
+  set choice [ase::sim_choice_of [ase::session_state $key]]
+  if {[lindex $choice 0] eq {unset}} { set choice [ase::sim_default_choice] }
+  if {[lindex $choice 0] eq {entry}} {
+    set simuse($key) [lindex $choice 1]
+  } else {
+    set simuse($key) $none
+  }
   ase::ui::simdlg_status $key
   ## 1370: AND THE BOTTOM BAR OF EVERY OPEN SESSION FOLLOWS, from HERE and not
   ## from the five gestures. Add, Edit, Remove and both arms of the "Use this
@@ -4641,15 +4682,26 @@ proc ase::ui::simdlg_status {key {msg {}}} {
   }
 }
 
-# SAVE, THROUGH THE ONE WRITER. Not "also save": ase::sim_write_conf is the
-# whole of what this dialog does about persistence, and it reports its own
-# failure through ase::sim_say, which is what leaves a sentence for the
-# gesture that called it to show. `key` is unused on purpose -- the registry
-# is process-global -- and is carried so every gesture below reads the same.
-proc ase::ui::simdlg_commit {key} {
-  catch {ase::sim_write_conf}
-  return
-}
+# THERE IS NO simdlg_commit ANY MORE, AND ITS ABSENCE IS THE FIX (issue 1395).
+# It used to be this dialog's one line about persistence -- `catch
+# {ase::sim_write_conf}` after Add, Edit, Remove and both arms of the combobox
+# -- and it was the ONLY caller of the writer in the whole tree. That is what
+# made the dialog the only door that stuck: the same registration typed into
+# the Command window, which is how this user's own entry was first made, was
+# gone at the next start (src/ase_window.tcl:288).
+#
+# THE WRITE MOVED TO THE MUTATION. ase::sim_register and ase::sim_unregister
+# call ase::sim_touch themselves now, origin-gated so the reader of the saved
+# list cannot rewrite the file it is sourcing. Every door persists, including
+# the ones nobody has written yet, and this file's own rule at the head of the
+# section -- no persistence is re-implemented here -- finally has nothing to
+# except. A second write from the gesture would be a second writer of the
+# user's file for one gesture: the same bytes twice on the good path, and on a
+# failing path a second sentence about a save that already reported itself
+# (row S8 of tests/headless/test_ase_simreg_0931.tcl pins that count at one).
+#
+# AND THE CHOICE DOES NOT REACH DISK AT ALL. ase::ui::simdlg_use sets the
+# session's state key; see its own header.
 
 # The name of the row the user clicked, or {} with the status line telling
 # them to click one. Two buttons need it, so the sentence is written once.
@@ -5109,7 +5161,9 @@ proc ase::ui::simdlg_ok {key} {
   array unset dlg $key,simrow
   array unset dlg $key,simns
   destroy $w
-  ase::ui::simdlg_commit $key
+  ## NO WRITE HERE (1395): ase::sim_register has already saved the list, and
+  ## the sentence a failed save leaves is still inside this gesture's
+  ## sim_said_clear / sim_said bracket, which spans the register call.
   ase::ui::simdlg_fill $key
   set said [ase::sim_said]
   if {$said ne {}} { ase::ui::simdlg_status $key $said }
@@ -5136,27 +5190,73 @@ proc ase::ui::simdlg_remove {key} {
     ase::ui::simdlg_status $key [ase::ui::simdlg_plain $err]
     return
   }
-  ase::ui::simdlg_commit $key
+  ## NO WRITE HERE (1395): ase::sim_unregister has already saved the list.
   ase::ui::simdlg_fill $key
   set said [ase::sim_said]
   if {$said ne {}} { ase::ui::simdlg_status $key $said }
 }
 
-# The in-force combobox. "None of mine" clears the choice, which is a choice
-# like any other and is written down as one (issue 0932): without that, the
-# next start puts the first entry back in force and the gesture is undone.
+# The in-force combobox. "None of mine" is a choice like any other -- without
+# recording it the next start silently puts the first entry back in charge and
+# the gesture is undone (issue 0932).
+#
+# ⚠ THIS GESTURE WRITES NOTHING TO DISK, AND THAT IS THE USER'S RULING, NOT AN
+# OVERSIGHT (issue 1395). Verbatim, 2026-09-08: *whether* a registered
+# simulator "gets assigned as 'the one to use' is an option that is part of the
+# ASE-L state. If changed, that results in dirtiness. User must explicitly save
+# and, if user initiates an Xschem shutdown, then she must get a warning and a
+# prompt to save." Before this, the pick went straight to
+# ~/.xschem/ase_simulators with no save gesture behind it -- from a window the
+# user might be about to abandon, and overwriting the installation default with
+# one bench's opinion. REGISTERING is environment and lands at once
+# (ase::sim_register calls ase::sim_touch); CHOOSING is state and waits.
+#
+# SO THE PICK GOES THREE PLACES AND NO FURTHER:
+#   1. the session's own state, through ase::sim_choice_set -- which is what
+#      makes ase::session_dirty answer 1, the title grow its marker and the
+#      quit sweep stop and ask;
+#   2. ase::session_update, the one write path the panes share, whose notify
+#      is what repaints both of those;
+#   3. ase::sim_apply_choice, so what is IN FORCE this instant agrees with what
+#      the user just picked -- the bottom bar and the next run read that, and a
+#      dialog whose combobox and whose bar disagreed would be issue 1370 again.
+#
+# `key` IS LOAD-BEARING NOW. It always named the session whose widgets are
+# being refreshed; as of 1395 it also names the session whose state is being
+# changed, which is why the choice can differ between two open windows while
+# the registry cannot.
+#
+# NO ENCODING IS SPELLED HERE. ase::sim_choice_set is the only writer of the
+# state key, for the reason its header gives: a dialog that stored the bare
+# name would work for every entry except one called `none`.
 proc ase::ui::simdlg_use {key} {
   variable simuse
   set v {}
   if {[info exists simuse($key)]} { set v $simuse($key) }
   ase::sim_said_clear
-  if {$v eq [ase::ui::simdlg_none_label]} { set v {} }
-  if {[catch {ase::sim_select $v} err]} {
+  if {$v eq [ase::ui::simdlg_none_label] || $v eq {}} {
+    set st [ase::sim_choice_set [ase::session_state $key] path]
+  } elseif {[ase::sim_entry $v] eq {}} {
+    ## A NAME NOBODY HAS REGISTERED. The widget goes back to showing the truth
+    ## and the session's choice is left alone -- storing it would dirty the
+    ## bench with a pick that cannot run and would then show it back as the
+    ## truth. THE REFUSAL IS THE REGISTRY'S OWN WORDS: ase::sim_apply_choice
+    ## never raises, so the sentence is asked of ase::sim_select, which refuses
+    ## exactly this and changes nothing while doing it (ruling D5-4 -- no
+    ## sentence is minted in this file).
+    set err {}
+    catch {ase::sim_select $v} err
     ase::ui::simdlg_fill $key
     ase::ui::simdlg_status $key [ase::ui::simdlg_plain $err]
     return
+  } else {
+    set st [ase::sim_choice_set [ase::session_state $key] entry $v]
   }
-  ase::ui::simdlg_commit $key
+  ase::session_update $key $st
+  ## ON $st, NOT ON THE SESSION: ase::session_update answers 0 for a key it does
+  ## not know, and applying the session's state then would put the OLD choice in
+  ## force while the widget showed the new one.
+  ase::sim_apply_choice $st
   ase::ui::simdlg_fill $key
   set said [ase::sim_said]
   if {$said ne {}} { ase::ui::simdlg_status $key $said }

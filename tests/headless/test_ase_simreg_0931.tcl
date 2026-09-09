@@ -79,6 +79,11 @@
 #   byte for byte, which is what keeps test_ase_core's E1e/E2b/E4 goldens
 #   green without editing them.
 #
+# ⚠ THE CHECK COUNT IS A FLOOR AND IT ONLY EVER GOES UP: 111 as of 2026-09-08.
+# It was 95 before section S (the registry-is-environment / choice-is-state
+# ruling) and R8b landed. If a run reports fewer, a row went missing -- do not
+# edit this number down to match it.
+#
 # Runs on BOTH arms, unchanged:
 #   ./src/xschem --nogui --pipe -q --nolog --script tests/headless/test_ase_simreg_0931.tcl
 #   tests/headless/devdisplay.sh exec ./src/xschem --pipe -q --nolog --script tests/headless/test_ase_simreg_0931.tcl
@@ -96,6 +101,19 @@ set here [file normalize [file dirname [info script]]]
 set repo [file normalize [file join $here .. ..]]
 source [file join $here scratch.tcl]
 set scratch [test_scratch simreg0931]
+
+## ⚠ THE SAVED LIST GOES TO A SCRATCH DIRECTORY, AND AS OF 2026-09-08 THAT IS
+## NOT OPTIONAL. ase::sim_register and ase::sim_unregister now persist the
+## registry at the moment it changes (the user's ruling: registering "can make
+## it to disk right away"), and their target is
+## $::USER_CONF_DIR/ase_simulators. This file registers stubs by the dozen, so
+## without this redirect every run of it would REWRITE the developer's own
+## ~/.xschem/ase_simulators with two-line /bin/sh stubs and take away the build
+## they actually use. Reading the real one is fine; writing it is not ours.
+## The CHILD processes below are isolated a different way (a HOME of their
+## own, $A_CLEANHOME / $E6HOME), which is what E6's real-restart row measures.
+set ::USER_CONF_DIR [file join $scratch conf]
+file mkdir $::USER_CONF_DIR
 
 set ASETCL  [file join $repo src ase.tcl]
 set XTCL    [file join $repo src xschem.tcl]
@@ -415,6 +433,25 @@ a_reset
 set A_CLEANHOME [file join $scratch home_clean]
 file delete -force $A_CLEANHOME
 
+## ⚠ AND IT IS EMPTIED AGAIN FOR EVERY CHILD THAT USES IT (2026-09-08).
+## Deleting it once at the top was enough while registering wrote nothing:
+## the only child that could leave a saved list behind was one that called
+## ase::sim_write_conf, and the one that does (E3) was given an explicit path
+## in the scratch tree. Registration now persists BY ITSELF, into
+## $HOME/.xschem/ase_simulators, so E3's child leaves a real saved list in the
+## shared clean HOME -- and every rc-layer row after it (E8-E10, E12, E13)
+## then starts with a session entry it never asked for. Measured before this
+## proc existed: E8 saw 2 entries instead of 1 and read `origin conf` for an
+## entry an rc declared; E9's "empty list" was `sess-two`; E13 had 1 entry
+## left after removing the only one it knew about. A clean HOME has to be
+## clean per child, not per suite.
+proc a_cleanhome {} {
+  global A_CLEANHOME
+  file delete -force $A_CLEANHOME
+  file mkdir $A_CLEANHOME
+  return $A_CLEANHOME
+}
+
 set AEO [lindex [auto_execok ngspice] 0]
 
 check {A1 nothing registered: the resolver answers "the one on your PATH will run", in one dict} \
@@ -448,7 +485,7 @@ set A4B {
   puts "Z_DONE=1"
   exit 0
 }
-set A4C [a_child a4 [string map [list @DECK@ $DECK] $A4B] {} $A_CLEANHOME]
+set A4C [a_child a4 [string map [list @DECK@ $DECK] $A4B] {} [a_cleanhome]]
 check {A4 a freshly started xschem, on a machine where nobody has registered anything, has an empty list, nothing in force, and builds the same run command it always did} \
   [list [a_zrc $A4C] [a_zval $A4C Z_N] [a_zval $A4C Z_SEL] [a_zval $A4C Z_CMD] [a_zval $A4C Z_DONE]] \
   [list 0 0 {} [list ngspice -b $DECK 2>@1] 1]
@@ -828,13 +865,32 @@ check {E1 the list can be saved to a file, and what lands there is a real, compl
         [expr {[string first {ase::sim_register} $E1TXT] >= 0}]] \
   [list 1 1 1 1]
 
-set E2BEFORE [list [a_shape] [a_ans ase::sim_selected]]
+## ⚠ WHAT COMES BACK IN FORCE IS THE INSTALLATION DEFAULT, NOT THE CHOICE THIS
+## SESSION MADE, AND THAT IS THE 2026-09-08 RULING RATHER THAN A REGRESSION.
+## This row used to demand "the same list AND the same choice", and it was
+## right at the time: the saved list carried `ase::sim_select <what is in force
+## right now>`. The user then ruled that registering is environment and reaches
+## disk at once, while *which* registered simulator is used "is an option that
+## is part of the ASE-L state. If changed, that results in dirtiness. User must
+## explicitly save." So `ase::sim_write_body` now writes ase::sim_default -- the
+## installation default -- and `ase::sim_select ng-two` above, made from the
+## session layer, is deliberately NOT in the file. The default here is `ng-one`
+## because registering the first simulator on an empty list seeds it.
+##
+## The LIST half is unchanged and still asserted field for field: that is what
+## a restart must reproduce exactly.
+set E2SHAPE [a_shape]
+set E2SESSCHOICE [a_ans ase::sim_selected]
+set E2DEF [a_ans ase::sim_default_choice]
 a_reset
 set E2LOAD [a_ans ase::sim_load_conf $E1P]
-set E2AFTER [list [a_shape] [a_ans ase::sim_selected]]
-check {E2 saving then reading back gives the same list and the same choice, field for field} \
-  [list $E2LOAD [expr {$E2AFTER eq $E2BEFORE}] $E2AFTER] \
-  [list 1 1 $E2BEFORE]
+set E2AFTER [a_shape]
+check {E2 saving then reading back gives the same list field for field, and what comes back in force is the INSTALLATION DEFAULT -- the choice this session made is state, and state does not travel in the machine's simulator list} \
+  [list $E2LOAD [expr {$E2AFTER eq $E2SHAPE}] $E2SESSCHOICE $E2DEF \
+        [a_ans ase::sim_selected] [a_ans ase::sim_default_choice] \
+        [expr {[string first {ase::sim_select ng-two} $E1TXT] >= 0}] \
+        [expr {[string first {ase::sim_select ng-one} $E1TXT] >= 0}]] \
+  [list 1 1 ng-two {entry ng-one} ng-one {entry ng-one} 0 1]
 
 ## E3 needs a REAL rc-origin entry beside a session one, and only a real
 ## startup can make one, so this row is a child too.
@@ -854,7 +910,7 @@ set E3B {
   exit 0
 }
 set E3PRE "set ::ASE_SIMULATORS \[list \[list name rc-one path $STUB args {} backend {}\]\]"
-set E3C [a_child e3 [string map [list @STUB2@ $STUB2 @CONF@ $E3CONF] $E3B] $E3PRE $A_CLEANHOME]
+set E3C [a_child e3 [string map [list @STUB2@ $STUB2 @CONF@ $E3CONF] $E3B] $E3PRE [a_cleanhome]]
 check {E3 saving your list does not freeze a copy of what the startup configuration file already declares -- only your own entries are written} \
   [list [a_zrc $E3C] [a_zval $E3C Z_WROTE] [a_zval $E3C Z_HASRC] [a_zval $E3C Z_HASSESS] [a_zval $E3C Z_DONE]] \
   [list 0 1 0 1 1]
@@ -903,21 +959,21 @@ check {E7 STRUCTURAL the saved list is actually READ at startup, once, beside th
 
 # --- the rc layer, put there and taken away ----------------------------------
 set E8PRE "set ::ASE_SIMULATORS \[list \[list name rc-one path $STUB args {} backend {}\]\]"
-set E8C [a_child e8 $::A_REPORT $E8PRE $A_CLEANHOME]
+set E8C [a_child e8 $::A_REPORT $E8PRE [a_cleanhome]]
 check {E8 a startup configuration file can put a simulator in the list and in force, exactly the way it already sets the default models} \
   [list [a_zrc $E8C] [a_zval $E8C Z_N] [a_zval $E8C Z_SEL] [a_zval $E8C Z_EXE] \
         [a_zval $E8C Z_ORIGIN] [a_zval $E8C Z_DONE]] \
   [list 0 1 rc-one $STUB rc 1]
 
-set E9C [a_child e9 $::A_REPORT {} $A_CLEANHOME]
+set E9C [a_child e9 $::A_REPORT {} [a_cleanhome]]
 check {E9 the same xschem started WITHOUT that line has an empty list and is back to the program on your PATH -- removable, proved not asserted} \
   [list [a_zrc $E9C] [a_zval $E9C Z_N] [a_zval $E9C Z_SEL] [a_zval $E9C Z_EXE] [a_zval $E9C Z_DONE]] \
   [list 0 0 {} ngspice 1]
 
 set E10PRE_A {set ::ASE_SIMULATOR zz-not-registered-anywhere}
 set E10PRE_B "set ::ASE_SIMULATORS \[list \[list name rc-bad path $MISSING args {} backend {}\]\]"
-set E10A [a_child e10a $::A_REPORT $E10PRE_A $A_CLEANHOME]
-set E10B [a_child e10b $::A_REPORT $E10PRE_B $A_CLEANHOME]
+set E10A [a_child e10a $::A_REPORT $E10PRE_A [a_cleanhome]]
+set E10B [a_child e10b $::A_REPORT $E10PRE_B [a_cleanhome]]
 check {E10 a mistake in the startup configuration file does not take ASE-L down with it: xschem still starts and still answers} \
   [list [a_zrc $E10A] [a_zval $E10A Z_N] [a_zval $E10A Z_EXE] [a_zval $E10A Z_DONE] \
         [a_zrc $E10B] [a_zval $E10B Z_N] [a_zval $E10B Z_EOK] [a_zval $E10B Z_DONE]] \
@@ -948,8 +1004,8 @@ check {E11 a first run, with no saved simulator list yet, says NOTHING about it 
 ## modelled on, has always started normally.
 set E12PRE_A {set ::ASE_SIMULATORS "\{name rc-x path /bin/sh"}
 set E12PRE_B {set ::ASE_DEFAULT_MODELS "\{a b"}
-set E12A [a_child e12a $::A_REPORT $E12PRE_A $A_CLEANHOME]
-set E12B [a_child e12b $::A_REPORT $E12PRE_B $A_CLEANHOME]
+set E12A [a_child e12a $::A_REPORT $E12PRE_A [a_cleanhome]]
+set E12B [a_child e12b $::A_REPORT $E12PRE_B [a_cleanhome]]
 check {E12 a simulator list with a mismatched brace in it costs the user a sentence, not the whole editor -- exactly like the older startup settings it sits beside} \
   [list [a_zrc $E12A] [a_zval $E12A Z_N] [a_zval $E12A Z_EXE] [a_zval $E12A Z_DONE] \
         [a_zrc $E12B] [a_zval $E12B Z_DONE]] \
@@ -991,7 +1047,7 @@ set E13B {
   exit 0
 }
 set E13PRE "set ::ASE_SIMULATORS \[list \[list name rc-one path $STUB args {} backend {}\]\]"
-set E13C [a_child e13 $E13B $E13PRE $A_CLEANHOME]
+set E13C [a_child e13 $E13B $E13PRE [a_cleanhome]]
 check {E13 taking out a simulator that a startup configuration file put there works, and you are told in plain English that it will be back next time and where to go to stop that} \
   [list [a_zrc $E13C] [a_zval $E13C Z_RV] [a_zval $E13C Z_LEFT] [a_zval $E13C Z_TAG] \
         [a_zval $E13C Z_NAMES] [a_zval $E13C Z_SAYS] [a_zval $E13C Z_TELLS] \
@@ -1198,37 +1254,69 @@ check {R7 ONE reason, wherever it is read: what the list shows against an entry 
 ## redirected, because nothing in-process can prove what the next start does.
 ## The second pair is the CONTROL: a choice that WAS made must still survive,
 ## so this cannot be satisfied by simply forgetting choices.
+##
+## ⚠ WHAT THIS ROW MEASURES MOVED ON 2026-09-08, AND THE THING 0932 EXISTS FOR
+## DID NOT. It used to make the "none of mine" gesture IN THE SESSION and then
+## restart. Under the user's ruling that gesture is a CHOICE -- ASE-L state,
+## which dirties a session and waits for an explicit save -- so it no longer
+## reaches the machine's simulator list, and R8b below measures exactly that.
+## What 0932 is actually about survives untouched and is what is measured here:
+## a saved list whose selection line says "none of mine" must come back with
+## NOTHING of the user's in force, and NOT with the first entry silently
+## promoted, which was 0932's defect. The list is written by hand because that
+## is a documented way to have one ("Edit by hand if you like: it is a plain
+## Tcl script of ase::sim_register lines") and because it states the file's
+## contract without going through the writer that is under test elsewhere.
 set R8HOME  [file join $scratch home_r8a]
 set R8HOME2 [file join $scratch home_r8b]
 file delete -force $R8HOME
 file delete -force $R8HOME2
-set R8W {
-  set r NOPROC
-  if {[llength [info commands ase::sim_register]]} {
-    ase::sim_register r8-a @STUB@
-    ase::sim_register r8-b @STUB2@
-    set r [ase::sim_select @PICK@]
-  }
-  puts "Z_PICK=$r"
-  set w NOPROC
-  if {[llength [info commands ase::sim_write_conf]]} { set w [ase::sim_write_conf] }
-  puts "Z_WROTE=$w"
-  puts "Z_DONE=1"
-  exit 0
+proc a_conf_in_home {home body} {
+  a_wr [file join $home .xschem ase_simulators] $body
 }
-set R8WNONE [string map [list @STUB@ $STUB @STUB2@ $STUB2 @PICK@ "{}"] $R8W]
-set R8WPICK [string map [list @STUB@ $STUB @STUB2@ $STUB2 @PICK@ "r8-b"] $R8W]
-set R8C1 [a_child r8w1 $R8WNONE {} $R8HOME]
+set R8LINES "ase::sim_register r8-a $STUB\nase::sim_register r8-b $STUB2\n"
+a_conf_in_home $R8HOME  "$R8LINES[list ase::sim_select {}]\n"
+a_conf_in_home $R8HOME2 "$R8LINES[list ase::sim_select r8-b]\n"
 set R8C2 [a_child r8r1 $::A_REPORT {} $R8HOME]
-set R8C3 [a_child r8w2 $R8WPICK {} $R8HOME2]
 set R8C4 [a_child r8r2 $::A_REPORT {} $R8HOME2]
 check {R8 "use the program on my PATH" is a choice like any other and it survives a restart -- and the control arm proves a real pick still survives one too} \
-  [list [a_zrc $R8C1] [a_zval $R8C1 Z_WROTE] \
-        [a_zrc $R8C2] [a_zval $R8C2 Z_N] [a_zval $R8C2 Z_SEL] [a_zval $R8C2 Z_EXE] \
+  [list [a_zrc $R8C2] [a_zval $R8C2 Z_N] [a_zval $R8C2 Z_SEL] [a_zval $R8C2 Z_EXE] \
         [a_zval $R8C2 Z_DONE] \
-        [a_zrc $R8C3] [a_zval $R8C3 Z_WROTE] \
-        [a_zrc $R8C4] [a_zval $R8C4 Z_SEL] [a_zval $R8C4 Z_EXE] [a_zval $R8C4 Z_DONE]] \
-  [list 0 1 0 2 {} ngspice 1 0 1 0 r8-b $STUB2 1]
+        [a_zrc $R8C4] [a_zval $R8C4 Z_N] [a_zval $R8C4 Z_SEL] [a_zval $R8C4 Z_EXE] \
+        [a_zval $R8C4 Z_DONE]] \
+  [list 0 2 {} ngspice 1 0 2 r8-b $STUB2 1]
+
+## R8b: THE RULING ITSELF, THROUGH TWO REAL STARTS AND NOT ONE ASSERTION.
+## One child registers two simulators and picks the second -- and calls NO
+## saver at all. The next start must find BOTH simulators (registering is
+## environment: "something that can make it to disk right away as soon as
+## done") and must NOT be running the second one (choosing is state: "if
+## changed, that results in dirtiness. User must explicitly save"). The two
+## halves of the user's sentence, in one restart, neither of which the old
+## shape could see: before this change the registration would have been lost
+## and the choice would have been the only thing that could reach disk.
+set R8HOME3 [file join $scratch home_r8c]
+file delete -force $R8HOME3
+set R8B1 [a_child r8b1 [string map [list @STUB@ $STUB @STUB2@ $STUB2] {
+  set r NOPROC
+  if {[llength [info commands ase::sim_register]]} {
+    ase::sim_register r8b-a @STUB@
+    ase::sim_register r8b-b @STUB2@
+    set r [ase::sim_select r8b-b]
+  }
+  puts "Z_PICK=$r"
+  puts "Z_INFORCE=[ase::sim_selected]"
+  puts "Z_FILE=[file exists [file join $::USER_CONF_DIR ase_simulators]]"
+  puts "Z_DONE=1"
+  exit 0
+}] {} $R8HOME3]
+set R8B2 [a_child r8b2 $::A_REPORT {} $R8HOME3]
+check {R8b registering reaches the disk on its own and picking one does not: a session that registers two simulators and picks the second, and saves nothing, is followed by a start that has BOTH of them and is running the FIRST -- the two halves of the user's ruling in one restart} \
+  [list [a_zrc $R8B1] [a_zval $R8B1 Z_PICK] [a_zval $R8B1 Z_INFORCE] \
+        [a_zval $R8B1 Z_FILE] [a_zval $R8B1 Z_DONE] \
+        [a_zrc $R8B2] [a_zval $R8B2 Z_N] [a_zval $R8B2 Z_SEL] [a_zval $R8B2 Z_EXE] \
+        [a_zval $R8B2 Z_DONE]] \
+  [list 0 r8b-b r8b-b 1 1 0 2 r8b-a $STUB 1]
 
 ## R9: THE SAME DISCIPLINE AS D6, EXTENDED TO THE SECOND FILE. D6 scans
 ## ase.tcl only, and only the four registration sentences, so it cannot see a
@@ -2563,6 +2651,348 @@ check {L15 a run the pre-flight refuses never told the user it was starting a\
   [list $::a_l15_rc $L15STARTS $L15DSTARTS $::l15d $L15ORD \
         [llength $L15PFG] [llength $L15CALL] [llength $L15CMD]] \
   [list 1 0 1 ng-l15 1 1 1 1]
+
+# ============================================================================
+# S. THE REGISTRY IS ENVIRONMENT; THE CHOICE IS STATE -- THE 2026-09-08 RULING
+# ============================================================================
+# The user, verbatim:
+#
+#   "Yes, registering a simulator (so that future Xschems see the 'new'
+#    simulator instance) is something that can make it to disk right away as
+#    soon as done. But, registering a simulator is not part of the simulator
+#    state that accompanies a test-bench cell in the library manager.
+#
+#    *Whether* the 'new' simulator just registered gets assigned as 'the one to
+#    use' is an option that is part of the ASE-L state. If changed, that results
+#    in dirtiness. User must explicitly save and, if user initiates an Xschem
+#    shutdown, then she must get a warning and a prompt to save."
+#
+# WHAT WAS TRUE THE MORNING THAT WAS WRITTEN, measured on this tree: the ONLY
+# caller of the saver was the Simulators dialog, which called it after every
+# gesture of its own. So a registration typed into the Command window -- the
+# door this user's own `ngspice-ver50` entry came through, recorded at
+# src/ase_window.tcl:288 -- worked all session and was gone at the next start,
+# while src/xschem.tcl's help text promised the opposite in writing. And the
+# saved list carried `ase::sim_select <what is in force>`, so the one thing that
+# was NOT supposed to reach disk was the one thing that always did.
+#
+# The split: `ase::sim_default` is the installation default and is what the
+# saved list records; `ase::sim_use` is what is in force right now and is a
+# cache; the `sim_entry` state key is the store of record for a session's own
+# choice. One encoding, {} / none / {name <entry>}, and one decoder.
+#
+# R8/R8b above measure the restart. These rows measure the parts.
+
+## S1: THE ENCODING. Three values and a forgiving reader, because a saved state
+## is a text file a user may edit and the natural thing to type is a bare name.
+## `{name none}` is the spelling that keeps an entry genuinely called `none`
+## reachable, which is why the entry form is two words and no name is reserved.
+check {S1 the three values a choice can have decode to three different things, a bare name is read as an entry so a hand-edited file works, and an entry actually called "none" is still reachable} \
+  [list [a_ans ase::sim_choice_decode {}] \
+        [a_ans ase::sim_choice_decode none] \
+        [a_ans ase::sim_choice_decode zz-build] \
+        [a_ans ase::sim_choice_decode {name zz-build}] \
+        [a_ans ase::sim_choice_decode {name none}] \
+        [a_ans ase::sim_choice_decode {name {}}] \
+        [a_ans ase::sim_choice_decode {a b c}] \
+        [a_ans ase::sim_choice_decode "\{unbalanced"]] \
+  [list {unset {}} {path {}} {entry zz-build} {entry zz-build} {entry none} \
+        {unset {}} {unset {}} {unset {}}]
+
+## S2: AND IT ROUND-TRIPS. Whatever the encoder writes, the decoder reads back
+## as the same kind and the same name -- including the name that collides with
+## the PATH spelling.
+set S2OK 1
+foreach s2pair {{path {}} {entry zz-build} {entry none} {unset {}}} {
+  set s2enc [a_ans ase::sim_choice_encode [lindex $s2pair 0] [lindex $s2pair 1]]
+  if {[a_ans ase::sim_choice_decode $s2enc] ne $s2pair} { set S2OK 0 }
+}
+check {S2 every value the encoder can write reads back as itself, so the two stores that share this encoding can never disagree about what a stored choice meant} \
+  [list $S2OK [a_ans ase::sim_choice_encode path] \
+        [a_ans ase::sim_choice_encode entry zz-build] \
+        [a_ans ase::sim_choice_encode entry none] \
+        [a_ans ase::sim_choice_encode entry {}] \
+        [a_ans ase::sim_choice_encode unset]] \
+  [list 1 none {name zz-build} {name none} {} {}]
+
+## S3: THE STATE KEY, AND THE 104 COMMITTED .state FILES IT MUST NOT DISTURB.
+## `sim_entry` is a schema key, defaults to `{}` and is in ase::omit_if_empty,
+## which together are what keeps the five load->save byte-identity rows green
+## (F3 in test_ase_final, G3 in test_ase_final_gf180, R4 in test_ase_core, V4 in
+## test_ase_view, R2 in test_ase_persist). A default that was anything else, or
+## a key left out of that list, writes a `sim_entry` line into every one of them.
+set S3D [a_ans ase::state_default]
+set S3SER {}
+set S3SERSET {}
+if {$S3D ne {NOPROC} && ![string match RAISED:* $S3D]} {
+  set S3SER [a_ans ase::state_serialize $S3D]
+  set S3SERSET [a_ans ase::state_serialize [dict replace $S3D sim_entry none]]
+}
+check {S3 the new state key is in the schema, defaults to empty, is left OUT of a serialized state when it is empty and IS written when it is not -- which is the whole of why the 104 committed state files still round-trip byte for byte} \
+  [list [expr {[lsearch -exact $::ase::schema_keys sim_entry] >= 0}] \
+        [expr {[lsearch -exact $::ase::omit_if_empty sim_entry] >= 0}] \
+        [a_ans ase::state_get $S3D sim_entry <absent>] \
+        [expr {[string first sim_entry $S3SER] >= 0}] \
+        [expr {[string first {sim_entry none} $S3SERSET] >= 0}]] \
+  [list 1 1 {} 0 1]
+
+## S4: NOBODY OUTSIDE ase.tcl HAND-SPELLS THE KEY. A dialog that wrote
+## `dict set st sim_entry $name` would be right for every entry except one
+## called `none`, and wrong in the one place a reader would never look. The
+## setter answers a NEW dict, so a caller cannot dirty a state it was only
+## reading.
+set S4ST [a_ans ase::state_default]
+set S4E [a_ans ase::sim_choice_set $S4ST entry none]
+set S4P [a_ans ase::sim_choice_set $S4ST path]
+set S4U [a_ans ase::sim_choice_set $S4E unset]
+check {S4 a caller sets and reads one state's choice without ever spelling the stored form, the original state is left untouched, and clearing it puts the session back to "no choice of my own"} \
+  [list [a_ans ase::state_get $S4E sim_entry] [a_ans ase::sim_choice_of $S4E] \
+        [a_ans ase::state_get $S4P sim_entry] [a_ans ase::sim_choice_of $S4P] \
+        [a_ans ase::state_get $S4U sim_entry] [a_ans ase::sim_choice_of $S4U] \
+        [a_ans ase::state_get $S4ST sim_entry] [a_ans ase::sim_choice_of $S4ST]] \
+  [list {name none} {entry none} none {path {}} {} {unset {}} {} {unset {}}]
+
+## S5: THE FIRST REGISTRATION BECOMES THE INSTALLATION DEFAULT, AND NOTHING
+## AFTER IT STEALS THE TITLE -- the same rule the in-force seed has always had,
+## applied to the other variable. A session's own pick moves what is in force
+## and leaves the default exactly where it was, which is the ruling in one line.
+a_reset
+set S5EMPTY [a_ans ase::sim_default_choice]
+a_ans ase::sim_register s5-a $STUB
+set S5ONE [list [a_ans ase::sim_default_choice] [a_ans ase::sim_selected]]
+a_ans ase::sim_register s5-b $STUB2
+set S5TWO [list [a_ans ase::sim_default_choice] [a_ans ase::sim_selected]]
+a_ans ase::sim_select s5-b
+set S5PICK [list [a_ans ase::sim_default_choice] [a_ans ase::sim_selected]]
+check {S5 the first simulator registered on an empty list becomes both what is in force and the installation default, a later registration steals neither, and picking one in this session moves only what is in force} \
+  [list $S5EMPTY $S5ONE $S5TWO $S5PICK] \
+  [list {unset {}} {{entry s5-a} s5-a} {{entry s5-a} s5-a} {{entry s5-a} s5-b}]
+
+## S6: HOW THE SAVED FILE'S DEFAULT GETS IN, AT NO COST TO THE FILE FORMAT.
+## `ase::sim_select` reads which layer is talking. The file and the rc speak for
+## the machine, so their selection line is a DEFAULT; a session speaks for one
+## bench, so its selection is a choice and stops at `sim_use`. Driven through
+## the real reader on a real file, never by poking the layer signal.
+a_reset
+set S6P [file join $scratch conf_s6]
+a_wr $S6P "ase::sim_register s6-a $STUB\nase::sim_register s6-b $STUB2\n[list ase::sim_select s6-b]\n"
+a_ans ase::sim_load_conf $S6P
+set S6NAMED [list [a_ans ase::sim_default_choice] [a_ans ase::sim_selected]]
+a_reset
+set S6PNONE [file join $scratch conf_s6none]
+a_wr $S6PNONE "ase::sim_register s6-a $STUB\nase::sim_register s6-b $STUB2\n[list ase::sim_select {}]\n"
+a_ans ase::sim_load_conf $S6PNONE
+set S6NONE [list [a_ans ase::sim_default_choice] [a_ans ase::sim_selected]]
+check {S6 a selection line in the saved list sets the installation default, and a saved "none of mine" is recorded as the deliberate PATH choice issue 0932 established rather than as no opinion at all} \
+  [list $S6NAMED $S6NONE] \
+  [list {{entry s6-b} s6-b} {{path {}} {}}]
+
+## S7: REMOVING THE DEFAULT. The same two arms the in-force choice has had
+## since issue 0937, for the same reason: one left is not a guess, two or more
+## is, and a guess is left to the user. No new sentence -- the user removed an
+## entry and has already been told what will start now.
+a_reset
+a_ans ase::sim_register s7-a $STUB
+a_ans ase::sim_register s7-b $STUB2
+a_ans ase::sim_register s7-c $STUB
+a_ans ase::sim_unregister s7-a
+set S7THREE [a_ans ase::sim_default_choice]
+a_reset
+a_ans ase::sim_register s7-a $STUB
+a_ans ase::sim_register s7-b $STUB2
+a_ans ase::sim_unregister s7-a
+set S7TWO [a_ans ase::sim_default_choice]
+a_reset
+a_ans ase::sim_register s7-a $STUB
+a_ans ase::sim_unregister s7-a
+set S7ONE [a_ans ase::sim_default_choice]
+a_reset
+a_ans ase::sim_register s7-a $STUB
+a_ans ase::sim_register s7-b $STUB2
+a_ans ase::sim_unregister s7-b
+set S7OTHER [a_ans ase::sim_default_choice]
+check {S7 taking away the entry that was the installation default leaves no default when what is left is a guess and the sole survivor when it is not, and taking away any OTHER entry leaves the default alone} \
+  [list $S7THREE $S7TWO $S7ONE $S7OTHER] \
+  [list {unset {}} {entry s7-b} {unset {}} {entry s7-a}]
+
+## S8: A SAVE THAT CANNOT HAPPEN SAYS SO ONCE. ase::sim_write_conf already
+## reports its own failures and returns 0 rather than raising, so the autosave
+## must not add a second sentence about the same failure -- two sentences for
+## one event is how a user learns to stop reading them. The registration itself
+## is clean (a real stub), so every sentence counted here is about the save.
+set S8HAD [info exists ::USER_CONF_DIR]
+set S8OLD {}
+if {$S8HAD} { set S8OLD $::USER_CONF_DIR }
+a_reset
+set ::USER_CONF_DIR [file join $scratch s8 nowhere deeper]
+set S8SAID [a_echoed {a_ans ase::sim_register s8-a $::STUB}]
+set S8N 0
+foreach s8p $S8SAID { if {[regexp -nocase {could not be saved} [lindex $s8p 1]]} { incr S8N } }
+if {$S8HAD} { set ::USER_CONF_DIR $S8OLD } else { catch {unset ::USER_CONF_DIR} }
+check {S8 a registration that cannot be saved tells the user exactly once, and the entry is still in the list they can see and fix} \
+  [list [llength $S8SAID] $S8N [a_names]] \
+  [list 1 1 s8-a]
+
+## S8b: AND A SESSION WITH NO CONFIGURATION DIRECTORY AT ALL SAYS NOTHING.
+## There is no user file for such an installation, so there is nothing to keep
+## the list in and nothing the user could do about it -- the same rule E11 pins
+## for a first run with no saved list. Measured before the guard: every single
+## registration said "Your simulator list could not be saved to , so the
+## simulators you added will be gone when xschem closes" -- a sentence with a
+## hole where the file name goes, about a save nobody asked for.
+set S8BHAD [info exists ::USER_CONF_DIR]
+set S8BOLD {}
+if {$S8BHAD} { set S8BOLD $::USER_CONF_DIR }
+a_reset
+catch {unset ::USER_CONF_DIR}
+set S8BSAID [a_echoed {a_ans ase::sim_register s8b-a $::STUB}]
+set S8BFILE [a_ans ase::sim_conf_file]
+if {$S8BHAD} { set ::USER_CONF_DIR $S8BOLD } else { catch {unset ::USER_CONF_DIR} }
+check {S8b registering in a session that has no configuration directory at all says nothing about saving, because there is nowhere a list could live and nothing the user could do about it} \
+  [list $S8BFILE [llength $S8BSAID] [a_names]] \
+  [list {} 0 s8b-a]
+
+## S9-S10: WHAT MAY WRITE THE USER'S LIST, AND WHAT MAY NOT.
+##
+## S9 is the rule in the source comment: *a mutation that expresses a user's
+## choice persists; a teardown does not.* ase::sim_clear is "forget every
+## registered simulator and every choice", and its callers are test resets and
+## scripts. An autosave there is the one way an autosave-at-the-mutation design
+## can DESTROY data, and it would blank the real list of anyone whose session
+## ran a script that reset the registry.
+##
+## S10 is the landmine underneath the whole design: ase::sim_load_conf SOURCES
+## the saved list, so every line in it is a real ase::sim_register call. Without
+## the layer gate the reader rewrites the file it is halfway through reading,
+## once per line, from a registry that is only partly built.
+set S9HAD [info exists ::USER_CONF_DIR]
+set S9OLD {}
+if {$S9HAD} { set S9OLD $::USER_CONF_DIR }
+a_reset
+set ::USER_CONF_DIR [file join $scratch s9conf]
+file mkdir $::USER_CONF_DIR
+set S9F [file join $::USER_CONF_DIR ase_simulators]
+file delete -force $S9F
+a_ans ase::sim_register s9-a $STUB
+a_ans ase::sim_register s9-b $STUB2
+set S9MADE [file exists $S9F]
+set S9TXT [a_slurp $S9F]
+set S9MT0 [expr {$S9MADE ? [file mtime $S9F] : 0}]
+after 1100
+a_ans ase::sim_clear
+set S9AFTERCLEAR [list [file exists $S9F] [expr {[file exists $S9F] ? [file mtime $S9F] : -1}]]
+set S10LOAD [a_ans ase::sim_load_conf $S9F]
+set S10AFTERLOAD [list [file exists $S9F] [expr {[file exists $S9F] ? [file mtime $S9F] : -1}]]
+after 1100
+a_ans ase::sim_select s9-b
+set S9AFTERPICK [expr {[file exists $S9F] ? [file mtime $S9F] : -1}]
+if {$S9HAD} { set ::USER_CONF_DIR $S9OLD } else { catch {unset ::USER_CONF_DIR} }
+check {S9 registering writes the list with no save gesture at all, and then neither forgetting the whole registry nor picking a different simulator touches that file again -- a teardown is not a choice, and a choice is not the environment} \
+  [list $S9MADE \
+        [expr {[string first {ase::sim_register s9-a} $S9TXT] >= 0}] \
+        [expr {[string first {ase::sim_register s9-b} $S9TXT] >= 0}] \
+        $S9AFTERCLEAR $S9AFTERPICK] \
+  [list 1 1 1 [list 1 $S9MT0] $S9MT0]
+check {S10 reading the saved list back does not rewrite it -- every line in that file is a real registration, so an ungated writer would have the reader editing the file it is halfway through} \
+  [list $S10LOAD $S10AFTERLOAD [a_names]] \
+  [list 1 [list 1 $S9MT0] {s9-a s9-b}]
+
+## S11: THE RUN APPLIES THE RUNNING SESSION'S CHOICE. `ase::sim_use` is
+## process-global and every resolver reads it, so with two ASE-L windows open on
+## two benches there is one answer for two questions; the run is where that
+## stops being rhetorical. A state that says nothing falls through to the
+## installation default, which is what all 104 committed states say. A state
+## naming an entry that is no longer registered NEVER raises -- it is called
+## from inside a run that is about to start -- and says the one sentence that
+## already exists for it.
+a_reset
+a_ans ase::sim_register s11-a $STUB
+a_ans ase::sim_register s11-b $STUB2
+set S11UNSET [list [a_ans ase::sim_apply_choice [dict create]] [a_ans ase::sim_selected]]
+set S11PICK  [list [a_ans ase::sim_apply_choice [dict create sim_entry {name s11-b}]] \
+                   [a_ans ase::sim_selected]]
+set S11PATH  [list [a_ans ase::sim_apply_choice [dict create sim_entry none]] \
+                   [a_ans ase::sim_selected]]
+a_ans ase::sim_select s11-b
+set ::s11g {}
+set S11GONESAID [a_echoed {set ::s11g [a_ans ase::sim_apply_choice [dict create sim_entry {name s11-gone}]]}]
+set S11GONE [list $::s11g [a_ans ase::sim_selected]]
+set S11NAMED 0
+foreach s11p $S11GONESAID {
+  if {[string first s11-gone [lindex $s11p 1]] >= 0} { incr S11NAMED }
+}
+check {S11 the session being run decides which program starts: a state with no choice of its own falls through to the installation default, a state naming an entry gets that entry, a state saying "the PATH program" gets the PATH, and a state naming a simulator that is no longer registered changes nothing and says so by name instead of blowing up mid-run} \
+  [list $S11UNSET $S11PICK $S11PATH $S11GONE [llength $S11GONESAID] $S11NAMED] \
+  [list {{entry s11-a} s11-a} {{entry s11-b} s11-b} {{path {}} {}} \
+        {{entry s11-b} s11-b} 1 1]
+
+## S12: STRUCTURAL -- WHERE THAT CALL SITS, which no behavioural row can see.
+## Below the in-flight refusal (a run that will not happen must not change which
+## program is in force) and above every line that resolves a simulator, so the
+## pre-check, the capability report, the command that is composed and the
+## sentence the user reads all name the same program. It is in ase::run_deck
+## rather than ase::run because run_deck is the body all three doors share --
+## ase::run, ase::run_existing and a script or Command-window paste come
+## straight here -- and it appears ONCE, because two calls would say the
+## stale-entry sentence twice for one gesture.
+set S12APPLY [a_lines_matching $ASETCL {ase::sim_apply_choice $state}]
+set S12LOCK  [a_lines_matching $ASETCL {ase::run_in_flight $rawlock}]
+set S12PRE   [a_lines_matching $ASETCL {ase::run_precheck $state}]
+set S12USING [a_lines_matching $ASETCL {ase::run_using_report $state}]
+set S12CMD   [a_lines_matching $ASETCL {$run_cmd $state $deckpath}]
+set S12ORD 0
+if {[llength $S12APPLY] == 1 && [llength $S12LOCK] == 1 && [llength $S12PRE] == 1 \
+    && [llength $S12USING] == 1 && [llength $S12CMD] == 1} {
+  set S12ORD [expr {([lindex $S12APPLY 0] > [lindex $S12LOCK 0]) &&
+                    ([lindex $S12APPLY 0] < [lindex $S12PRE 0]) &&
+                    ([lindex $S12APPLY 0] < [lindex $S12USING 0]) &&
+                    ([lindex $S12APPLY 0] < [lindex $S12CMD 0])}]
+}
+check {S12 STRUCTURAL the running session's choice is put in force once, in the one body all three run doors share, below the gate that refuses without looking at a simulator and above everything that resolves one} \
+  [list [llength $S12APPLY] $S12ORD] [list 1 1]
+
+## S12b: AND THE WIRING, NOT ONLY THE LINE. A run whose state names the SECOND
+## simulator, started while the FIRST is what is in force, must leave the second
+## in force -- that is "the window you clicked in wins". Driven through the real
+## ase::run_deck with the pre-flight refusing, which is L15's trick: the refusal
+## comes from BELOW the line under test, so the choice has already been applied
+## and nothing is written, launched or deleted.
+set S12NL [file join $scratch s12.spice]
+a_wr $S12NL "* s12\n.end\n" 0644
+proc a_s12_run {nl st} {
+  set ::a_s12_rc NOPROC
+  if {![llength [info commands ::ase::preflight_gate]]} { return }
+  rename ::ase::preflight_gate ::a_s12_saved_pfg
+  proc ::ase::preflight_gate {state netlist_text} {
+    return -code error "ase: s12 refuses this run"
+  }
+  set ::a_s12_rc [catch {ase::run_deck $st $nl}]
+  rename ::ase::preflight_gate {}
+  rename ::a_s12_saved_pfg ::ase::preflight_gate
+}
+a_reset
+a_ans ase::sim_register s12-a $STUB
+a_ans ase::sim_register s12-b $STUB2
+a_ans ase::sim_select s12-a
+set S12BEFORE [a_ans ase::sim_selected]
+a_echoed [list a_s12_run $S12NL [dict create simulator ngspice sim_entry {name s12-b}]]
+set S12AFTER [a_ans ase::sim_selected]
+a_echoed [list a_s12_run $S12NL [dict create simulator ngspice sim_entry none]]
+set S12PATHAFTER [a_ans ase::sim_selected]
+check {S12b a run started from a session that picked the second simulator really does put that one in force before anything resolves a program, and a session that picked the PATH program gets the PATH -- with two ASE-L windows open, the one you pressed Run in wins} \
+  [list $S12BEFORE $S12AFTER $S12PATHAFTER $::a_s12_rc] \
+  [list s12-a s12-b {} 1]
+
+## S13: STRUCTURAL -- THE SAVED LIST IS WRITTEN FROM THE DEFAULT, NEVER FROM
+## WHAT IS IN FORCE. The behavioural half is E2 and R8b; this is the half that
+## stays true when somebody "restores" one line. `ase::sim_write_body` must not
+## even be able to see `sim_use`.
+set S13BODY [a_procbody [a_nocomment $ASETCL] ase::sim_write_body]
+check {S13 STRUCTURAL the writer of the saved list cannot reach what is in force at all -- it reads the installation default and decodes it, so a choice can never leak back into the machine's own file} \
+  [list [expr {[string first {variable sim_default} $S13BODY] >= 0}] \
+        [expr {[string first {sim_use} $S13BODY] >= 0}] \
+        [expr {[string first {sim_choice_decode} $S13BODY] >= 0}]] \
+  [list 1 0 1]
 
 # --- teardown ----------------------------------------------------------------
 a_reset

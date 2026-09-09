@@ -2882,4 +2882,37 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   `ase::netlist_in_place`, and the RT child fixture is given one instance —
   workarounds to be reverted when this closes.
 
-**The next free number is 1395.**
+- **1395** — **registration persists through one door, and the choice persists
+  through one too many.** Filed 2026-09-08 as item D of the ASE-L
+  simulator-choice batch (`doc/claude/ase_simchoice_batch/CREW_BRIEF.md`), which
+  is also what fixes it. Two halves of one boundary, and the shipped tree has
+  each backwards. **Registration does not reach disk through every door**:
+  `ase::sim_register` (`src/ase.tcl:1300`) and `sim_unregister` (`:1459`) write
+  nothing, and the registry survives a restart only because the GESTURE saves —
+  `ase::ui::simdlg_commit` (`src/ase_window.tcl:4649`) is `catch
+  {ase::sim_write_conf}` and is the ONE production call site of the writer. So
+  the Simulators dialog persists and the CIW does not, while
+  `src/xschem.tcl:4935` promises persistence unconditionally and issue **1370**'s
+  own comment (`src/ase_window.tcl:288`) already calls the CIW a real door and
+  records that *this user's* `ngspice-ver50` entry was created through it — 1370
+  fixed that door's DISPLAY half and left its PERSISTENCE half. **The choice
+  reaches disk when it must not**: the entry in force is the process-global
+  `ase::sim_use` (`:711`), in no `schema_keys` entry, so changing it cannot move
+  `ase::session_dirty` (`:8996`), needs no save and prompts on no shutdown — and
+  yet `sim_write_body` (`:3157`) writes an `ase::sim_select` line (`:3200`/`:3203`),
+  so a choice gesture lands in the environment file anyway. Measured with
+  `::USER_CONF_DIR` redirected to scratch: two registrations leave **no conf file
+  at all**, and the writer, once called by hand, wrote `ase::sim_select bb`.
+  ⚠ **The state key `simulator` is the BACKEND** (`ngspice`) and is already
+  state and already dirties; the registry entry (`ngspice-ver50`) is the thing
+  this issue is about. The fix: `ase::sim_default` for the installation default,
+  a three-valued `sim_entry` state key (in `omit_if_empty`, or all 104 committed
+  `.state` files stop round-tripping byte-identically), persistence moved from
+  the gesture to the mutation and gated on `sim_origin eq session`,
+  `ase::sim_clear` deliberately excluded because teardown is not a choice, and
+  `sim_write_body` writing the default and never the in-force choice. Rule debt
+  **1395** (two ASE-L windows still share one `ase::sim_use`: the run applies the
+  running session's choice, but the other window's bar may momentarily name the
+  other one — recorded, not fixed).
+
+**The next free number is 1396.**

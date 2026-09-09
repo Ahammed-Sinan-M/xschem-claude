@@ -164,6 +164,19 @@ proc test_scratch_drop {d} {
 ## seeds that could put one back. Safe to call more than once, safe to call in a
 ## tree where `ase.tcl` was never sourced, and never raises.
 proc test_sim_registry_isolate {} {
+  ## ⚠ AND NOTHING THIS SUITE REGISTERS MAY REACH THE DISK (2026-09-08).
+  ## `ase::sim_register` / `ase::sim_unregister` now persist the registry at the
+  ## moment it changes -- the user's ruling, and the repair for a Command-window
+  ## registration that vanished at the next start. Their target is
+  ## $::USER_CONF_DIR/ase_simulators, i.e. the developer's REAL list when a
+  ## suite has not redirected it, so a suite that registers `/bin/sh` as a
+  ## simulator would take away the build they actually use. Clearing the
+  ## autosave seam is how this helper keeps the promise it already makes above:
+  ## nothing here touches a file. A suite whose SUBJECT is the saving
+  ## (test_ase_simreg_0931, test_ase_simdlg_0937) does not call this helper --
+  ## it redirects ::USER_CONF_DIR into its own scratch instead, and keeps the
+  ## real writer under test.
+  catch {set ::ase::sim_autosave 0}
   ## the conf layer + the session layer + the choice in force
   catch {ase::sim_clear}
   ## measured capability answers are keyed on a resolved path: a cleared

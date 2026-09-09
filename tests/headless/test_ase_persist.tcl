@@ -13,6 +13,16 @@
 #        no window + prev -> prev with `open 0`, graphs KEPT
 #   R5   (--nogui arm only) ase::open_state on an `open 1` state -> 1, no Tk
 #        side effects (wviewer::window_for stays {})
+#   R7   the `sim_entry` key ON DISK (issue 1395, the 2026-09-08 ruling): the
+#        three values round-trip -- `{}` OMITTED entirely, `none` written out
+#        as the deliberate PATH choice, `{name <entry>}` as that registry
+#        entry -- a pre-batch file with no such line loads as `unset` and
+#        re-saves byte-identically WITHOUT gaining the key, and the forgiving
+#        reader takes a hand-written bare name as an entry while `{name none}`
+#        is an entry really called `none`. It lives here because R2 is one of
+#        the five named load->save byte-identity rows and R3 is the
+#        old-state-compat row: the new key is governed by exactly those two
+#        rules. Pure schema, both arms, no display, no registry.
 #   G1   fresh session on the committed-shape state: window up, NO viewer
 #        auto-open (viewer {})
 #   G2   Choose Analyses through the REAL dialog: dc V2 0..1.8 step 0.01
@@ -49,8 +59,12 @@
 #
 # Runs via full_audit's DEFAULT arm (GUI legs self-SKIP without a usable
 # DISPLAY; run legs additionally self-SKIP without ngspice — the item-14
-# PROOF run must show ZERO SKIPs on G1-G11). Standalone repro from the repo
-# ROOT:
+# PROOF run must show ZERO SKIPs on G1-G11).
+#
+# FLOOR, raised and never lowered: 44 checks on the headless arm and 147 with
+# a display and ngspice (34 / 137 before the R7 group of 2026-09-08; the one
+# line before that was R1's key count going 17 -> 18 when `sim_entry` joined
+# the schema). Standalone repro from the repo ROOT:
 #   ./src/xschem --pipe -q --nolog --script tests/headless/test_ase_persist.tcl
 # (headless arm: add --nogui)
 
@@ -152,8 +166,8 @@ check "R1 state_default has viewer {}" [dict get $d viewer] {}
 # the deck) joined for exactly the same reason and with the same `{}` default:
 # a `0` default would be serialized into all 104 committed .state files and
 # would break R2 here and F3/G3/R4/V4 in the sibling suites.
-check "R1 exactly the 17 schema keys" [lsort [dict keys $d]] \
-  [lsort {version simulator design rundir temperature models variables \
+check "R1 exactly the 18 schema keys" [lsort [dict keys $d]] \
+  [lsort {version simulator sim_entry design rundir temperature models variables \
           analyses outputs save_all_v save_all_i save_op_params options \
           includes pre_commands cosim viewer}]
 
@@ -333,6 +347,115 @@ check "R6 every shim restored" \
         [info procs r6_o_echo] \
         [regexp {\n\s*set res \[results::resolve} [info body ase::ui::viewer_restore]]] \
   {{} {} {} 1}
+
+# --- R7: THE `sim_entry` KEY ON DISK (issue 1395, the 2026-09-08 ruling) ------
+# `sim_entry` is the state key that carries WHICH REGISTERED SIMULATOR this
+# bench runs -- the user's ruling that registering a simulator is environment
+# and reaches disk at once, while *whether* the new one is "the one to use" is
+# ASE-L state that dirties, must be saved, and prompts on quit. R1 above already
+# pins it into the 18 schema keys; this group pins what it looks like IN THE
+# FILE, which is where the 104 committed `.state` files are at risk.
+#
+# WHY IT BELONGS IN THIS SUITE AND NOT IN THE FEATURE'S OWN. R2 above is one of
+# the FIVE named load->save byte-identity rows (`src/ase.tcl:66` names
+# F3/G3/R4/V4/R2), and R3 is the old-state-compat row -- a state file written
+# before a key existed, loaded and re-saved without gaining it. The new key is
+# governed by exactly those two rules, so its rows go where the rules already
+# live rather than beside the registry code that reads it.
+#
+# NOTHING HERE REGISTERS A SIMULATOR and nothing here writes outside the
+# scratch dir: these are pure schema round trips over ase::state_save /
+# ase::state_load and the ase::sim_choice_* encoder, so they run on both arms
+# of this file and need no display, no ngspice and no registry.
+proc r7_lines {p} {
+  set f [open $p r] ; set d [read $f] ; close $f
+  return [split [string trimright $d "\n"] "\n"]
+}
+proc r7_simline {p} {
+  return [lsearch -inline -glob [r7_lines $p] {sim_entry *}]
+}
+proc r7_bytes {p} { set f [open $p rb] ; set d [read $f] ; close $f ; return $d }
+# save $st, read it back, save again: {the sim_entry line or {} if absent,
+# the decoded choice, 1 when the two saves are byte-identical}
+proc r7_trip {tag st} {
+  global scratch
+  set a [file join $scratch r7_$tag.state]
+  set b [file join $scratch r7_${tag}b.state]
+  ase::state_save $a $st
+  set back [ase::state_load $a]
+  ase::state_save $b $back
+  return [list [r7_simline $a] [ase::sim_choice_of $back] \
+               [expr {[r7_bytes $a] eq [r7_bytes $b]}]]
+}
+
+# (a) THE EMPTY VALUE IS NOT WRITTEN AT ALL. `sim_entry` is in
+# ase::omit_if_empty for the reason that list states in full: a key added later
+# must not rewrite the files that predate it. `{}` is also the default, so this
+# is the shape EVERY committed state has -- if a `sim_entry {}` line appeared
+# here, all 104 of them would stop round-tripping byte-identically and the five
+# named rows would red together.
+check "R7a sim_entry {} is omitted from the file entirely, and reads back as no choice" \
+  [r7_trip empty [ase::state_default]] {{} {unset {}} 1}
+# (b) `none` -- issue 0932's deliberate "the program on my PATH", which is a
+# real choice and IS written out. This is the asymmetry the encoding is built
+# around: `{}` is NOT the PATH program.
+check "R7b sim_entry none round-trips as the deliberate PATH choice" \
+  [r7_trip none [ase::sim_choice_set [ase::state_default] path]] \
+  {{sim_entry none} {path {}} 1}
+# (c) the two-word entry form, which exists so that no registry name has to be
+# reserved. `ngspice-ver50` is this developer's own entry name, on purpose: it
+# is the name in ~/.xschem/ase_simulators and the one a real file will carry.
+check "R7c sim_entry {name <entry>} round-trips as that registry entry" \
+  [r7_trip entry [ase::sim_choice_set [ase::state_default] entry ngspice-ver50]] \
+  {{sim_entry {name ngspice-ver50}} {entry ngspice-ver50} 1}
+# ...and the three are three DIFFERENT files, so (a) cannot be passing by
+# accident of everything serializing the same way.
+check "R7c the three values produce three different files" \
+  [llength [lsort -unique [list [r7_bytes [file join $scratch r7_empty.state]] \
+                                [r7_bytes [file join $scratch r7_none.state]] \
+                                [r7_bytes [file join $scratch r7_entry.state]]]]] 3
+
+# (d) A STATE FILE WRITTEN BEFORE THIS BATCH. The fixture is built the way R3
+# builds its viewer-less one -- the key REMOVED from the dict before serializing
+# -- so the file on disk has never heard of `sim_entry`. It must load, decode as
+# `unset` (i.e. "no choice of my own; run the installation default"), and re-save
+# BYTE-IDENTICALLY, without gaining the key. That is the rule at src/ase.tcl:66
+# and it is what keeps a `git diff` of a state view meaningful.
+set r7old [dict remove [ase::state_default] sim_entry]
+set r7f  [file join $scratch r7_pre.state]
+set r7f2 [file join $scratch r7_pre_b.state]
+ase::state_save $r7f $r7old
+check_true "R7d fixture: the pre-batch file carries NO sim_entry line" \
+  [expr {[r7_simline $r7f] eq {}}]
+set r7back [ase::state_load $r7f]
+check "R7d it loads and decodes as `no choice of my own`" \
+  [ase::sim_choice_of $r7back] {unset {}}
+ase::state_save $r7f2 $r7back
+check "R7d re-saving does NOT give it the key, and is byte-identical" \
+  [list [r7_simline $r7f2] [expr {[r7_bytes $r7f] eq [r7_bytes $r7f2]}]] {{} 1}
+
+# (e) THE DECODER IS FORGIVING, ON PURPOSE. A saved state is a plain text file
+# a person edits, and the natural thing to type is the entry's bare name. A
+# one-word value that is not `none` is therefore that entry -- and an entry a
+# user really called `none` is spelled `{name none}` and reads back as itself,
+# which is the whole reason the entry form has two words. Both fixtures are
+# HAND-WRITTEN here (the encoder never emits the bare form), so this measures
+# the reader and not a round trip through the writer.
+proc r7_handwrite {tag value} {
+  global scratch r7old
+  set p [file join $scratch r7_hand_$tag.state]
+  set f [open $p w]
+  puts $f [string trim [ase::state_serialize $r7old]]
+  puts $f "sim_entry $value"
+  close $f
+  return [ase::sim_choice_of [ase::state_load $p]]
+}
+check "R7e a hand-written bare `sim_entry ngspice-ver50` is that entry" \
+  [r7_handwrite bare ngspice-ver50] {entry ngspice-ver50}
+check "R7e ...while the bare word `none` is the PATH program, not an entry" \
+  [r7_handwrite word none] {path {}}
+check "R7e ...and an entry really called `none` is spelled {name none}" \
+  [r7_handwrite braced {{name none}}] {entry none}
 
 # --- T-E BOOKKEEPING: WHY THE LEGS DID OR DID NOT RUN ------------------------
 # doc/claude/specs/results_selection.md section 12: T-E is the batch's ONE test

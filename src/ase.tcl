@@ -40,7 +40,33 @@ namespace eval ase {
   # `cosim` follows it for the same reason — it is deck/simulation config the
   # state owns (spec section E, E4). It is POLICY ONLY: it never lists the
   # digital artifacts, which are DERIVED from the netlist at run time.
-  variable schema_keys {version simulator design rundir temperature models
+  #
+  # `sim_entry` SITS BESIDE `simulator` AND IS NOT THE SAME THING. `simulator`
+  # is the BACKEND — `ngspice`, the name of the hook set that renders and reads
+  # this deck. `sim_entry` is WHICH REGISTERED PROGRAM this session runs that
+  # backend with, and it is here because of the user's ruling of 2026-09-08:
+  # registering a simulator is environment and reaches disk at once, but
+  # *whether* a registered one "gets assigned as 'the one to use' is an option
+  # that is part of the ASE-L state. If changed, that results in dirtiness."
+  # Being a schema key is the whole implementation of that — ase::session_dirty
+  # already compares serialized states, so the dirty mark, the explicit save and
+  # the prompt on quit come for free. Three values, one decoder
+  # (ase::sim_choice_decode), shared with ase::sim_default:
+  #
+  #     {} / absent      this state makes no choice; ase::sim_default runs
+  #     none             DELIBERATELY the program on the PATH (issue 0932)
+  #     {name <entry>}   that registry entry
+  #
+  # The two-word entry form exists so that no registry name has to be reserved:
+  # an entry a user really called `none` is spelled `{name none}`. A reader that
+  # meets a bare one-word value which is not `none` takes it as an entry name,
+  # because a hand-edited state file is forgiving.
+  #
+  # ⚠ IT IS IN `omit_if_empty` BELOW AND ITS DEFAULT IS `{}`, FOR THE REASON
+  # THAT LIST STATES. Anything else writes a `sim_entry` line into all 104
+  # committed .state files and reddens the five load->save byte-identity rows.
+  variable schema_keys {version simulator sim_entry design rundir temperature
+                        models
                         variables analyses outputs save_all_v save_all_i
                         save_op_params
                         options includes pre_commands cosim viewer}
@@ -73,7 +99,15 @@ namespace eval ase {
   # `{}`. A state a user deliberately unticked is byte-identical to one that
   # never heard of the key, so it flips ON with the rest. Ticking it off again
   # now writes `save_op_params 0` and sticks.
-  variable omit_if_empty {cosim save_op_params}
+  #
+  # `sim_entry` (the 2026-09-08 ruling, see the schema_keys comment above) is
+  # the FOURTH member and joins for the identical reason, with the identical
+  # consequence if it is ever taken out: it defaults to `{}` and `{}` means "no
+  # choice of my own", so every state written before the key existed serializes
+  # exactly as it did before and the five rows stay green. Note the asymmetry
+  # this buys and that the encoding is built around — `{}` is NOT "use the PATH
+  # program"; that is `none`, which is a real choice and IS written out.
+  variable omit_if_empty {cosim save_op_params sim_entry}
   # simulator name -> hooks dict: the five REQUIRED hooks
   # {render_deck run_cmd log_file result_probe raw_file}, plus the OPTIONAL
   # `capabilities` (issue 0948).
@@ -469,6 +503,7 @@ proc ase::state_default {} {
   return [dict create \
     version   1 \
     simulator ngspice \
+    sim_entry {} \
     design    {} \
     rundir    {} \
     temperature 27 \
@@ -708,11 +743,65 @@ namespace eval ase {
   # order entries were registered in is the order the user sees them.
   variable simulators [dict create]
   # the entry name in force, or empty for "no choice made -- use PATH".
+  #
+  # ⚠ A CACHE, NOT THE STORE OF RECORD, AS OF THE USER'S RULING OF 2026-09-08.
+  # Their words: registering a simulator "is something that can make it to disk
+  # right away as soon as done", but *whether* the newly registered one "gets
+  # assigned as 'the one to use' is an option that is part of the ASE-L state.
+  # If changed, that results in dirtiness."
+  #
+  # So the two halves of this section are DIFFERENT KINDS OF THING and are
+  # stored in different places:
+  #
+  #   the REGISTRY  -- which programs exist, and where -- is ENVIRONMENT. It is
+  #                    a fact about this machine, it belongs to no test bench,
+  #                    and it persists the moment it changes (ase::sim_touch).
+  #   the CHOICE    -- which registered entry a session runs -- is ASE-L STATE.
+  #                    It travels with the test bench in the `sim_entry` schema
+  #                    key, it dirties the session when it changes, and it
+  #                    reaches disk only when the user saves.
+  #
+  # `sim_use` is what is in force RIGHT NOW, i.e. a cache of the active
+  # session's choice, refreshed by ase::sim_apply_choice at every run. Every
+  # ase::sim_status caller keeps reading it and none of them changed.
   variable sim_use {}
+  # THE INSTALLATION DEFAULT: what a session that expresses no choice of its
+  # own runs. It is ENVIRONMENT, like the registry beside it, and it is what
+  # ase::sim_write_body puts in the saved list -- never `sim_use`, which would
+  # be a session's choice leaking into a file that belongs to the machine.
+  #
+  # Set from the three places that speak for the environment and from nowhere
+  # else: the `ase::sim_select` line in the saved list (origin `conf`), the rc
+  # seed (origin `rc`), and the first registration of all (see
+  # ase::sim_register). A `session` gesture never touches it.
+  #
+  # Stored in the SAME three-value encoding as the `sim_entry` state key --
+  # {} / none / {name <entry>} -- so one decoder (ase::sim_choice_decode)
+  # serves both and neither side has to know how the other spells "the program
+  # on the PATH".
+  variable sim_default {}
   # which layer is currently registering, stamped into every entry's `origin`
   # field. Only the seed block and ase::sim_load_conf ever change it, and both
   # restore it, so an ordinary call is always `session`.
   variable sim_origin session
+  # MAY A MUTATION REACH THE DISK AT ALL? A TEST SEAM, AND THE ONLY ONE.
+  # Nothing in the product ever clears this; it is 1 for every user, always.
+  #
+  # WHY IT HAD TO EXIST. Registration now persists at the moment it happens,
+  # and its target is $::USER_CONF_DIR/ase_simulators -- the developer's own
+  # ~/.xschem/ase_simulators when nothing redirects it. Eleven headless suites
+  # register stub simulators (`/bin/sh`, two-line shell scripts, deliberately
+  # broken files), and four of them redirect nothing, so on the day this became
+  # a write those four would have replaced the user's real list with stubs on
+  # every run. tests/headless/scratch.tcl's `test_sim_registry_isolate` clears
+  # this, which is the same promise that helper already makes in words:
+  # "NOTHING HERE TOUCHES A FILE, AND THAT IS THE POINT."
+  #
+  # It is deliberately NOT an ordinary preference. A user who does not want
+  # their list saved has a way to say so already -- do not register anything --
+  # and a silent "changes are not being kept" mode is exactly the failure this
+  # whole section was written to stop.
+  variable sim_autosave 1
   # EVERY sentence ase::sim_say has said since the last clear, in the order it
   # said them, so a dialog can show the user the very words the CIW got
   # instead of composing a second version of them (issue 0937;
@@ -728,6 +817,63 @@ namespace eval ase {
   # assume -- that this holds "the last sentence" -- is exactly what the
   # defect was made of.
   variable sim_said {}
+}
+
+# --- HOW A CHOICE IS WRITTEN DOWN -------------------------------------------
+# ONE ENCODING, ONE DECODER, TWO STORES. `ase::sim_default` (the installation
+# default) and the `sim_entry` schema key (one session's own choice) hold the
+# same three values, so a reader never has to know which of the two it is
+# looking at:
+#
+#   {} or absent    no choice is recorded here -- ask the layer below
+#   none            DELIBERATELY the program on the PATH (issue 0932)
+#   {name <entry>}  that registry entry
+#
+# WHY `{}` CANNOT ALSO MEAN "THE PATH PROGRAM", which is the obvious-looking
+# saving. The 104 committed `.state` files force the new key's default to be
+# `{}` and force it into `ase::omit_if_empty` (the rule is written out at the
+# top of this file), so `{}` is what every state that predates the key says --
+# i.e. "I have no opinion". Issue 0932 established that handing control back to
+# the PATH is a real choice a user makes and must survive a restart, so it
+# needs a spelling of its own, and `none` is it.
+#
+# WHY THE ENTRY FORM IS TWO WORDS. So that no registry name has to be reserved.
+# An entry a user genuinely called `none` is spelled `{name none}` and reads
+# back as itself.
+#
+# THE DECODER IS FORGIVING ON PURPOSE. A saved state is a plain text file a
+# user may edit, and the natural thing to type is the entry's bare name. A
+# one-word value that is not `none` therefore decodes as that entry.
+proc ase::sim_choice_decode {v} {
+  if {[catch {llength $v} n]} { return [list unset {}] }
+  if {$n == 0} { return [list unset {}] }
+  if {$n == 1} {
+    if {[lindex $v 0] eq {none}} { return [list path {}] }
+    return [list entry [lindex $v 0]]
+  }
+  if {$n == 2 && [lindex $v 0] eq {name}} {
+    set nm [lindex $v 1]
+    if {$nm eq {}} { return [list unset {}] }
+    return [list entry $nm]
+  }
+  ## Anything else is a value this encoding has no meaning for. Answering
+  ## `unset` makes it fall through to the layer below rather than naming an
+  ## entry nobody registered, which is the failure a hand-edited file is most
+  ## likely to produce.
+  return [list unset {}]
+}
+
+# The stored form for a decoded kind. `entry` needs a name; anything else
+# ignores it.
+proc ase::sim_choice_encode {kind {name {}}} {
+  switch -- $kind {
+    path  { return none }
+    entry {
+      if {$name eq {}} { return {} }
+      return [list name $name]
+    }
+  }
+  return {}
 }
 
 # THE MINT. Every user-facing sentence about a simulator entry is written
@@ -1286,6 +1432,56 @@ proc ase::sim_notify_fire {} {
   return {}
 }
 
+# THE REGISTRY REACHES DISK AT THE MUTATION, NOT AT THE GESTURE (the user's
+# ruling of 2026-09-08: registering a simulator "is something that can make it
+# to disk right away as soon as done").
+#
+# WHAT IT REPLACES, AND WHY THE OLD PLACEMENT WAS A DEFECT. The only caller of
+# ase::sim_write_conf used to be the Simulators dialog, which called it after
+# every gesture of its own. So the dialog persisted and the OTHER door did not:
+# a user who typed `ase::sim_register ...` into the Command window -- which is
+# how this user's own `ngspice-ver50` entry was made, recorded at
+# src/ase_window.tcl:288 -- got an entry that worked all session and was gone
+# at the next start, while src/xschem.tcl's own help text promised them "the
+# saved list is ~/.xschem/ase_simulators and it comes back at the next start".
+# Putting the write on the mutation means every door persists, including the
+# ones nobody has written yet.
+#
+# ⚠ GATED ON `sim_origin eq session`, AND WITHOUT THAT GATE THIS EATS ITS OWN
+# TAIL. ase::sim_load_conf SOURCES the saved list, so every line in it is a
+# real ase::sim_register call: an ungated write would have the reader rewriting
+# the file it is halfway through reading, once per line, with a registry that
+# is only partly built. The same holds for the rc seed. Both layers already
+# stamp `sim_origin`, and both already restore it.
+#
+# THE FAILURE IS NOT SWALLOWED, AND IT IS NOT SAID TWICE EITHER.
+# ase::sim_write_conf already says its own failure through ase::sim_say -- it
+# has three of them (nowrite, conf_isdir, conf_linkloop) and returns 0 rather
+# than raising. So this adds a sentence ONLY on the path where that promise is
+# broken, i.e. an unexpected raise, where nothing has been said at all.
+# Row S8 of tests/headless/test_ase_simreg_0931.tcl counts the sentences a
+# failing registration says and pins the count at exactly one.
+proc ase::sim_touch {} {
+  variable sim_origin
+  variable sim_autosave
+  if {!$sim_autosave} { return 0 }
+  if {$sim_origin ne {session}} { return 0 }
+  set path [ase::sim_conf_file]
+  ## NO CONFIGURATION DIRECTORY AT ALL IS NOT A FAILURE TO REPORT. There is no
+  ## user file for this installation, so there is nothing to keep the list in
+  ## and nothing the user could do about it -- the same rule ase::sim_load_conf
+  ## follows for a first run with no saved list, which row E11 exists to pin.
+  ## Measured without this line: every registration said "Your simulator list
+  ## could not be saved to , so the simulators you added will be gone", a
+  ## sentence with a hole in it, about a save nobody asked for.
+  if {$path eq {}} { return 0 }
+  if {[catch {ase::sim_write_conf} rc]} {
+    ase::sim_say nowrite {} $path $rc error
+    return 0
+  }
+  return $rc
+}
+
 # Register simulator `name` at `path`. Options: -args <extra argv list>,
 # -backend <backend name, or empty for any>.
 #
@@ -1300,6 +1496,7 @@ proc ase::sim_notify_fire {} {
 proc ase::sim_register {name path args} {
   variable simulators
   variable sim_use
+  variable sim_default
   variable sim_origin
   set eargs {}
   set backend {}
@@ -1414,7 +1611,19 @@ proc ase::sim_register {name path args} {
   # registering one simulator would do nothing visible at all and the user
   # would have to make a second, separate gesture to mean the obvious thing.
   # A later registration never steals the choice away from it.
+  #
+  # AND IT BECOMES THE INSTALLATION DEFAULT, for the same reason and by the
+  # same rule: the first simulator on an empty list is not one bench's opinion,
+  # it is what this installation runs until somebody says otherwise. `sim_use`
+  # and `sim_default` are seeded independently -- a session may already have a
+  # choice of its own while the default is still unset, and vice versa -- and
+  # neither seed ever steals from a value that is already there.
+  #
+  # ⚠ NO SESSION STATE IS TOUCHED HERE. Registering is not choosing: it must
+  # not write the `sim_entry` key of whatever session happens to be open, or a
+  # registration would dirty a bench the user was not editing.
   if {$sim_use eq {}} { set sim_use $name }
+  if {$sim_default eq {}} { set sim_default [ase::sim_choice_encode entry $name] }
   # ADDING OR EDITING AN ENTRY MEANS LOOK AT THE PROGRAM AGAIN (issue 0950).
   # What a reader would otherwise assume is that the file stamp already covers
   # every reason an answer could be stale. It does not: a wrong answer taken in
@@ -1434,6 +1643,11 @@ proc ase::sim_register {name path args} {
   ## OTHER door onto the registry -- the Command window one, which the dialog's
   ## own refresh cannot see.
   ase::sim_notify_fire
+  ## AND IT IS ON DISK BEFORE THIS PROC RETURNS. Last, after the entry has
+  # landed and after everything this gesture had to say, so a failure to save
+  # is the LAST thing the user reads and the file that gets written is the
+  # registry they can see.
+  ase::sim_touch
   return [expr {$kind eq {} ? 1 : 0}]
 }
 
@@ -1459,6 +1673,7 @@ proc ase::sim_register {name path args} {
 proc ase::sim_unregister {name} {
   variable simulators
   variable sim_use
+  variable sim_default
   if {![dict exists $simulators $name]} {
     return -code error "ase: [ase::sim_why noentry $name {} [dict keys $simulators]]"
   }
@@ -1467,6 +1682,22 @@ proc ase::sim_unregister {name} {
   # afterwards there is no way left to ask whether this entry was the one
   # being used.
   set wasuse [expr {$sim_use eq $name}]
+  # And the same question asked of the INSTALLATION DEFAULT, which is a
+  # different question with a different answer: a session can be running entry
+  # B while the default is still entry A, so removing A leaves `sim_use`
+  # untouched and must still not leave the default naming something that is
+  # gone. Recorded before the removal for the same reason as `wasuse`.
+  #
+  # ⚠ THE KIND IS COMPARED AGAINST A QUOTED WORD, NOT A BRACED ONE. Row CS166
+  # of tests/headless/test_sim_casemode_registry.tcl hunts for Tk in this
+  # section by looking for a widget command in COMMAND POSITION, and `entry` is
+  # both a Tk widget command and the name of a kind here -- so `eq {entry}`
+  # reads to that detector as a call to the Tk entry widget and reddens the row
+  # for a proc that has never touched Tk. Measured. Its own header warns that
+  # the fix a reader then reaches for is to weaken the detector.
+  set defchoice [ase::sim_choice_decode $sim_default]
+  set wasdefault [expr {[lindex $defchoice 0] eq "entry"
+                        && [lindex $defchoice 1] eq $name}]
   dict unset simulators $name
   if {$wasuse} {
     set sim_use {}
@@ -1484,6 +1715,18 @@ proc ase::sim_unregister {name} {
       ase::sim_say removed_now_other $name {} $sim_use note
     }
   }
+  # THE DEFAULT FOLLOWS THE SAME RULE AND SAYS NOTHING EXTRA. Same two arms as
+  # the choice above -- empty when the answer is a guess, the sole survivor
+  # when it is not -- because the rule is about what can be known, not about
+  # which variable is asking. No sentence of its own: the user removed an
+  # entry, they were already told what will start now, and a second sentence
+  # about an installation default they have never seen named would be noise.
+  if {$wasdefault} {
+    set sim_default {}
+    if {[dict size $simulators] == 1} {
+      set sim_default [ase::sim_choice_encode entry [lindex [dict keys $simulators] 0]]
+    }
+  }
   if {[dict get $e origin] eq {rc}} {
     ase::sim_say rc_removed $name {} {} note
   }
@@ -1492,6 +1735,9 @@ proc ase::sim_unregister {name} {
   # the old one must not be served about the new one.
   ase::sim_caps_clear
   ase::sim_notify_fire
+  ## Removing an entry is a mutation the user made on purpose, so it persists
+  # at once, exactly like adding one. Last, for ase::sim_register's reason.
+  ase::sim_touch
   # NOT the sentence. Every caller here tests this as a boolean, and row E13
   # pins it at 1 for a removal that also had two things to say.
   return 1
@@ -1532,16 +1778,136 @@ proc ase::sim_entry {name} {
 
 # Put one registered simulator in force. An empty name clears the choice,
 # which puts the program on the PATH back in charge.
+#
+# ⚠ IT WRITES NOTHING TO DISK, AND THAT IS THE USER'S RULING, NOT AN OVERSIGHT.
+# 2026-09-08, verbatim: *whether* a registered simulator "gets assigned as 'the
+# one to use' is an option that is part of the ASE-L state. If changed, that
+# results in dirtiness. User must explicitly save and, if user initiates an
+# Xschem shutdown, then she must get a warning and a prompt to save." A choice
+# that saved itself here would be exactly the thing that ruling forbids: it
+# would reach disk with no save gesture, from a window the user may be about to
+# abandon, and it would overwrite the installation default with one bench's
+# opinion. Registration persists immediately (ase::sim_touch); the choice waits.
+#
+# WHICH LAYER IS TALKING DECIDES WHAT THIS CALL MEANS (decision D3). The signal
+# already exists and is already maintained -- `ase::sim_origin` is `session`
+# for an ordinary call, `conf` while ase::sim_load_conf sources the saved list,
+# and `rc` while the seed block runs:
+#
+#   origin session   a CHOICE. Sets `sim_use` alone. The state key is the store
+#                    of record for it and the caller owns writing it there.
+#   origin conf/rc   a DEFAULT. Sets `sim_use` -- there is nothing else in
+#                    force yet at startup -- AND `sim_default`, which is how
+#                    the saved file's `ase::sim_select` line reaches the new
+#                    variable at NO COST TO THE FILE FORMAT. `ase::sim_select
+#                    {}` from those layers means issue 0932's "deliberately the
+#                    program on the PATH", so it is recorded as `none` and not
+#                    as "no opinion", or the choice 0932 exists to preserve
+#                    would be thrown away on the first restart.
 proc ase::sim_select {name} {
   variable simulators
   variable sim_use
-  if {$name eq {}} { set sim_use {} ; ase::sim_notify_fire ; return {} }
+  variable sim_default
+  variable sim_origin
+  set fromenv [expr {$sim_origin ne {session}}]
+  if {$name eq {}} {
+    set sim_use {}
+    if {$fromenv} { set sim_default [ase::sim_choice_encode path] }
+    ase::sim_notify_fire
+    return {}
+  }
   if {![dict exists $simulators $name]} {
     return -code error "ase: [ase::sim_why noentry $name {} [dict keys $simulators]]"
   }
   set sim_use $name
+  if {$fromenv} { set sim_default [ase::sim_choice_encode entry $name] }
   ase::sim_notify_fire
   return $name
+}
+
+# The installation default, decoded: a two-element {kind value} list, kind one
+# of unset / path / entry. What a session with no choice of its own runs.
+proc ase::sim_default_choice {} {
+  variable sim_default
+  return [ase::sim_choice_decode $sim_default]
+}
+
+# --- the state's own choice, read and written for callers -------------------
+# ONE STATE'S CHOICE, DECODED. Two accessors so that nothing outside this file
+# ever hand-spells the `sim_entry` key's three values: a dialog that wrote
+# `dict set st sim_entry $name` would work for every entry except one called
+# `none`, and would then be wrong in the one place a user would never think to
+# look.
+proc ase::sim_choice_of {state} {
+  return [ase::sim_choice_decode [ase::state_get $state sim_entry {}]]
+}
+
+# The same state with the choice set: a NEW dict, the argument untouched.
+# `unset` clears the key back to "no choice of my own", which is what makes a
+# session fall through to ase::sim_default again.
+proc ase::sim_choice_set {state kind {name {}}} {
+  return [dict replace $state sim_entry [ase::sim_choice_encode $kind $name]]
+}
+
+# PUT THE RUNNING SESSION'S CHOICE IN FORCE, and answer what was put there as
+# a decoded {kind value}.
+#
+# WHY THE RUN IS WHERE THIS HAPPENS. `ase::sim_use` is process-global and every
+# resolver reads it, so with two ASE-L windows open on two benches there is one
+# answer for two questions. The run is the moment the question stops being
+# rhetorical: whichever session is being RUN decides which program starts, so
+# the window the user clicked in wins the thing that actually executes. (The
+# bar or dialog in the other window may still name the other choice for a
+# moment; per-window registries are a separate feature and were not asked for.
+# Recorded in doc/claude/ase_simchoice_batch/DECISIONS.md as D5.)
+#
+# THE FALL-THROUGH IS THE POINT: a state that says nothing runs
+# ase::sim_default, the installation default, which is what every one of the
+# 104 committed .state files says and what a fresh bench says.
+#
+# ⚠ IT NEVER RAISES. It is called from inside a run that is about to start, and
+# a resolver that threw here would turn a stale entry name into a stack trace
+# instead of a sentence -- the failure mode this whole section exists not to
+# have. A choice naming an entry that is no longer registered leaves `sim_use`
+# exactly as it was (so the run goes ahead on whatever is in force) and says
+# the ONE sentence that already exists for this, ase::sim_why's `noentry`,
+# which names the entry and lists what there is to choose from.
+proc ase::sim_apply_choice {state} {
+  variable simulators
+  variable sim_use
+  variable sim_default
+  set choice [ase::sim_choice_of $state]
+  if {[lindex $choice 0] eq {unset}} {
+    set choice [ase::sim_choice_decode $sim_default]
+  }
+  switch -- [lindex $choice 0] {
+    path {
+      set sim_use {}
+      return $choice
+    }
+    entry {
+      set nm [lindex $choice 1]
+      if {![dict exists $simulators $nm]} {
+        ase::sim_say noentry $nm {} [dict keys $simulators] error
+        return [ase::sim_in_force_choice]
+      }
+      set sim_use $nm
+      return $choice
+    }
+  }
+  ## Neither the state nor the default has an opinion: whatever is in force
+  ## stays in force, which for a fresh process is the PATH program.
+  return [ase::sim_in_force_choice]
+}
+
+# What is in force RIGHT NOW, in the same decoded shape everything else here
+# speaks. `path` rather than `unset` for an empty `sim_use`, because empty
+# genuinely means "the program on the PATH is what will start" -- this is the
+# one place where there is no layer left to fall through to.
+proc ase::sim_in_force_choice {} {
+  variable sim_use
+  if {$sim_use eq {}} { return [list path {}] }
+  return [list entry $sim_use]
 }
 
 # The name in force, or empty.
@@ -1551,12 +1917,27 @@ proc ase::sim_selected {} {
 }
 
 # Forget every registered simulator and every choice.
+#
+# ⚠ IT DOES NOT CALL ase::sim_touch, AND THAT IS A RULE, NOT AN OMISSION:
+# A MUTATION THAT EXPRESSES A USER'S CHOICE PERSISTS; A TEARDOWN DOES NOT.
+# Registering and removing an entry are things a user did on purpose and they
+# reach disk at once. This is neither -- it is "put the section back to the
+# state it had before anything was registered", and its callers are test
+# resets and scripts. An autosave here is the one way an
+# autosave-at-the-mutation design can DESTROY data: a suite's `a_reset`, or a
+# stray line in somebody's script, would blank the user's real saved list.
+#
+# So what this clears is MEMORY ONLY. The file keeps every entry it had, and
+# the next start reads them all back -- which is the difference between
+# forgetting and deleting.
 proc ase::sim_clear {} {
   variable simulators
   variable sim_use
+  variable sim_default
   variable sim_said
   set simulators [dict create]
   set sim_use {}
+  set sim_default {}
   # THE RECORD OF WHAT WAS SAID GOES TOO (issue 0941). This puts the section
   # back to the state it had before anything was registered, and sentences
   # already said were about entries that no longer exist. It mattered only
@@ -3156,7 +3537,7 @@ proc ase::sim_write_conf {{path {}}} {
 # failure here costs nothing that was already saved.
 proc ase::sim_write_body {fp} {
   variable simulators
-  variable sim_use
+  variable sim_default
   puts $fp "# xschem ASE-L simulator list -- written by xschem, issue 0931."
   puts $fp "# Read once at startup. Edit by hand if you like: it is a plain"
   puts $fp "# Tcl script of ase::sim_register lines."
@@ -3196,11 +3577,32 @@ proc ase::sim_write_body {fp} {
   # Same reason the selection line is skipped when what is in force came from
   # an rc: this file must not mention rc entries at all, or reading it back
   # in a session where the rc no longer declares that name would fail.
-  if {$sim_use eq {}} {
-    puts $fp [list ase::sim_select {}]
-  } elseif {[dict exists $simulators $sim_use] \
-      && [dict get $simulators $sim_use origin] ne {rc}} {
-    puts $fp [list ase::sim_select $sim_use]
+  #
+  # ⚠ WHAT THIS LINE RECORDS CHANGED ON 2026-09-08, AND THE PARAGRAPHS ABOVE
+  # ARE STILL TRUE OF IT. It used to write `sim_use` -- what is in force right
+  # now -- which is one session's CHOICE, and the user ruled that a choice is
+  # ASE-L state that dirties a session and waits for an explicit save. Writing
+  # it here sent it to disk with no save gesture at all, and worse, sent one
+  # bench's opinion into a file that describes the whole installation. It now
+  # writes `sim_default`, THE INSTALLATION DEFAULT: what a session with no
+  # choice of its own runs. Everything 0932 established survives the move --
+  # "none of mine, use the PATH program" is still written down, still as
+  # `ase::sim_select {}`, still because its absence would read back as the
+  # first entry -- because the default is now the thing that carries it, and
+  # ase::sim_select records it there whenever the layer talking is the file
+  # itself or an rc.
+  set defchoice [ase::sim_choice_decode $sim_default]
+  switch -- [lindex $defchoice 0] {
+    path {
+      puts $fp [list ase::sim_select {}]
+    }
+    entry {
+      set defname [lindex $defchoice 1]
+      if {[dict exists $simulators $defname] \
+          && [dict get $simulators $defname origin] ne {rc}} {
+        puts $fp [list ase::sim_select $defname]
+      }
+    }
   }
   close $fp
   return 1
@@ -6701,6 +7103,28 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   if {[ase::run_in_flight $rawlock] ne {}} {
     return -code error [ase::run_refuse $rawlock]
   }
+
+  ## THE SESSION BEING RUN DECIDES WHICH PROGRAM STARTS (the 2026-09-08
+  ## ruling). `sim_entry` is this state's own choice and `ase::sim_use` is a
+  ## process-global cache of it, so with two ASE-L windows open the cache can
+  ## be holding the OTHER bench's answer at the moment Run is pressed. One line
+  ## puts the running session's choice in force first.
+  ##
+  ## ⚠ IT SITS HERE, ABOVE EVERYTHING THAT RESOLVES A SIMULATOR AND BELOW THE
+  ## ONE GATE THAT REFUSES WITHOUT LOOKING AT ONE. Below the in-flight refusal,
+  ## because a run that is not going to happen must not change which program is
+  ## in force. Above ase::run_precheck, ase::op_tier_arm, ase::cap_report,
+  ## $run_cmd and ase::run_using_report, every one of which asks
+  ## ase::sim_status -- so all five answer about the same program, and the
+  ## sentence the user reads names the build that actually ran.
+  ##
+  ## ⚠ AND IT IS HERE RATHER THAN IN ase::run, BECAUSE run_deck IS REACHABLE
+  ## WITHOUT IT: ase::run_existing (ADE-L's "Run", which never re-netlists) and
+  ## any script or CIW paste come straight here. This is the one body all three
+  ## doors share. ase::run's own netlisting step resolves no simulator, so it
+  ## needs no second call and must not have one -- two calls would say the
+  ## stale-entry sentence twice for one gesture.
+  ase::sim_apply_choice $state
 
   # casemode batch item 8 (B4): the pre-run gate, FIRST, before any artefact is
   # read, deleted, rebuilt or written. A refusal raises from here, so nothing
