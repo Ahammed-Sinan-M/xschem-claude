@@ -2417,7 +2417,22 @@ proc rdw::color_sources {} {
 # The CIW's own convention for "a result the user must NOTICE without it being
 # an error" (ciw.tcl:453).  The incompleteness sentence and the five silences
 # are exactly that: not errors, and not to be skimmed past.
-proc rdw::_notefg {} { return {dark orange} }
+#
+# ⚠ IT WAS `dark orange` AND IT WAS UNREADABLE, in BOTH windows.  A user reading
+# a real CIW notice reported it ("practically unreadable"), and this pane is the
+# worse of the two because it is WHITE, not grey80.  MEASURED 2026-09-08 against
+# `rdw::color field` as the running window reports it:
+#
+#     dark orange on #ffffff   contrast  2.33
+#     dark red    on #ffffff   contrast 10.01     (fieldfg, black, is 21.00)
+#
+# THIS MOVED BECAUSE THE CIW's DID.  The header above is not decoration: this
+# colour is defined as the CIW's convention, so leaving it behind would make
+# that sentence false and put one decision in two places disagreeing -- which is
+# invariant I1, one window out.  The pair is `ciw.tcl`'s `note` tag, whose own
+# comment carries the full contrast table and the reason a single red cannot
+# serve both colour schemes.
+proc rdw::_notefg {} { return {dark red} }
 
 # ---------------------------------------------------------------------------
 # ITEM R1, ISSUE 1337 -- THE LINE CURSOR'S SHADE, DERIVED FROM THE PANE.
@@ -2515,7 +2530,7 @@ proc rdw::_color_fallback {role} {
         selectfg   { return #ffffff }
         accent     { return #8b0000 }
         disabledfg { return grey50 }
-        notefg     { return {dark orange} }
+        notefg     { return {dark red} }
         cursor     { return [rdw::_shade_step [rdw::_color_fallback field]] }
     }
     return black
