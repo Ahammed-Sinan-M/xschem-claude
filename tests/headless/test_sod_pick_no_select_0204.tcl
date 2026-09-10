@@ -88,7 +88,9 @@ if {[catch {
 # NAMED  wire y=0    with a lab_pin driving it        -> flylines resolves it
 # (none) wire y=100  with no label at all             -> #netN, the 0154 fallback
 # V1                 an unlocked vsource              -> a current pick
-# R1                 a non-source device              -> the v1-scope notice
+# R1                 a non-source device (npn -- still  -> the v1-scope notice
+#                     outside devparam_table's R/L/C/D coverage, unlike the
+#                     `devices/res` this used to be, see ase_l_device_params.md)
 wfile [file join $scratch sp.sch] {v {xschem version=3.4.8RC file_version=1.3}
 G {}
 K {}
@@ -99,7 +101,7 @@ E {}
 N 0 0 200 0 {}
 N 0 100 200 100 {}
 C {devices/lab_pin} 0 0 0 0 {name=l1 lab=NAMED}
-C {devices/res} 400 -200 0 0 {name=R1 value=1k}
+C {devices/npn} 400 -200 0 0 {name=R1 model=npn area=1}
 C {devices/vsource} 400 300 0 0 {name=V1 value=1}}
 
 set f [open [file join $scratch library.defs] w]
@@ -286,11 +288,13 @@ check "SO8b ... and did NOT descend into the source"           $res {}
 disarm ; xschem unselect_all
 
 # --- SO9  a non-source device body: unchanged classification --------------------
-# R1 is a RESISTOR. The transistor operating-point probe (spec
-# ase_l_device_params.md) covers nmos/pmos only, so this body click still falls
-# through to the scope notice and this leg still means what it meant. Only the
-# notice's WORDING changed, when that probe made "v1 queues source currents
-# only" untrue.
+# R1 is a BJT (npn). The device operating-point probe (spec
+# ase_l_device_params.md) covers nmos/pmos/resistor/capacitor/inductor/diode
+# but NOT BJT, so this body click still falls through to the scope notice and
+# this leg still means what it meant. Only the notice's WORDING changed, when
+# that probe made "v1 queues source currents only" untrue. (This fixture used
+# to place an actual `devices/res` here — a genuine resistor now IS a device
+# pick, which would open an unstubbed devparam_dialog and hang this script.)
 xschem unselect_all
 arm_sod
 ase::ui::sod_click K $RX $RY

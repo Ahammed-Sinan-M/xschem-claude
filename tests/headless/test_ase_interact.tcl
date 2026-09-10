@@ -254,8 +254,8 @@ if {[info exists ::has_x] && [info commands winfo] ne {}} {
     # the WRAPPER, not the build/done procs, is what keeps that idiom cheap.
     set ::devparam_answer {}
     set ::devparam_seen   {}
-    proc ase::ui::devparam_dialog {key inst base ctype} {
-      set ::devparam_seen [list $inst $base $ctype]
+    proc ase::ui::devparam_dialog {key inst base ctype {vacross {}}} {
+      set ::devparam_seen [list $inst $base $ctype $vacross]
       return $::devparam_answer
     }
 

@@ -1107,13 +1107,16 @@ proc ase::ui::sod_expr {kind token mode} {
   return "i($token)"
 }
 
-# --- Device operating-point parameters (the transistor probe) -----------------
+# --- Device operating-point parameters (the transistor + R/L/C/D probe) -------
 #
-# Clicking a transistor BODY in Select On Design queues ngspice internal device
-# parameters — gm, id, cgs, vth … — the gm/ID design quantities. Spec:
-# doc/claude/specs/ase_l_device_params.md. This lifts the "v1 queues source
-# currents only" restriction ase_l.md recorded, and the restriction turned out
-# to be over-cautious: the name IS derivable from the click.
+# Clicking a device BODY in Select On Design queues ngspice internal device
+# parameters. For a transistor that's gm, id, cgs, vth … — the gm/ID design
+# quantities. For a resistor/capacitor/inductor it's the current through it
+# and the voltage across it; a diode adds its small-signal gd/cd on top of the
+# same current+voltage pair. Spec: doc/claude/specs/ase_l_device_params.md.
+# This lifts the "v1 queues source currents only" restriction ase_l.md
+# recorded, and the restriction turned out to be over-cautious: the name IS
+# derivable from the click, for every one of these device classes.
 #
 # THE NAME. ngspice addresses an internal device parameter as
 # `@<dev>[<param>]`, where <dev> is the device name qualified by the instance
@@ -1157,6 +1160,32 @@ proc ase::ui::devparam_table {ctype} {
         {Conductances  {gm gds gmbs}}
         {Capacitances  {cgg cgs cgd cgb cdd cds cbs cbd}}
         {Charges       {qg qd qs qb}}
+      }
+    }
+    resistor - capacitor - inductor {
+      ## the R/L/C extension (doc/claude/specs/ase_l_device_params.md receipt
+      ## §4): a two-terminal passive offers just the two quantities that make
+      ## it a probe target at all. `i` is the ngspice internal current
+      ## parameter (@r1[i]/@c1[i]/@l1[i], all MEASURED working, ngspice-47);
+      ## `vacross` is NOT an internal device parameter (none of the three has
+      ## a clean one — see devparam_vacross_expr) and is built from the
+      ## instance's own two pins instead.
+      return {
+        {Current  {i}}
+        {Voltage  {vacross}}
+      }
+    }
+    diode {
+      ## `id`/`gd`/`cd` mirror the transistor table's shape (current,
+      ## conductance, capacitance — all MEASURED clean types on ngspice-47);
+      ## `vacross` replaces the otherwise-available `vd`, so "Voltage" means
+      ## the same v(p,m) thing for every device class this probe covers,
+      ## diode included, rather than one entry meaning two different things.
+      return {
+        {Current      {id}}
+        {Voltage      {vacross}}
+        {Conductance  {gd}}
+        {Capacitance  {cd}}
       }
     }
   }
@@ -1229,6 +1258,22 @@ proc ase::ui::devparam_relpath {baselvl} {
   return [ase::ui::sod_rel_path $baselvl]
 }
 
+# The SPICE device-letter a `ctype`'s PRIMITIVE element carries, hoisted to the
+# front of a PDK subckt's inner device name exactly the way devparam_base used
+# to hard-code `m` before this table existed (transistors were the only
+# ctype it handled). A ctype with no entry here is one devparam_table doesn't
+# cover either, so devparam_base never reaches this switch for it in practice.
+proc ase::ui::devparam_devletter {ctype} {
+  switch -- $ctype {
+    nmos - pmos { return m }
+    resistor    { return r }
+    capacitor   { return c }
+    inductor    { return l }
+    diode       { return d }
+  }
+  return {}
+}
+
 # The `@<dev>` base for instance number `n`, hierarchy included — everything
 # before the `[param]`. Empty when the name cannot be derived, which the caller
 # reports rather than queueing a card that would abort the analysis.
@@ -1237,20 +1282,129 @@ proc ase::ui::devparam_relpath {baselvl} {
 # being assembled here, so a symbol that overrides spiceprefix per instance —
 # which is exactly how a PDK switches a device between primitive and subckt
 # spelling — is followed rather than guessed at.
-proc ase::ui::devparam_base {n {baselvl 0}} {
+proc ase::ui::devparam_base {n ctype {baselvl 0}} {
   set sname {}
   if {[catch {xschem translate $n {@spiceprefix@name}} sname]} { return {} }
   set sname [string tolower [string trim $sname]]
   if {$sname eq {}} { return {} }
   set path [ase::ui::devparam_relpath $baselvl]
   if {[string index $sname 0] eq {x}} {
-    ## a PDK device: the transistor is INSIDE the subckt this X instantiates
+    ## a PDK device: the primitive is INSIDE the subckt this X instantiates
     set sub [ase::ui::devparam_subckt $n]
     if {$sub eq {}} { return {} }
-    return [ase::ui::devparam_join "$path$sname." "m$sub"]
+    set letter [ase::ui::devparam_devletter $ctype]
+    if {$letter eq {}} { return {} }
+    return [ase::ui::devparam_join "$path$sname." "$letter$sub"]
   }
   ## a bare SPICE primitive: the instance name already carries its device letter
   return [ase::ui::devparam_join $path $sname]
+}
+
+# --- Voltage across a two-terminal passive (the R/L/C/D probe extension) ------
+#
+# ngspice has no clean internal @dev[param] spelling for "voltage across" a
+# resistor/inductor/capacitor the way it has vgs/vds for a transistor — MEASURED
+# on ngspice-47 (spec receipt §4): `@r1[i]`/`@c1[i]`/`@l1[i]` all work and come
+# back current-typed, but there is no equivalent v-typed terminal-pair
+# parameter, and the real internal parameters that exist (`@r1[resistance]`,
+# `@l1[inductance]`, …) come back typed essentially arbitrarily — `resistance`
+# folds to `voltage` in the raw, `inductance` folds to `current` — an artifact
+# of ngspice's generic-parameter typing, not a usable spelling. Diode's `vd` IS
+# clean and numerically identical to the terminal-pair voltage, but this probe
+# builds voltage-across the SAME way for every device class it covers —
+# `v(pin1_net,pin2_net)`, exactly like an ordinary net-voltage pick — so
+# "Voltage" means one thing everywhere instead of `@dev[vd]` for diodes and
+# something else for everything else.
+
+# The net token at pin index `idx` (0-based, symbol pin order) of instance `n`
+# — by COORDINATE, not by pin NAME, so a symbol's own naming convention never
+# has to be guessed at (measured: devices/res.sym names its pins `P`/`M`,
+# devices/capa.sym and ind.sym name theirs lower-case `p`/`m` — a name-based
+# lookup would need to know which).
+#
+# Resolved through `sod_net_at` — the SAME two-step resolver an ordinary
+# terminal click already goes through — and NOT through a bare `xschem
+# flylines at`, which was tried first and measured broken for exactly the
+# unremarkable case a picked pin usually IS: `flylines` answers "where should
+# a rubber-band line be drawn", so it comes back empty for a net with only
+# ONE wire and no second junction to band to — measured, a resistor with a
+# plain wire stub off each pin and nothing else attached: `flylines at` empty
+# at BOTH the pin coordinate and the wire's own midpoint, while `object_at`
+# there resolves to the wire and `net_name_at -wire` names it correctly. A
+# real click at that exact point already takes this second branch (`sod_click`
+# computes `hit` via `object_at` before ever calling `sod_net_at`); this proc
+# now does the same, computing the hit itself since it queries a pin's
+# location proactively rather than replaying a user's click.
+proc ase::ui::devparam_pin_net {n idx} {
+  set pins {}
+  if {[catch {xschem instance_pins $n} pins]} { return {} }
+  set pin [lindex $pins $idx]
+  if {$pin eq {}} { return {} }
+  set coord {}
+  if {[catch {xschem instance_pin_coord $n name $pin} coord]} { return {} }
+  if {[llength $coord] < 3} { return {} }
+  set x [lindex $coord 1]
+  set y [lindex $coord 2]
+  set hit {}
+  catch {set hit [xschem object_at $x $y]}
+  return [ase::ui::sod_net_at $x $y $hit]
+}
+
+# PURE: fold one net token the way sod_expr folds a voltage token — strip a
+# leading `#` (an auto-named net's engine marker, issue 0154) then lower-case
+# unless the case mode says not to — but WITHOUT the v(...) wrap, since the
+# two-node expression below shares one wrap between both tokens.
+proc ase::ui::devparam_vfold {token mode} {
+  set token [string trimleft $token #]
+  if {$mode ne {preserve} && $mode ne {distinguish}} { set token [string tolower $token] }
+  return $token
+}
+
+# PURE: the complete two-node voltage expression, or {} if either side is
+# missing. The caller treats a missing side exactly like devparam_expr's
+# empty-base case: offered in the dialog, silently not queued if ticked with
+# nothing to build it from — never a card that would abort the run.
+proc ase::ui::devparam_vacross_expr {n1 n2 mode} {
+  if {$n1 eq {} || $n2 eq {}} { return {} }
+  return "v([ase::ui::devparam_vfold $n1 $mode],[ase::ui::devparam_vfold $n2 $mode])"
+}
+
+# The two-terminal device's own voltage-across expression for instance `n`,
+# hierarchy-qualified the same way an ordinary net-voltage pick is (issue
+# 0161/0168 — `sod_qualify voltage` against `baselvl`), computed ONCE per click
+# (mirrors devparam_base/sod_case_mode's own one-resolve-per-gesture rule) so a
+# device with several ticked parameters cannot disagree with itself about
+# which net is which.
+proc ase::ui::devparam_vacross {n baselvl mode} {
+  set n1 [ase::ui::sod_qualify voltage [ase::ui::devparam_pin_net $n 0] $baselvl]
+  set n2 [ase::ui::sod_qualify voltage [ase::ui::devparam_pin_net $n 1] $baselvl]
+  return [ase::ui::devparam_vacross_expr $n1 $n2 $mode]
+}
+
+# PURE: the PLOT/raw-side spelling of a vacross expression — ANOTHER deck-vs-raw
+# divergence, the same shape §3/devparam_raw exists for, and it needed its own
+# bridge because it fails a DIFFERENT way. MEASURED, ngspice-47: `.save
+# v(a,b)` does not error and does not get dropped — it is ACCEPTED and then
+# silently SAVES TWO SEPARATE VECTORS, `v(a)` and `v(b)`, never a combined
+# `v(a,b)`. That is harmless for the SAVE/print path (render_deck's `print`
+# line for a `save`-flavored row sends `v(a,b)` to ngspice's INTERACTIVE
+# print, which DOES compute the difference — measured `v(a,b) = -2.00000e+00`
+# for a=0V, b=2V — so result_probe's log-matching never sees this proc's
+# output at all) but leaves NO vector in the raw for the viewer to resolve
+# `v(a,b)` against.
+#
+# The fix is XSCHEM'S OWN postfix RPN engine (plot_raw_custom_data, save.c),
+# the same one `-i(v1)` already rides as `i(v1) -1 *`: `v(a) v(b) -` computes
+# `stack[-2] - stack[-1]` (save.c's MINUS case), i.e. a-b — the SAME sign
+# convention the comma form already has — from the two ENDPOINT node
+# voltages, which are ordinary v(...) vectors and therefore in the raw
+# exactly whenever an ordinary voltage pick of either endpoint would be.
+# Not an @-form, so it is a SEPARATE arm in plot_map_expr, not a
+# devparam_raw case; anything not shaped `v(<no-comma>,<no-comma>)` passes
+# through untouched, which is the identity every non-vacross caller needs.
+proc ase::ui::devparam_vacross_raw {ex} {
+  if {![regexp {^v\(([^,()]+),([^,()]+)\)$} $ex -> n1 n2]} { return $ex }
+  return "v($n1) v($n2) -"
 }
 
 # The case mode this click's expressions must be written in: the session's
@@ -1595,11 +1749,15 @@ proc ase::ui::bus_dialog_done {w ok} {
 # that makes the list readable in the first place.
 #
 # The DEVICE FIELD IS EDITABLE, and that is the deliberate escape hatch for the
-# one guess in this feature (see the devparam_table header): the `m`+subckt
-# spelling of a PDK's inner device is a convention. When it is wrong the user
-# retypes the base once and everything downstream — save, plot, raw lookup —
-# follows the corrected string, instead of the feature simply not working.
-proc ase::ui::devparam_dialog_build {parent inst base ctype} {
+# one guess in this feature (see the devparam_table header): the
+# <letter>+subckt spelling of a PDK's inner device is a convention. When it is
+# wrong the user retypes the base once and everything downstream — save, plot,
+# raw lookup — follows the corrected string, instead of the feature simply not
+# working. `vacross` (see devparam_vacross_expr) does not go through this
+# field — it is not `<base>[param]`, it is built from the instance's own pins
+# — so it is passed in ALREADY COMPLETE and devparam_dialog_done substitutes it
+# in directly rather than running it through devparam_expr.
+proc ase::ui::devparam_dialog_build {parent inst base ctype {vacross {}}} {
   set w [expr {$parent eq {} ? {.asedevparam} : "$parent.devparam"}]
   catch {destroy $w}
   toplevel $w
@@ -1653,6 +1811,7 @@ proc ase::ui::devparam_dialog_build {parent inst base ctype} {
   ase::ui::bind_dialog_esc $w [list $w.btns.cancel invoke]  ;# ESC = Cancel
   catch {ase::ui::apply_theme $w}
   set ::ase::ui::devparam_dialog_result {}
+  set ::ase::ui::devparam_vacross_result $vacross
   return $w
 }
 
@@ -1683,8 +1842,12 @@ proc ase::ui::devparam_dialog_done {w ctype ok} {
   if {$ok} {
     set base {}
     catch {set base [string trim [$w.bf.e get]]}
+    set vacross {}
+    catch {set vacross $::ase::ui::devparam_vacross_result}
     foreach p [ase::ui::devparam_dialog_selected $ctype] {
-      set ex [ase::ui::devparam_expr $base $p]
+      ## vacross arrives ALREADY COMPLETE (devparam_vacross_expr) — it has no
+      ## `<base>[param]` shape, so it does not go through devparam_expr at all
+      set ex [expr {$p eq {vacross} ? $vacross : [ase::ui::devparam_expr $base $p]}]
       if {$ex ne {}} { lappend res $ex }
     }
   }
@@ -1695,11 +1858,11 @@ proc ase::ui::devparam_dialog_done {w ctype ok} {
 # Modal wrapper — same teardown-tolerance as bus_dialog: the build-time `update`
 # pumps the event loop, so $w can be destroyed before tkwait is reached, and
 # tkwait on a dead window throws.
-proc ase::ui::devparam_dialog {key inst base ctype} {
+proc ase::ui::devparam_dialog {key inst base ctype {vacross {}}} {
   variable wins
   set parent {}
   if {[dict exists $wins $key]} { set parent [dict get $wins $key] }
-  set w [ase::ui::devparam_dialog_build $parent $inst $base $ctype]
+  set w [ase::ui::devparam_dialog_build $parent $inst $base $ctype $vacross]
   update
   catch {raise $w}
   catch {grab set $w}
@@ -1767,6 +1930,11 @@ proc ase::ui::plot_map_expr {ex} {
   # output-expression -> trace-name seam, and nowhere else. Measured; see
   # devparam_raw.
   if {[string index $ex 0] eq {@}} { return [ase::ui::devparam_raw $ex] }
+  # the vacross bridge (devparam_vacross_raw's header): a comma-form v(a,b)
+  # is deck/print syntax, never a single raw vector — convert to RPN before
+  # the single-token check below, which would otherwise wave it through
+  # unchanged (no space in `v(a,b)`, so it reads as "one token" too).
+  if {[string match {v(*,*)} $ex]} { return [ase::ui::devparam_vacross_raw $ex] }
   if {[llength [regexp -all -inline {\S+} $ex]] != 1} { return $ex }
   if {[string index $ex 0] eq {-} && [string length $ex] > 1} {
     return "[string range $ex 1 end] -1 *"
@@ -2571,7 +2739,7 @@ proc ase::ui::sod_click {key {x {}} {y {}}} {
 proc ase::ui::sod_device_pick {key n ctype} {
   variable sod
   if {![info exists sod($key,flavor)]} { return }
-  set base [ase::ui::devparam_base $n [ase::ui::sod_base_level $key]]
+  set base [ase::ui::devparam_base $n $ctype [ase::ui::sod_base_level $key]]
   set inst {}
   catch {set inst [xschem getprop instance $n name]}
   if {$base eq {}} {
@@ -2579,9 +2747,18 @@ proc ase::ui::sod_device_pick {key n ctype} {
  '$inst' — its symbol has no usable format" error}
     return
   }
-  set exprs [ase::ui::devparam_dialog $key $inst $base $ctype]
-  if {![llength $exprs]} { return }
   set cmode [ase::ui::sod_case_mode $key]
+  ## the R/L/C/D voltage-across pick (see devparam_vacross_expr): computed
+  ## HERE, once, only when this ctype's table actually offers it — a
+  ## transistor's table never contains `vacross` so this stays a no-op call
+  ## for the existing gm/ID probe, and no pin/net lookup runs for a device
+  ## this feature never asks it of.
+  set vacross {}
+  if {[lsearch -exact [ase::ui::devparam_all $ctype] vacross] >= 0} {
+    set vacross [ase::ui::devparam_vacross $n [ase::ui::sod_base_level $key] $cmode]
+  }
+  set exprs [ase::ui::devparam_dialog $key $inst $base $ctype $vacross]
+  if {![llength $exprs]} { return }
   set plot [expr {[info exists sod($key,mode)] && $sod($key,mode) eq {plot}}]
   set first 1
   foreach ex $exprs {

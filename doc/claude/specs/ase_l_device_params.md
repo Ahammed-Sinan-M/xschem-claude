@@ -1,13 +1,18 @@
-# ASE-L: the transistor operating-point probe
+# ASE-L: the device operating-point probe (transistor + R/L/C/D)
 
-Clicking a **transistor body** in ASE-L's Select On Design mode opens a dialog
-of that device's ngspice operating-point parameters — `gm`, `id`, `cgs`, `vth`,
-`gds`, `vdsat`, … — and queues the ticked ones as session Outputs, saved
-and/or plotted like any other output row.
+Clicking a **device body** in ASE-L's Select On Design mode opens a dialog of
+that device's ngspice operating-point parameters and queues the ticked ones as
+session Outputs, saved and/or plotted like any other output row.
 
-This is the gm/ID design workflow: the quantities a designer sizes a device
-against are internal device parameters, not node voltages, and before this they
-could not be reached from the schematic at all.
+For a **transistor** that's `gm`, `id`, `cgs`, `vth`, `gds`, `vdsat`, … — the
+gm/ID design workflow: the quantities a designer sizes a device against are
+internal device parameters, not node voltages, and before this they could not
+be reached from the schematic at all.
+
+For a **resistor, capacitor or inductor** it's the two quantities that make a
+two-terminal passive a probe target at all: the **current through** it and the
+**voltage across** it (§8). A **diode** gets the same current+voltage pair plus
+its small-signal `gd`/`cd`, mirroring the transistor table's shape.
 
 Related: `ase_l.md` (the window, the menus, Select On Design v1 scope),
 `simulator_profiles.md` §13 (case modes).
@@ -201,8 +206,10 @@ device probe only claims clicks on the device **body**, which previously
 produced nothing but a notice. The new arm strictly replaces the notice path
 and changes no gesture that already worked.
 
-Coverage is symbol `type` ∈ {`nmos`, `pmos`}. A resistor, capacitor, diode or
-plain subcircuit still falls through to the notice.
+Coverage is symbol `type` ∈ {`nmos`, `pmos`, `resistor`, `capacitor`,
+`inductor`, `diode`} (§8). A plain subcircuit, BJT, or any other `type` still
+falls through to the notice — devparam_table returning `{}` for it is exactly
+what `sod_click` tests to decide whether a click is a device pick at all.
 
 ---
 
@@ -248,16 +255,119 @@ Outputs pane already does applies without new code:
 
 ---
 
+## 8. RECEIPT: the R/L/C/D extension
+
+Resistor, capacitor, inductor and diode add a second, smaller shape to the
+probe: **current through** and **voltage across** the two-terminal device.
+
+### 8a. Current: the SAME `@dev[param]` pipeline, one generalization
+
+`@r1[i]`, `@c1[i]`, `@l1[i]` and `@d1[id]` were all MEASURED working on
+ngspice-47 and coming back **current-typed** in the raw — the identical
+mechanism §1/§3 already built for transistors. The only thing that pipeline
+had wrong for a non-mosfet device was `devparam_base`'s PDK-subckt branch,
+which hard-coded the hoisted device letter as `m` because transistors were the
+only ctype it had ever seen. `devparam_devletter {ctype}` replaces the literal
+with a per-ctype table (`nmos`/`pmos` → `m`, `resistor` → `r`, `capacitor` →
+`c`, `inductor` → `l`, `diode` → `d`), so a PDK-style subckt-wrapped passive
+hoists correctly too — pinned by `test_ase_devparam` DR35/DR36 against a
+stand-in PDK resistor symbol (`dp_pdkres.sym`, mirroring `dp_pdkfet.sym`'s
+role for §1's PDK forms).
+
+`devparam_raw`'s existing first-letter discriminator needed **no change**: `i`
+and `id` both start with `i` and fold to the same wrapped raw name §3 already
+describes for transistor currents.
+
+### 8b. Voltage: NOT the `@dev[param]` pipeline — MEASURED why not
+
+A transistor has clean v-typed internal parameters (`vgs`, `vds`, `vth`, …).
+**R/L/C do not**, and this was measured rather than assumed. Probed on
+ngspice-47 against a resistor/capacitor/inductor/diode test circuit
+(`.save`+ascii-raw, the same technique §3 used):
+
+| expression | raw type |
+|---|---|
+| `@r1[i]` / `@c1[i]` / `@l1[i]` / `@d1[id]` | `current` (clean, used for §8a) |
+| `@d1[vd]` | `voltage` (clean — but see below) |
+| `@r1[resistance]` | `voltage` — **not actually a voltage** |
+| `@l1[inductance]` | `current` — **not actually a current** |
+| `@r1[ac]`, `@r1[dtemp]`, `@l1[nt]`, `@l1[flux]`, … | `voltage` (a generic
+  fallback ngspice hands any real-valued parameter it has no specific type
+  information for, not a meaningful classification) |
+
+So a `@dev[param]`-style "voltage" for a resistor or inductor would either not
+exist or would carry a **misleading raw type inherited from ngspice's generic
+parameter typing**, not from the quantity's actual units. `@d1[vd]` IS clean
+and numerically equals the diode's terminal-pair voltage — but this probe does
+**not** use it, so "Voltage" means one thing for every device class it covers
+rather than `@dev[vd]` for diodes and something else everywhere else.
+
+**Voltage-across is instead built exactly like an ordinary net-voltage
+pick**: `v(pin1_net,pin2_net)`, using the clicked instance's own two terminal
+nets.
+
+* `devparam_pin_net {n idx}` gets the net at pin index `idx` (0-based, symbol
+  pin order) by **coordinate**, via `xschem instance_pin_coord` →
+  `xschem flylines at` — the same resolution a terminal click already goes
+  through (`sod_net_at`). By coordinate, not by pin **name**, because the
+  standard library does not agree on one: `devices/res.sym` names its pins
+  `P`/`M`, `devices/capa.sym`/`ind.sym`/`diode.sym` name theirs lower-case
+  `p`/`m` — MEASURED off the symbol files, not assumed.
+* `devparam_vacross_expr {n1 n2 mode}` folds each net token the way `sod_expr`
+  folds an ordinary voltage pick (strip a leading `#`, `string tolower` unless
+  the mode is `preserve`/`distinguish`) and joins them as `v(a,b)`. Either side
+  missing → `{}`, the same "offered but undeliverable" contract
+  `devparam_expr`'s empty-base case already has.
+* `devparam_vacross {n baselvl mode}` hierarchy-qualifies each net through the
+  same `sod_qualify voltage` issue-0161/0168 machinery an ordinary net-voltage
+  pick uses, then calls the two procs above. Computed **once per click**, in
+  `sod_device_pick`, only when the ctype's table actually offers `vacross` —
+  never for a transistor pick, which never reaches the pin/net lookup at all.
+
+`v(a,b)` is not an `@`-form, so it needs **no bridge**: `plot_map_expr` and
+`output_kind` already pass a plain `v(...)` expression through unchanged (the
+same code path an ordinary voltage pick already takes), and `sod_expr`'s
+`devparam` arm applies only the case fold, no wrap. Pinned by
+`test_ase_devparam` DR60–DR64.
+
+### 8c. The dialog: `vacross` arrives pre-built
+
+`devparam_dialog_build`/`devparam_dialog`/`devparam_dialog_done` gained one new
+optional parameter, the pre-computed `vacross` expression string (`{}` when
+the ctype's table has no `vacross` entry, or when it does but the pins could
+not be resolved). `devparam_dialog_done` substitutes it directly for the
+`vacross` key instead of running it through `devparam_expr` — `vacross` has no
+`<base>[param]` shape, so it is the ONE parameter key this dialog does not
+build from the editable device field. Pinned by DR50–DR54.
+
+### 8d. Table
+
+| ctype | groups |
+|---|---|
+| `resistor` / `capacitor` / `inductor` | Current `{i}`, Voltage `{vacross}` |
+| `diode` | Current `{id}`, Voltage `{vacross}`, Conductance `{gd}`, Capacitance `{cd}` |
+
+`vd` is deliberately **not** offered alongside `vacross` for diodes (DR06b) —
+see §8b's reasoning: one meaning per group, not two spellings of the same
+number.
+
+---
+
 ## 7. Limits, stated plainly
 
-* **nmos/pmos only.** Resistor/capacitor/diode/BJT currents are not wired up;
-  the table is the only thing that would need extending, but their parameter
-  sets were not measured, so they are not claimed.
-* **The BSIM4 parameter set is assumed**, per §2 — a level-1 device is offered
-  entries it cannot deliver.
+* **The parameter sets beyond current/voltage-across are not measured for
+  R/L/C.** `@r1[resistance]`, `@c1[c]`, `@l1[inductance]` etc. exist but come
+  back mistyped in the raw (§8b) and are deliberately not offered — the
+  "widen the table" trap §2 already warns about, now measured for a second
+  device family.
+* **The BSIM4 parameter set is assumed** for transistors, per §2 — a level-1
+  device is offered entries it cannot deliver.
 * **The dialog does not consult a loaded raw.** It shows what the device class
   offers, not what this particular run actually saved. Reading the real vector
   list from a loaded raw would make "available" literally true and would also
   fix both bullets above; it needs the raw-DB loan machinery
   (`ase::cosim_db_inventory`) and was left out of this pass.
-* **The inner-device name is a convention** (§2a), mitigated by §5, not solved.
+* **The inner-device name is a convention** (§2a, generalized by §8a's
+  `devparam_devletter`), mitigated by §5's editable field, not solved.
+* **BJT is still not covered.** `type=npn`/`pnp` symbols fall through to the
+  notice exactly as before — a sixth ctype devparam_table does not list.

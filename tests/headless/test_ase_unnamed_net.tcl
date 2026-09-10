@@ -71,7 +71,7 @@ set scratch [test_scratch ase_unnamed_net]
 if {[catch {
 
 # --- fixture -----------------------------------------------------------------
-# V1 --(unlabeled: #net1)-- R1 --(OUT)-- lab_pin ; V1's minus pin on GND.
+# V1 --(unlabeled: #net1)-- Q1 --(OUT)-- lab_pin ; V1's minus pin on GND.
 set fxpath [file join $scratch unnamed_net.sch]
 set f [open $fxpath w]
 puts $f {v {xschem version=3.4.8RC file_version=1.3}}
@@ -85,17 +85,26 @@ puts $f {N 0 -30 0 -130 {}}
 puts $f {N 0 -190 0 -230 {}}
 puts $f {C {devices/vsource} 0 0 0 0 {name=V1 value=1}}
 puts $f {C {devices/gnd} 0 30 0 0 {name=GND1 lab=GND}}
-puts $f {C {devices/res} 0 -160 0 0 {name=R1 value=1k}}
+## R1/R2 used to be `devices/res` here, until the R/L/C/D extension (spec
+## ase_l_device_params.md) made a resistor BODY a real device pick and turned
+## both these "still not probeable" controls into a hang: an unstubbed
+## devparam_dialog blocks on tkwait with nobody to answer it. `devices/npn` is
+## a BJT, still outside devparam_table's coverage (nmos/pmos/resistor/
+## capacitor/inductor/diode), so it keeps the ORIGINAL "falls through to the
+## scope notice" behavior these legs are pinning.
+puts $f {C {devices/npn} 0 -160 0 0 {name=Q1 model=npn area=1}}
 puts $f {C {devices/lab_pin} 0 -230 0 0 {name=lOUT lab=OUT}}
-# R2: a NON-source device with BOTH pins shorted onto one net (SHORT). It is the
-# only shape that makes sod_net_at's wire-only gate observable: `nets -selected`
-# on its body reports exactly ONE net, so a fallback guarded by list length
-# alone would classify a device-body click as a voltage pick.
-puts $f {N 200 -30 240 -30 {}}
-puts $f {N 240 -30 240 30 {}}
-puts $f {N 240 30 200 30 {}}
-puts $f {C {devices/res} 200 0 0 0 {name=R2 value=1k}}
-puts $f {C {devices/lab_pin} 240 -30 0 0 {name=lSHORT lab=SHORT}}
+# Q2: a NON-source device with ALL pins shorted onto one net (SHORT), by LABEL
+# rather than by wire routing -- three separately-placed lab_pin instances
+# sharing one `lab=` text are one net regardless of physical wire path, which
+# sidesteps having to hand-route npn's three (not two) terminal coordinates.
+# It is the only shape that makes sod_net_at's wire-only gate observable:
+# `nets -selected` on its body reports exactly ONE net, so a fallback guarded
+# by list length alone would classify a device-body click as a voltage pick.
+puts $f {C {devices/npn} 200 0 0 0 {name=Q2 model=npn area=1}}
+puts $f {C {devices/lab_pin} 220 -30 0 0 {name=lSHORTC lab=SHORT}}
+puts $f {C {devices/lab_pin} 180 0 0 0 {name=lSHORTB lab=SHORT}}
+puts $f {C {devices/lab_pin} 220 30 0 0 {name=lSHORTE lab=SHORT}}
 close $f
 
 set f [open [file join $scratch library.defs] w]
@@ -111,8 +120,8 @@ xschem load $fxpath
 set P_UNNAMED  {0 -80}     ;# the #net1 wire      -- the bug's click target
 set P_NAMED    {0 -210}    ;# the OUT wire        -- control
 set P_VSOURCE  {0 0}       ;# V1 body             -- current-probe control
-set P_DEVICE   {0 -160}    ;# R1 body             -- v1-scope-notice control
-set P_SHORTED  {200 0}     ;# R2 body, one net    -- the wire-gate control
+set P_DEVICE   {0 -160}    ;# Q1 body             -- v1-scope-notice control
+set P_SHORTED  {200 0}     ;# Q2 body, one net    -- the wire-gate control
 set P_EMPTY    {300 -300}  ;# nothing there       -- select_at miss control
 
 check "AN0 fixture has exactly one auto-named net" \
@@ -133,10 +142,11 @@ proc arm_mode {} {
 proc queue {}  { return $::ase::ui::sod($::K,queue) }
 proc qcount {} { return $::ase::ui::sod($::K,count) }
 ## The scope notice a body click that classified as nothing falls through to.
-## R1/R2 are RESISTORS, and the transistor operating-point probe (spec
-## ase_l_device_params.md) covers nmos/pmos only, so both AN7 legs still take
-## this path and still mean what they meant. Only the notice's WORDING changed,
-## when that probe made "v1 queues source currents only" untrue.
+## Q1/Q2 are BJTs, and the device operating-point probe (spec
+## ase_l_device_params.md) covers nmos/pmos/resistor/capacitor/inductor/diode
+## but NOT BJT, so both AN7 legs still take this path and still mean what they
+## meant. Only the notice's WORDING changed, when that probe made "v1 queues
+## source currents only" untrue.
 proc noticed {} {
   foreach l $::echoed { if {[string match {*nothing probeable here*} $l]} { return 1 } }
   return 0

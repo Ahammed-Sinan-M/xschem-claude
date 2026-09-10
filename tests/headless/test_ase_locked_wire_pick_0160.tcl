@@ -42,9 +42,14 @@
 #             NOT get selected either; an empty-canvas click still queues nothing;
 #             a locked wire's net still takes the 0153 colour cue (hilight_netname
 #             does not honour lock).
-#   LK8c-LK8d a non-source instance body (a RESISTOR -- the device-parameter probe
-#             covers nmos/pmos only, so this still falls through) queues nothing
-#             but DOES get the scope notice -- the late return must not swallow it.
+#   LK8c-LK8d a non-source instance body (an NPN -- the device-parameter probe
+#             (spec ase_l_device_params.md) covers nmos/pmos/resistor/capacitor/
+#             inductor/diode, NOT BJT, so this still falls through -- it used to
+#             be a resistor here, until the R/L/C/D extension made a resistor
+#             body a real device pick and turned this control into a hang: an
+#             unstubbed devparam_dialog blocks on tkwait with nobody to answer
+#             it) queues nothing but DOES get the scope notice -- the late
+#             return must not swallow it.
 #   LK11-LK12 a LOCKED voltage source still queues nothing (find_closest_element
 #             excludes it, so nothing resolves at its body); an unlocked one
 #             still queues its current.
@@ -86,7 +91,7 @@ N 0 200 200 200 {lock=true}
 C {devices/lab_pin} 0 0 0 0 {name=lL lab=LOCKED}
 C {devices/lab_pin} 0 100 0 0 {name=lF lab=FREE}
 C {devices/lab_pin} 0 200 0 0 {name=lB lab="B[1:0]"}
-C {devices/res} 400 -200 0 0 {name=R9 value=1k}
+C {devices/npn} 400 -200 0 0 {name=Q9 model=npn area=1}
 C {devices/vsource} 400 300 0 0 {name=V9 value=1 lock=true}
 C {devices/vsource} 700 300 0 0 {name=V8 value=1}}
 

@@ -1,0 +1,18 @@
+v {xschem version=3.4.4 file_version=1.2}
+G {}
+K {type=resistor
+format="@spiceprefix@name @pinlist dpfoundry__@model L=@L W=@W"
+template="name=R1
+model=dpres_1v8
+W=1
+L=0.15
+spiceprefix=X
+"
+}
+V {}
+S {}
+E {}
+L 4 5 -30 5 30 {}
+B 5 -2.5 -32.5 2.5 -27.5 {name=p dir=inout}
+B 5 -2.5 27.5 2.5 32.5 {name=m dir=inout}
+T {@spiceprefix@name} 7.5 7.5 0 0 0.2 0.2 {}
