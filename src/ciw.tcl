@@ -455,7 +455,39 @@ proc ciw_create {} {
   # (RULING 5f-1, doc/claude/specs/mixed_signal_signal_browser.md). Without this
   # line the tag is undefined and Tk renders the notice exactly like any other
   # result line, i.e. the visibility the ruling asserts does not exist.
-  .ciw.l.t tag configure note   -foreground {dark orange}
+  #
+  # ⚠ `dark orange` WAS PRACTICALLY INVISIBLE HERE, and it took a user
+  # reading a real notice to say so ("orange on beige... practically
+  # unreadable"). MEASURED 2026-09-08 on this widget, WCAG contrast against its
+  # own `grey80` ground -- the tag colours are read back off the live text
+  # widget, not assumed:
+  #
+  #     tag      colour        contrast   (4.5 is the usual floor for body text)
+  #     input    blue            5.35
+  #     result   gray30          5.26
+  #     error    red             2.49     <- also failing, see below
+  #     note     dark orange     1.45     <- the reported line
+  #     note     dark red        6.23     <- what it is now
+  #
+  # THE DARK SCHEME IS NOT A REASON TO PICK A DIFFERENT RED, and that was worth
+  # checking rather than assuming: no red passes on both grounds (dark red is
+  # 1.26 on `grey20`, plain red is 2.49/3.16, i.e. failing on both). But this
+  # file never branches on `dark_gui_colorscheme` at all, and on `grey20` the
+  # tags already here measure blue 1.47, gray30 1.49 and the default black 1.66
+  # -- so the CIW is a light-scheme widget throughout, and `dark orange` was the
+  # ONE tag that happened to read on dark and fail on the light scheme that
+  # ships by default. Making it a light-scheme colour like its four neighbours
+  # is consistency, not a new dark-scheme regression; the dark CIW is a separate
+  # and larger problem than one tag.
+  #
+  # ⚠ `error` IS STILL 2.49 AND IS NOW THE SAME HUE. Both facts are real and
+  # neither is this change's to settle: a notice is now more legible than an
+  # error, which is backwards, and brightness is all that separates them. It is
+  # one more line whenever the user wants it.
+  #
+  # ONE DECISION, TWO WINDOWS: `rdw::_notefg` (src/rdw.tcl) exists to mirror
+  # this tag and says so in its own header, so it moved with it.
+  .ciw.l.t tag configure note   -foreground {dark red}
   pack .ciw.l.yscroll -side right -fill y
   pack .ciw.l.t -side top -fill both -expand yes
 

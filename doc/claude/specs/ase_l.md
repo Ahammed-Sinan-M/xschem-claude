@@ -45,6 +45,7 @@ Tcl dict, human-readable, git-friendly. One `key value` per line via
 ```tcl
 version     1
 simulator   ngspice
+sim_entry   {}                 ;# empty -> no choice of its own; see below
 design      {lib sky130_tests cell test_nfet_final view schematic}
 rundir      {}                 ;# empty -> $netlist_dir default
 models      {{file $::SKYWATER_MODELS/sky130.lib.spice section tt}}
@@ -59,6 +60,29 @@ includes    {}
 pre_commands {{cmd {pre_osdi $::SG13G2_OSDI/psp103.osdi}}}
 ```
 
+- `sim_entry` is **which registered simulator this test bench runs** — the
+  registry entry, not the backend. `simulator` above is the BACKEND
+  (`ngspice`): which `ase::backend::<sim>::` table renders and runs the deck.
+  `sim_entry` is one level down: which program on this machine, with which
+  `-args`, case mode and `--no-spiceinit`. Three values:
+
+  | value | meaning |
+  |---|---|
+  | absent or `{}` | this state makes no choice of its own; run `ase::sim_default` |
+  | `none` | deliberately the program the system finds on the `PATH` |
+  | `{name <entry>}` | that registry entry |
+
+  The two-word form exists so no registry name has to be reserved. A reader
+  meeting a bare one-word value that is not `none` takes it as an entry name —
+  a hand-written file is forgiving — and `{name none}` is how an entry actually
+  called `none` is spelled. `ase::sim_default` holds the SAME three values, so
+  one decoder (`ase::sim_choice_decode`) reads both and neither store has to
+  know how the other spells "the program on the PATH". It is in
+  `omit_if_empty` with `cosim` and `save_op_params`, and its default is `{}`,
+  so the 104 committed `.state` files never gain the key and keep
+  round-tripping byte-identically. Changing it
+  DIRTIES the session like any other key: explicit save, and a prompt on
+  shutdown. Issue 1395; ordering here follows `ase::schema_keys`.
 - `variables` become `.param` lines; schematic references them symbolically
   (`W=Wn`) — plain ngspice resolves `.param` at netlist level.
 - `analyses` render into one `.control` block (op → `op`, dc → `dc V2 0 1.8
@@ -211,6 +235,11 @@ was: the bare backend name, `auto_execok`'s file, and a byte-identical command.
   list carries `ase::sim_select {}`, so a cleared choice survives a restart
   instead of the first entry being put silently back in force — and it
   therefore overrides an rc's own `::ASE_SIMULATOR` at the next start.
+  ⚠ **Amended by issue 1395**: what that line records is now
+  `ase::sim_default`, the installation default, and never the choice a session
+  has made for itself. The property 0932 was written to protect is unchanged —
+  a deliberately cleared default is still a line in the file and still not the
+  absence of one.
 * **The saved list is written beside itself and moved into place.** A failed
   write used to truncate the user's list before the first line was written and
   then raise out of a proc that promises not to; now the file they have keeps
@@ -222,6 +251,49 @@ was: the bare backend name, `auto_execok`'s file, and a byte-identical command.
   fresh-start claim is measured in a child with `HOME` redirected into the
   suite's scratch tree.
 
+### The registry is environment; the choice is state (issue 1395)
+
+The user's ruling, 2026-09-08: *registering* a simulator so future xschems can
+see it may reach disk the moment it is done, and is **not** part of the state
+that accompanies a test bench; *which* registered simulator is assigned as the
+one to use **is** part of that state — it dirties, it must be saved explicitly,
+and an xschem shutdown with it unsaved must warn and prompt.
+
+That draws one line through this section:
+
+| | environment | state |
+|---|---|---|
+| **what** | the registry: every entry's name, program, `-args`, backend, case mode, `-n` — and `ase::sim_default`, what a session with no choice of its own runs | `sim_entry`: which entry THIS test bench runs |
+| **lives in** | `$USER_CONF_DIR/ase_simulators`, plus the rc layer | the `.state` file beside the test bench |
+| **when it is written** | at the mutation, immediately, unasked | on an explicit Session > Save State |
+| **dirties a session** | no | yes |
+
+Three consequences, and each of them was a defect before 1395:
+
+* **Persistence hangs off the MUTATION, not the gesture.** `ase::sim_register`
+  and `ase::sim_unregister` save; the Simulators dialog does not save *for*
+  them. Both doors — the dialog and `ase::sim_register` typed into the CIW —
+  therefore persist, which is what `src/xschem.tcl`'s Configure-simulators help
+  has always promised. Gated on `ase::sim_origin eq session`, because
+  `ase::sim_load_conf` **sources** the saved list and every line in it is a real
+  `sim_register` call: without the gate the reader rewrites the file it is
+  reading.
+* **`ase::sim_clear` does NOT save.** It is teardown — "forget every registered
+  simulator and every choice" — and a teardown that autosaved would let a test
+  or a stray script blank the user's list. The rule, in one line: *a mutation
+  that expresses a user's choice persists; a teardown does not.*
+* **`ase::sim_use` is a cache, not a store of record.** It still means "what is
+  in force right now" and every `ase::sim_status` caller reads it unchanged; the
+  store of record is the running session's `sim_entry`, and `sim_write_body`
+  writes `ase::sim_default` in its place.
+
+**Known limitation.** Two ASE-L windows open on different test benches share one
+`ase::sim_use`. The run applies the running session's `sim_entry`, so "the
+window you clicked in wins" for the run — the half that decides which program
+actually starts — but a status bar in the other window may momentarily name the
+other choice, because the bar renders from the process-global cache. Recorded,
+not fixed; closing it means a per-window registry view.
+
 ### What that program can actually do (issue 0948)
 
 `ase::sim_capabilities <backend>` answers what the build that will ACTUALLY
@@ -231,8 +303,32 @@ answer is a dict: `{known 0}`, `{known 0 unmeasured <reason> ...}`, or
 When `known` is 0 the capability keys are **absent, not 0**; absent means
 nobody measured, 0 means measured-and-no. `unmeasured` is a REASON, never a
 capability: `timeout` (the program had not finished inside the budget, and
-`secs` says how long the user waited) or `noplace` (the simulation folder could
-not be written into at all).
+`secs` says how long the user waited) or `noplace` (there was nowhere for the
+probe to work). A `noplace` answer carries **`noplace_why`** — `occupied` (a
+file is sitting where `.ase_probe` has to be), `readonly` (the simulation
+folder **will not take a new entry**, established by TRYING to make one) or
+`other` (the folder DID take a new entry and the probe place still could not
+be made or used: a dangling `.ase_probe` symlink, which `file exists` follows
+and so cannot see, a `.ase_probe` directory with no write permission, or 64
+name collisions in a row) — and **`noplace_at`**,
+the file or folder that is in the way: the probe place for `occupied` and
+`other`, the simulation folder for `readonly`. The say-site reads the
+diagnosis rather than working out a second time what only `ase::cap_workdir`
+was in a position to know (issue 0960).
+
+  ⚠ **`readonly` is decided by `ase::cap_dir_takes_entry`, which MAKES an
+  entry and removes it — never by `file writable`.** `file writable` on a
+  DIRECTORY is POSIX `access(W_OK)`: it answers about the write bit and says
+  nothing about the SEARCH (x) bit, and a create needs both. Measured, one
+  `tclsh`, both modes: a folder at **0600** and one at **0200** each answer
+  `file writable` **1** and refuse `mkdir` and `open …w` alike with
+  `permission denied`. For one round the test was `file writable` and those two
+  shapes fell into `other`, where the sentence told the user their simulation
+  folder could be written into and offered them a `.ase_probe` to delete that
+  did not exist — **both clauses false**. Rows **N14** and **N15** of
+  `test_ase_simcaps_0948` are those two modes through the real seam, **N16**
+  guards the trial against leaving litter in the user's folder, and **N6** now
+  takes all three sentences apart rather than two.
 
 * **The method is a PROBE RUN, never a version string.** Measured: a stock
   ngspice and one patched to ignore the add-each-analysis line print the
@@ -295,12 +391,22 @@ not be written into at all).
   target folder as its own current directory is the only form that survived a
   space, a dollar, a bracket, a single quote and a semicolon alike.
   `ase::cap_run` resolves a RELATIVE program location before the move, so a user
-  who registered `./build/ngspice` keeps working; a bare name with no folder in
-  it is left alone, because that is a PATH lookup the move cannot affect.
-  ⚠ That last clause describes the intent, not the code: the test is
-  `[file dirname $prog] ne {.}`, and `./ng` has dirname `.` too, so a
-  single-segment relative location is left alone and then fails. Latent — the
-  registry normalizes — and filed as **issue 0961**.
+  who registered `./build/ngspice` keeps working; a name with **no separator in
+  it at all** is left alone, because that one is a PATH lookup the move cannot
+  affect. The test is the separator, not the dirname (**issue 0961**, fixed):
+  it used to read `[file dirname $prog] ne {.}`, and `./ng` has dirname `.` too,
+  so a single-segment relative location was left alone and then failed while
+  `bin/ng` ran. Rows **K5b**, **K5c** and **K5d** of `test_ase_simcaps_0948`.
+  **A relative name reaches the runner by an ordinary route, not only from a
+  direct caller.** With nothing in force, `ase::sim_status` puts
+  `[lindex [auto_execok $backend] 0]` in `resolved` and `ase::sim_capabilities`
+  hands that to the probe; `auto_execok` answers `./ngspice` whenever `$PATH`
+  carries an empty element — a leading, doubled or trailing `:` — or a literal
+  `.`, and the program is in the current directory (measured, tcl 8.6.17). Row
+  **K5e** drives that route end to end. The backslash counts **only on
+  Windows**; on Unix it is an ordinary character in a file name, and that
+  platform gate — defended in a write-up and guarded by nothing until the repair
+  round — is held by row **K5h** behaviourally and row **K5i** structurally.
 * **`appendwrite` means the writes ADDED UP, and nothing else (issue 0952).**
   Deck A asks for two analyses and two writes into one file; two plots coming
   back in that one file is the answer, whatever the plots are called. It used to
@@ -318,7 +424,18 @@ not be written into at all).
 * **`ase::cap_report`, called once from `ase::run_deck`,** is the only say-site:
   a program that produced nothing is reported whatever the run looks like, and a
   build that keeps only the last analysis is reported when the run has more than
-  one. Both sentences are minted in `ase::sim_why` like every other one here.
+  one. **A place the probe could not use is reported too (issue 0960)** — in
+  the FOLDER's or the FILE's words, never the program's, in **three** sentences,
+  one per `noplace_why`, and **once per place AND per reason**
+  (`ase::cap_noplace_once`, keyed on `{at why}`, forgotten by
+  `ase::sim_caps_clear` with every measured answer), because nothing about that
+  state clears itself and a sentence per Run would be a sentence per Run for the
+  rest of the session. **The key carries the reason as well as the place** and
+  that is not tidiness: two reasons can answer with one path, and a key that is
+  only the path withholds the second fact from a user who has just fixed the
+  first -- issue 0960's own defect, reached through its own fix (rows N12 and
+  N13 of `test_ase_simcaps_0948`).
+  Every sentence is minted in `ase::sim_why` like every other one here.
   **The run, not the command builder** — building a command line happens in
   places that must stay silent, and `test_ase_simcaps_0948` row F8 pins both
   ends of that so the report cannot be refactored out of the one place the user
@@ -383,16 +500,47 @@ not be written into at all).
   * **0959** — the bound, the honest sentence and the never-cache rule all
     depend on `timeout(1)` being on the box, and evaporate together in silence
     when it is not.
-  * **0960** — the two states that answer `{known 0 unmeasured noplace}` say
-    NOTHING, on every Run, for good. A read-only simulation folder, or an
-    ordinary file sitting where `.ase_probe` needs to be, silently switches off
-    every warning this section exists to give — including the one about a build
-    that keeps only the last analysis, which is the one that costs the user
-    their results. This section's own rule for the sibling arm is "never a
-    silent failure".
-  * **0961** — a program location written `./name` is not made absolute before
-    the folder change and cannot then be started. Latent behind the registry's
-    own `file normalize`; the comment in `ase::cap_run` states the opposite rule.
+  * **0960 — FIXED 2026-09-07, in its first shape only; REPAIRED, then
+    REPAIRED AGAIN, the same day.** The states that answer
+    `{known 0 unmeasured noplace}` used to say NOTHING, on every Run, for good,
+    which switched off every warning this section exists to give — the one
+    about a build that keeps only the last analysis included. They now say
+    which folder or which file is in the way and what to do about it, once per
+    place and per reason (rows N1–N16 of `test_ase_simcaps_0948`). **Both
+    repair rounds are part of the record.** Round one: the first landing
+    shipped THREE sentences while its own write-ups said two, and the third —
+    the catch-all — had no row on it, named the simulation folder and told the
+    user to check that they could write into it; the once-per-place key also
+    fused two arms, so a user who fixed the read-only folder and then met the
+    catch-all was told nothing. Round two (the close-out): **that repair
+    shipped a regression and a false invariant.** It justified the catch-all's
+    new sentence with "`ase::cap_noplace_at` tests read-only first, so this arm
+    is only ever reached when the folder IS writable" — and the test it meant
+    was `file writable`, which on a DIRECTORY is `access(W_OK)` and ignores the
+    search bit. A folder at mode **0600** or **0200** answers `file writable` 1
+    and refuses every create, so both landed in the catch-all and were told
+    their folder could be written into and offered a `.ase_probe` to delete
+    that does not exist — **both clauses false, and worse than what stood
+    before the repair**, whose sentence at least named the folder. The folder
+    test now MAKES an entry and removes it (`ase::cap_dir_takes_entry`), those
+    two modes land in the folder's own arm, and that arm's advice changed from
+    "Make it writable" to "Give it write and search permission, or pick another
+    folder" because `chmod u+w` on a 0600 folder changes nothing. Rows N14–N16;
+    N6 now takes all three sentences apart rather than two. **What is still
+    open is the issue's fix shape 2:** falling back to a place the tree can
+    always write, and measuring there anyway, which would make the state
+    unreachable rather than merely audible. That is a product call and is on
+    the user's queue as rule debt `0960`; the catch-all and folder sentences
+    are rule debt `0960_catchall_sentence`.
+  * **0961** — FIXED 2026-09-07. A program location written `./name` was not
+    made absolute before the folder change and could not then be started, and
+    the comment in `ase::cap_run` stated the opposite rule as fact. Carve-out is
+    now "no separator in it at all". **⚠ THE FIRST WRITE-UP CALLED IT LATENT
+    AND THAT WAS WRONG**, corrected the same day: registration does normalize,
+    but the nothing-in-force route hands the probe `auto_execok`'s own answer,
+    which is a relative `./ngspice` on an ordinary `$PATH`. Measured on the
+    pre-fix predicate, that gesture answered `known 1 usable 0` with the program
+    started **zero** times — a verdict about a simulator nobody ran. Row **K5e**.
   * **0962** — a coverage gap, not a behaviour one: no committed row reproduces
     the CONCURRENT write that issue 0951 is actually about. Row I4's headline
     half passes on the defective tree, because the old delete-at-top destroyed a
@@ -496,9 +644,14 @@ deck      : <deckpath>
 
 ### Netlist and Run must not RE-MAP the design window (issue 0616, 2026-08-23)
 
-`do_run`'s guard `[file normalize [xschem get schname]] ne $dpath` asks whether the
+*(The guard described in this paragraph was REPLACED on 2026-09-08 — issue 0643,
+`descend_run_batch`. See "Netlist and Run works from any level of the design"
+below for the contract in force. 0616's own reasoning, and the whole `raise_mode`
+table, are unchanged and still load-bearing.)*
+
+`do_run`'s guard `[file normalize [xschem get schname]] ne $dpath` asked whether the
 design is the **current xschem context**, because that is what `ase::netlist`'s own
-guard requires. It does **not** ask whether the design window is visible — and the
+guard required. It did **not** ask whether the design window is visible — and the
 two are routinely different: a session whose state carries `viewer {open 1 …}` has
 `viewer_restore` leave the context on the viewer canvas while the design window is
 fully visible and front. So the guard fires on a window that needs nothing.
@@ -521,8 +674,11 @@ take an optional trailing `raise_mode`.
 
 Three things are load-bearing and must not be "simplified":
 
-* **The context switch stays unconditional.** Drop it and `ase::netlist`'s "design is
-  not the current schematic" error comes back. It is also the *only* half covered by
+* **The context switch stays unconditional.** Drop it and `ase::netlist`'s
+  design-unreachable refusal comes back — since 0643 that sentence reads
+  *"design `<lib/cell>` is not open in this window"* (`ase::design_unreachable_msg`),
+  and it is reached for a design sitting on **another window's** stack, which is
+  exactly what the context switch exists to repair. It is also the *only* half covered by
   a test anywhere in the tree (`test_ase_window` W6m2/W6m3) — `test_ase_plot` P9 and
   `test_ase_hier_plot_0168` HL23-HL25 all stay green with it no-op'd.
 * **The cheap half of the raise stays in the `ifhidden` arm.** Dropping it was the
@@ -538,12 +694,81 @@ Three things are load-bearing and must not be "simplified":
 issue 0054 records that the user ratified raise-with-creep as the price of a working
 WSLg raise. Fix the caller.
 
-**Still broken on this button, filed not fixed:** issue **0643** — pressed while the
-user is *descended* into the design, the guard fires, `raise_design_editor`'s
-issue-0168 stack loop matches the descended window and returns 1 **without
-ascending**, so `do_run`'s post-check refuses the run: `Status: Error`, red, `run_id`
-empty, no simulation. That is exactly where the OP-annotation *run → descend → press
-6* workflow stands.
+### Netlist and Run works from any level of the design (issue 0643, 2026-09-08)
+
+**The old contract, and why it was wrong.** Pressed while the user was *descended*
+into the design, the equality guard fired; `raise_design_editor`'s issue-0168 stack
+loop matched the descended window and returned 1 **without ascending**; `do_run`'s
+post-check re-tested the same equality, it was still true, and the run was refused —
+`Status: Error`, red, `run_id` empty, no simulation, and the sentence *"ase: design
+is not the current schematic; open it via Session > Design Window first"*, which
+told the user to do the thing they had just done. That is exactly where the
+OP-annotation *run → descend → press 6* workflow stands, and the user's report was
+blunt: *"Where does this inane restriction come from? There is no such limitation in
+Cadence's ADE-L, which we want be better than."* ADE-L parity is the standard.
+
+**The contract now.**
+
+| the design is… | what happens |
+|---|---|
+| the current schematic | netlisted in place, exactly as before |
+| **anywhere on THIS window's hierarchy stack** | `ase::netlist` ascends to it, netlists, and puts the user back — **no refusal** |
+| on another window's stack | `ase::ui::design_window` routes to that window (0616, unchanged), then as above |
+| nowhere on this window's stack | **refused**, in new words |
+
+* **The door asks reachability, not currency.** `ase::ui::do_run`
+  (`src/ase_window.tcl:7228`) tests `[ase::stack_level $dpath] < 0` in place of the
+  equality, in the pre-check and again in the post-routing re-check. `ifhidden` and
+  the whole `raise_mode` table above are untouched; the new predicate makes the
+  route fire **less often**, not in different places.
+* **The walk belongs to `ase::netlist`, not to the door.** `ase::netlist`
+  (`src/ase.tcl:6390`) gained a third arm over `ase::with_design_current`
+  (`src/ase.tcl:6175`), which ascends with `xschem go_back 2`, evaluates the body
+  with `uplevel #0`, and re-descends by replaying `ase::hier_instnames` through
+  `xschem descend -fallback -inst`. A door that ascended would have to unwind on
+  every error arm below it.
+* **Why a round trip and not a relaxed guard.** `global_spice_netlist()` netlists
+  `xctx->sch[xctx->currsch]` — the level you are standing on
+  (`src/spice_netlist.c:359-373`). Simply dropping the guard would silently
+  netlist and simulate the sub-block alone: measured, 4685 bytes of op-amp against
+  the testbench's 14862, with a results file that looks healthy. The guard was a
+  symptom; the fix is to make the design current for the duration.
+* **It costs nothing the button was not already paying.** The trip is already made
+  twice per press — `xschem netlist` (66 ms) and `op_annot::save_cards` (177 ms).
+  The added walk measures **28–30 ms** over five two-level trips, one repaint, and
+  the resulting deck is **byte-identical** (`cmp`) to one taken at the top.
+* **The `~` safety doctrine is carried, not re-derived.** `go_back` calls
+  `load_backup_as()` whenever a `<cell>~.sch` exists, ending in `set_modify(1)`.
+  A clean entry buffer therefore has `autosave_backup` parked at 0 for the trip; a
+  modified one with `autosave_backup` **on** is carried and restored afterwards
+  with `xschem load_backup` (`descend` uses plain `load_schematic()` and would drop
+  the edit); a modified one with `autosave_backup` **off** is **REFUSED** before
+  anything moves, naming the cell and both remedies (issue 0626). The entry
+  `readonly` state is snapshotted and restored too — `descend_readonly` is 1 in
+  `cadence_style_rc`, and a restored buffer that no longer reports itself modified
+  is one close-without-prompt from losing the edit again.
+* **`Simulation > Run` (`ase::ui::do_run_existing`) needed no change at all** and
+  got none: it never re-netlists, so it never needed a current-schematic guard.
+  Confirmed by reading the whole chain and pinned as row R12.
+
+**The surviving refusal — one minted head, two truthful tails (DECISIONS D6).**
+The head is minted once, `ase::design_unreachable_msg {design {remedy {}}}`
+(`src/ase.tcl:6139`) → *"ase: design `<X>` is not open in this window"*. The tail
+is the caller's, because the two doors are reached from different places:
+
+| door | tail | why it is true there |
+|---|---|---|
+| `ase::netlist` (`src/ase.tcl:6420`) | `; open it via Session > Design Window first` | a CIW or script caller has **not** tried that route |
+| `ase::ui::do_run` (`src/ase_window.tcl:7307`) | `; Session > Design Window did not open it` | this arm runs **only after** `design_window ifhidden` has already tried and failed |
+
+Forcing one sentence on both doors would make one of them lie. The *fact* is one
+fact and is spelled in one place; only the remedy differs. The words *"is not the
+current schematic"* are gone from both doors, asserted as an absence by rows R8 and
+RT12.
+
+Pinned by `test_ase_core` **RT0–RT12** (203 → 216, `--nogui` and `:99`) and
+`test_ase_window`'s **R block** R1–R14 (32 → 49 headless, 245 → 267 on `:99`).
+Both refusal tails are **unratified UI copy** and carry a `rule` debt on 0643.
 
 ### Window numbering
 
@@ -818,9 +1043,21 @@ the schematic's name, not the simulator's.
   at a time: an unknown library leaves the browser as it was before the
   defaulting, a known library with an unknown cell keeps the library chosen
   and its Cell column filled); Save State (always Save-As: Library
-  dropdown + editable Cell/View text fields prefilled with current; if
-  current view was opened read-only and target = same view, Overwrite needs
-  a confirmation popup); Close.
+  dropdown + editable Cell/View text fields prefilled with current; OK
+  **confirms before it overwrites an existing state**, title `Overwrite
+  State`, and the two reasons are answered by two mutually-exclusive
+  predicates, never one flag with two meanings —
+  `ase::ui::save_as_needs_confirm` (D8: the target IS my own file **and** that
+  file is effectively read-only — `readonly` attr, or unwritable) says *"The
+  state `<lib>/<cell>/<view>` was opened read-only. / Overwrite it?"*, and
+  `ase::ui::save_as_overwrites_other` (the target EXISTS and is **not** my own
+  file) says *"State `<lib>/<cell>/<view>` exists. Overwrite?"*. Both sentences
+  are minted in the `ase::ui::lbl_*` family (`src/ase_window.tcl:5578`), not
+  typed at the call site. Saving onto your own state is silent — that is what
+  Save means; a target that does not exist is not an overwrite and is created
+  silently (D9). An **untitled** session owns no file, so every existing target
+  is somebody else's and every one of them asks. Cancel writes nothing.);
+  Close.
 - **Setup** — Design (L/C/V dropdown dialog; after Cell chosen, View
   dropdown lists ONLY schematic views); Model Files (dialog: one row per
   model file + corner/section entry per row, e.g. `tt`); Simulators…
@@ -914,6 +1151,21 @@ main window and the log window are exempt (2026-07-21, item 10).
     saving-as to a *different* existing view deliberately stays dirty (item 14
     D5) and the own-view save is unchanged. The session key is NOT re-homed
     (opaque handle; ~91 build() bindings bake it in) — see issue 0141.
+  - **⚠ D13 is RETIRED — the user overruled it on 2026-09-09.** D13 read
+    *"overwriting a DIFFERENT existing view needs NO confirm in v1 — the spec's
+    only confirm trigger is read-only + same-target"*, and it shipped: measured
+    that day with session `ngspice_state1` open and the sibling view
+    `debug_st1` present and writable, `ase::ui::save_as_needs_confirm` answered
+    **0** for `debug_st1`, so typing an existing sibling view into the Save-As
+    form destroyed it with no warning. The user's ruling was *"Just confirm if
+    overwriting an existing state"*; **undo was explicitly not asked for**, a
+    confirm was. `save_as_needs_confirm` keeps its D8 contract unchanged (five
+    pinned rows, `tests/headless/test_ase_dialogs.tcl` section H2); the new
+    case is the separate predicate `ase::ui::save_as_overwrites_other`
+    (`src/ase_window.tcl:6471`). D13's *other* half — that a titled save-as to
+    a different view writes through plain `ase::state_save` and stays dirty —
+    is unchanged. Decisions S-1…S-9,
+    `doc/claude/ase_l_ux_batch/DECISIONS.md`.
 - Simulation menu: Netlist, Run, Stop, View Netlist, View Log.
 - Netlist/log viewers: read-only text windows; log follows live output.
 - Double-click `ngspice_state1` view in LibMgr → opens ASE-L on that state.

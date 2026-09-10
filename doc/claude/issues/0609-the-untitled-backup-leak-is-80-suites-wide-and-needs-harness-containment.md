@@ -61,3 +61,70 @@ while the file had in fact gone to the repo root.
 `tests/headless/test_no_untitled_litter.tcl` owns the six guarded suites and
 fails if any of them loses its guard. It does **not** cover the other 80 — by
 design, since the guard is not the right fix for all of them.
+
+---
+
+## 2026-09-08 — the leak makes TWO suites structurally unpassable in a full audit
+
+Found while attributing the non-PASS rows of a `full_audit.sh` run during the
+`descend_run_batch`. This section adds three facts and corrects one.
+
+### 1. Two suites carry a GLOBAL existence check, and the audit guarantees they red
+
+| suite | row | what it asserts |
+|---|---|---|
+| `test_ase_core` | **C11** (`:772`) | `[file exists $repo/untitled~.sch]` is 0 |
+| `test_op_dump_altshow` | **H1** (`:924`) | the suite left the cwd alone **and made no `untitled*` in the repo root** |
+
+Both are correct and useful when the suite is run ALONE — they catch that suite's
+own leak. Neither can survive `full_audit.sh`, which `cd "$REPO"`s at `:64` and
+then runs 80-odd leaking suites in the same directory. `test_ase_core` sorts
+after 17 of them; whichever leaks first hands it a red it had no part in.
+
+Measured 2026-09-08, and the pair is decisive:
+
+```
+repo root cleaned, suite run alone :
+  test_op_dump_altshow  -> ALL PASS (70 checks), and leaves NOTHING behind
+  test_ase_core         -> ALL PASS (224 checks)
+inside full_audit.sh  :
+  test_op_dump_altshow  -> FAIL   (H1 only)
+  test_ase_core         -> FAIL   (C11 only)
+```
+
+### 2. `test_ase_core` has been red in THIRTEEN recorded audits, uncaused
+
+`grep 'FAIL     | test_ase_core' doc/claude/op_param_batch/audit_*.txt` → **13 of
+13** (2026-09-02 … 2026-09-04). Every one of those runs carried it forward as a
+number. Nobody named C11, and C11 is the entire reason. That is exactly the
+failure CLAUDE.md's "a standing red is a defect, not furniture" is written
+about, and it is why this section exists rather than a fourteenth count.
+
+### 3. ⚠ CORRECTION: the leftover is NOT "only ever `untitled~.sch`"
+
+The 2026-08-22 sweep above says "the leftover is **only ever** `untitled~.sch`.
+No suite creates a numbered `untitled-N.sch` any more". A numbered one, agreed —
+but a **`untitled~.sym`** was measured in the repo root on 2026-09-08, 292 bytes,
+and it is what red-ed `test_op_dump_altshow`'s H1 (whose glob is `untitled*`,
+not `untitled~.sch`). `clear_schematic(cancel, symbol=1)` names the buffer
+`untitled.sym` (`src/actions.c`), and the same `set_modify(1)` →
+`write_backup()` path then drops `untitled~.sym`. Any future guard, and any
+cleanup in `full_audit.sh`, must glob `untitled*` rather than the `.sch` alone.
+
+### The shape of a fix, for whoever takes it
+
+Per-suite guards cannot close the leak (see above) — but they can stop these two
+rows reporting *other* suites' leaks. Snapshot the repo root at suite START and
+assert only that THIS suite added nothing:
+
+```tcl
+set h_pre [glob -nocomplain -directory $repo untitled*]
+...
+check_true {... made no NEW untitled* in the repo root} \
+  [expr {[llength [glob -nocomplain -directory $repo untitled*]] <= [llength $h_pre]}]
+```
+
+That keeps each row's real purpose, makes it true under the audit, and leaves the
+80-suite leak itself filed here where it belongs. **Not done in the batch that
+found this** — two unrelated suites, and the rows are correct as written when run
+the way their own headers say to run them.

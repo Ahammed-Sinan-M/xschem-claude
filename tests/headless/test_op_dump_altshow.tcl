@@ -43,6 +43,15 @@ set here [file normalize [file dirname [info script]]]
 set repo [file normalize [file join $here .. ..]]
 source [file join $here scratch.tcl]
 set scratch [test_scratch op_dump_altshow]
+
+## ⚠ THIS SUITE REGISTERS SIMULATORS, AND REGISTRATION NOW REACHES THE DISK
+## (2026-09-08). ase::sim_register persists the registry into
+## $::USER_CONF_DIR/ase_simulators at the moment it changes, which is the
+## developer's own ~/.xschem/ase_simulators here. The stubs below are /bin/sh
+## and deliberately broken files; writing them over the user's real list would
+## take away the build they actually use. This suite is not ABOUT the saving,
+## so it opts out of it -- the one test seam ase::sim_touch honours.
+catch {set ::ase::sim_autosave 0}
 set T_OLDPWD [pwd]
 
 # ============================================================================
@@ -658,6 +667,83 @@ set fh [open $YDUMP w] ; puts $fh "q.other.qpnp:" ; puts $fh "    vbe           
 file mtime $YDUMP [expr {[file mtime $YRAW] + 1}]
 check_true {Y5 a sidecar that does not cover the block's devices is reported, not accepted because SOME file was there} \
   [expr {[ase::op_report_missing $YST $YMETA_D 0] ne {}}]
+
+# ----------------------------------------------------------------------------
+# Y6-Y10 -- THE COVERAGE CHECK IS CASE-FOLDED (issue 1390)
+# ----------------------------------------------------------------------------
+# ⚠ THIS FIRED ON THE USER'S OWN BENCH, AS A RED `#!` LINE, ON A GOOD RUN --
+# "only 0 of the 78 devices your schematic asks about are in it, so the rest of
+# the rows will be blank", printed over an annotation that was perfect. The two
+# sides of the comparison are spelled by different authorities and only one of
+# them keeps case: `op_annot::devpath` lowercases every path out, while `show
+# all` writes the RUN's own spelling, and the user's ngspice-ver50 is registered
+# `-casemode preserve`. Measured on the shipped code, same file, one device,
+# spelling the only difference:
+#
+#     lowercase dump -> verdict = (silence)
+#     preserve  dump -> verdict = op_dump_partial
+#
+# ⚠ AND THE NUMBERS WERE FINE THROUGHOUT, which is what makes it a diagnostic
+# that lies rather than a data defect: rung 2 of save.c's get_raw_index ladder
+# resolves the schematic's lowercase query against the merged mixed-case column
+# (measured, `1.37276e-12`). Rows W1-W15 above are that road; these rows are
+# only about what the run SAYS about it.
+#
+# ⚠ THE ROWS ARE PAIRED ON PURPOSE. Every case-folded row has an all-lowercase
+# twin and the two are required to be BYTE-IDENTICAL, because a fold that fixed
+# `preserve` by loosening the check for everybody would pass a one-sided row.
+# Y10 is the other edge: where folding would have to GUESS, it declines.
+proc y_dump {path args} {
+  global YRAW
+  set fh [open $path w]
+  foreach d $args {
+    puts $fh "$d:"
+    puts $fh "    id                 = 5.33333e-05"
+    puts $fh "    gm                 = 0.000266667"
+  }
+  close $fh
+  file mtime $path [expr {[file mtime $YRAW] + 1}]
+}
+proc y_say {st meta} {
+  ase::sim_said_clear
+  set k [ase::op_report_missing $st $meta 0]
+  return [list $k [ase::sim_said]]
+}
+
+y_dump $YDUMP {M.x1.XM1.Mnfet}
+set fh [open $YDUMP r] ; set Y6BODY [read $fh] ; close $fh
+## The first term is the non-vacuity half: the header must really be in the
+## RUN's casing, or the row would pass on a tree that never folds anything.
+check {Y6 a `preserve`-cased dump covering the block's devices is SILENT -- the run worked and must not be told it failed, which is the whole of issue 1390} \
+  [list [regexp -line {^M\.x1\.XM1\.Mnfet:$} $Y6BODY] \
+        [ase::op_report_missing $YST $YMETA_D 0]] \
+  {1 {}}
+
+y_dump $YDUMP {Q.other.Qpnp}
+check {Y7 and the fold did not make it deaf: a `preserve`-cased dump for a device the block never asked about is still reported} \
+  [ase::op_report_missing $YST $YMETA_D 0] {op_dump_partial}
+
+## The count is the half the user actually read off the CIW, so it is asserted
+## as a NUMBER IN THE SENTENCE and not merely as a kind: "0 of 78" was the lie.
+set YBLK2 "$YBLK.save @q.other.qpnp\[vbe\]\n"
+set YMETA_2 [list opblock $YBLK2 optier d]
+y_dump $YDUMP {m.x1.xm1.mnfet}
+set Y8 [y_say $YST $YMETA_2]
+check {Y8 CONTROL, all lower case: a dump covering one of the two devices reports op_dump_partial and counts it as ONE of two} \
+  [list [lindex $Y8 0] [regexp {only 1 of the 2 devices} [lindex $Y8 1]]] \
+  {op_dump_partial 1}
+
+y_dump $YDUMP {M.x1.XM1.Mnfet}
+check {Y9 the same dump in the RUN's own casing says the same thing byte for byte -- case may not move one character of the outcome, in either direction} \
+  [y_say $YST $YMETA_2] $Y8
+
+## save.c's raw_build_fold_table stores -1 when two stored names fold onto one
+## key and the fuzzy rung then refuses rather than guess (DECISIONS.md D2).
+## This table poisons the folded key for the same reason and with the same
+## answer: there is no single device to point at, so the device is missing.
+y_dump $YDUMP {M.x1.XM1.Mnfet} {M.x1.Xm1.MNFET}
+check {Y10 two dump names differing ONLY in case are the ambiguity save.c already declines, so the device counts as missing here too -- no second policy, and no guess} \
+  [ase::op_report_missing $YST $YMETA_D 0] {op_dump_partial}
 
 # ============================================================================
 # N — WHAT THE RUN SAYS IT DID, AND WHAT THE NETLIST SAYS IT BUILT (issue 1354)

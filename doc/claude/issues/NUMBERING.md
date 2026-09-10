@@ -451,8 +451,10 @@ folder the probe cannot use switches every simulator warning off, for good, with
 nothing said — both shapes measured, a read-only folder and an ordinary file
 sitting where `.ase_probe` needs to be. **0961**: a location written `./name` is
 not made absolute before the probe changes folder and cannot then be started;
-latent behind the registry's own normalize, and the code comment states the
-opposite rule. **0962**: a coverage gap — no committed row reproduces the
+filed as latent behind the registry's own normalize, and the code comment states
+the opposite rule. (⚠ **The "latent" half was wrong and was corrected
+2026-09-07**: the nothing-in-force route hands the probe `auto_execok`'s answer,
+which is relative on an ordinary `$PATH`. See the issue file.) **0962**: a coverage gap — no committed row reproduces the
 CONCURRENT write that 0951 is about, and row I4's headline half passes on the
 defective tree.
 
@@ -2465,4 +2467,487 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   0, which manufactured and then destroyed an intermediate "lock modifier"
   finding. `tests/headless/probe_mmb_pan.tcl` is the outstanding measurement.
 
-**The next free number is 1377.**
+- **1377** — filed as four ASE suites reading the **developer's own**
+  `~/.xschem/ase_simulators`; it is **SIX**. `src/xschem.tcl` loads the registry
+  once at startup, so registering a simulator reddens the suites that guard the
+  registry: `test_ase_core` 7, `test_ase_persist` 5, `test_ase_final` 3,
+  `test_ase_preflight` 2 — and **`test_ase_sod_case` 11**, which nobody had
+  noticed and which the survey found. A third, hostile registry is worse than a
+  count change: `test_ase_core`, `test_ase_final` and `test_ase_final_gf180`
+  ABORT on a `REFUSED` raise with 130, 55 and 4 checks never reached, while
+  `test_ase_preflight` and `test_ase_sod_case` go green for the WRONG reason.
+  `test_ase_sod_case` is the sharpest shape: green under an empty registry AND
+  under a broken one, red only under a registry that WORKS. **FIXED** by an
+  opt-in helper `test_sim_registry_isolate` / `test_sim_registry_state` in
+  `tests/headless/scratch.tcl` (the file all six already source) plus one
+  `ISO1377` row per suite and an `ISO1377b` round trip fencing the two clears no
+  HOME can red; the user's registry file is never read, written, moved or backed
+  up — the clear happens in memory after the startup load. The issue also
+  records a standing red found in passing and NOT fixed: `test_op_dump_altshow`
+  H1, a stray gitignored `/untitled~.sym` dated 2026-09-04, needs its own number.
+
+- **1378** — `op_param_lists::write_conf` turns the user's settings file into a
+  **symlink** when `<path>.new` is one: `open` follows a symlink and `file
+  rename` does not, so the bytes land on the link's target — an unrelated file,
+  truncated — and the link itself is moved onto the settings path. rc=**1**,
+  **zero reports**. The third member of issue **1276**'s family, found by that
+  item's own re-verification pass on 2026-09-07 and **filed, not fixed**,
+  because 1276's scope was an explicit lift of two named hunks. Row W1 of
+  `test_op_param_store_1245` makes `<path>.new` a *directory* (where `open`
+  fails and the writer behaves); nothing makes it a *link* (where `open`
+  succeeds). `ase::sim_write_conf` shares the idiom — see issue **1286**.
+  ⚠ **FIXED 2026-09-07, close-out item F3, and it was in BOTH writers** — the
+  claim in 1286 that it applied only to the sibling was measured false. Rows
+  `W7f W7g W7h W7i` (`test_op_param_store_1245`, 138 → 142) and
+  `R11j R11k R11l R11m` (`test_ase_simreg_0931`, 91 → 95). No new number was
+  minted for the `..`-collapse residual measured alongside it; it is recorded
+  in 1276, 1286 and in both resolvers' comments instead.
+
+- **1379** — the Results Display Window's chrome line still reads "No device has
+  been sent here yet" after a dump lands in the pane. `rdw::_chrome_line`
+  derives its `filled` flag from `llength $blocks`, but the only proc that
+  writes that text into `.rdw.hdr` — `rdw::apply_list_state` — is reached only
+  from `rdw::build` and `rdw::set_list` (an invariant the comment at
+  `src/rdw.tcl:409` states outright), and `rdw::push` calls neither. **Issue
+  1367 in the mirror**: that one claimed to be `Showing` an empty pane, this one
+  claims an empty pane while showing two blocks. Found 2026-09-07 by the
+  look-debt digest batch, in the first RDW photograph it took; measured on `:99`
+  against the tree's own `_chrome_line` one line later, so the widget and its
+  builder disagree with no golden in between. **Filed, not fixed** — the batch
+  was a reporting batch. No existing row reads the WIDGET after a push, which is
+  how the same sentence came to be false in both directions.
+
+- **1380** — `op_param_lists::load` had **zero callers**: Save wrote
+  `<pwd>/.xschem/op_param_lists.conf` and no session ever read it back, so the
+  RDW's parameter lists did not survive a restart and the Save button's own
+  sentence was true and useless. Reported by the user 2026-09-07 ("*'Save'
+  modified list … is not surviving session*"). The loader itself is complete —
+  called by hand in a fresh process it restored their nine-row summary list
+  exactly — so the fix is one guarded call at the `src/xschem.tcl` source seam.
+  **FIXED**, verified in a fresh process. No suite caught it because a round
+  trip needs TWO processes and every store row is single-process; that fence is
+  still owed, as is a fix for `BT9`, which now reds because the user having
+  their own `.xschem/` in the repo root is indistinguishable, to that row, from
+  the suite dropping one.
+
+- **1381** — the three decisions the multi-row Add/Delete had to take that the
+  user's instruction did not settle (a one-row selection beating the shaded row;
+  a partial batch proceeding rather than refusing whole; the cursor cleared after
+  a multi-row press), each shipped in a stated reading with its alternative
+  recorded — **rule debt 1381**. And, fixed in the same change, the three hygiene
+  rows (`BT9`, `SD4`, `H1`) that asserted `<repo>/.xschem` did not exist: a
+  legitimate user artifact since issue 1380 made it load at startup, so a
+  developer who had used Save redded three suites for having used the feature,
+  and the obvious way to green them again is to delete their file. That happened
+  in this session. Now a snapshot-and-compare, which is what the rows always
+  meant.
+
+- **1382** — the Results Display Window had **no close control of its own**.
+  Ruling DD-12 had already promised one — its stated cost reads "a user who
+  expects Escape to dismiss the window will press it and see nothing happen.
+  *The window has its own close control*" — and the only one was the window
+  MANAGER's `X`, which is chrome and not part of this window at all. Requested
+  by the user 2026-09-07 ("*In the RDW, add a Close button to dismiss the
+  window*"). **FIXED**: `.rdw.b.close`, `-command rdw::close` and nothing else,
+  at the foot of the column below `aA`, so the button and the WM's delete
+  protocol are two DOORS on one rule; Escape still ends the pick and never
+  closes, which is DD-12 and is now fenced by arithmetic (row CB2). Close is a
+  **withdraw** — the dumps are namespace state and survive it, which ruling
+  DD-16 leans on — fenced at source (CB3) and by a real press and reopen (CB6).
+  Two supporting single-definition fixes: `rdw::apply_list_state`'s greying loop
+  now walks `rdw::_buttons` instead of five literals, and `rdw::button`'s
+  unknown-id refusal stopped claiming there is no button called `close` (or
+  `fontsize`, which it had wrongly said since issue 1368). Also found and fixed
+  here: **FZ17's fixture was leaning on `aA` being the lowest widget in the
+  column** and went red with `balloon_show` untouched — now parked on the
+  button's own bottom edge. Rule debt **1382**, one look debt, one `:0` suite
+  debt.
+  **REPAIR PASS, same number.** An adversary could not break the button and
+  broke the column it sits in: Close pushed `winfo reqheight .rdw.b` to 243 px
+  against the 208 px `wm minsize .rdw 520 260` leaves it, and at the window's
+  OWN advertised minimum `winfo ismapped .rdw.b.fontsize` was **0** — issue
+  1368's `aA` control, evicted, because `-side bottom` allocates Close first.
+  The constant was written for item B3's five-button column and never re-judged
+  (1368 had already reduced its slack to 4 px). Now derived: `rdw::min_floor`
+  keeps `520 260` as a floor and `rdw::apply_minsize` raises it to `reqheight
+  .rdw − reqheight .rdw.p + reqheight .rdw.b` = 295, the `calc::min_floor` /
+  `calc::apply_minsize` shape this tree already uses for the same defect. Two
+  stale widget enumerations rewritten, and two comment overclaims corrected —
+  a misclick on Close costs no DUMPS (it does not end a running pick, which is
+  now a stated contract, rows CB8/CB10), and `rdw::_active_phrase` is a claim
+  about the LIST ACTIONS and not about the column. Rows CB7–CB10, `RW_FLOOR`
+  191 → **193**. Rule debt **1382_repair**.
+
+- **1383** — **four rows of `test_rdw_window_1245` are a standing red on `:0`**
+  (Xwayland), and nobody had filed it. `SL8`, `FZ11`, `FZ17` and `FZ18`, green
+  on `:99` and on the `--nogui` arm, red on `:0` at HEAD — measured with issue
+  1382 entirely out of the tree, so they are not that item's. `SL8` is a font
+  metric difference (the fixture picks 600 px by hand and the sentence does not
+  re-wrap there on the other server); the FZ trio answer `NO-BALLOON` — the tip
+  never appears after one `update`, which is the 3-vs-1 `<Configure>` traffic
+  the tree has measured before. ⚠ **One run in ten reported `ALL PASS (204
+  checks)`, which is the `--nogui` count: the `:0` client died and the suite
+  fell back to its headless arm.** A green `:0` line from this suite is not by
+  itself evidence — check the count. **NOT FIXED**; filed rather than
+  re-derived, per CLAUDE.md's standing-red rule and the four-times-filed
+  history of 0689/0690. The `test_rdw_window_1245` suite debt now points here.
+
+- **1384** — the schematic's status bar **never said what the RDW pick mode was
+  waiting for**. Requested by the user 2026-09-07 ("*status bar should suggest
+  'Click on instance for annotation/summary/all OP info in Results Display
+  Window'*") with a tooltip for the overflow. **FIXED**: the gate is
+  COMMAND-MODE ENTRY, the user's own restatement — `rdw::key`'s `none` branch
+  and nothing else, `intuitive_interface` not read at all. The other two
+  branches were DRIVEN at HEAD first and already behaved exactly as the user
+  described (one selected → that instance, no mode, CIW silent; two → a CIW
+  warning and a refusal that moved nothing), so no repair was owed. The slot is
+  `.statusbar.10`, xschem's own mode-prompt label: `.statusbar.1` was measured
+  and refused because callback.c:10177 rewrites it on EVERY event and
+  `statusmsg_hold()` expires after a fixed 5 s. `.statusbar.10` is *blanked* by
+  `update_statusbar()` instead, so the answer is `ase::ui::sod_prompt_pump`'s
+  80 ms re-assert, taken unchanged. `rdw::_hint_sync` is the ONE proc that
+  decides what the slot says and every exit is a door on it — twice over, the
+  transition synchronously and the pump as the net. Two new helpers beside
+  `balloon` in xschem.tcl: `balloon_off` (cancels a pending show found in
+  `after info`, clears only bindings that ARE balloons) and `balloon_clipped` /
+  `label_clipped` (arm a tip only when `font measure` overflows the label's own
+  width — measured threshold, 800 vs 815 px of main window). Rows HT1–HT10 and
+  HP1–HP2; `RW_FLOOR` 193 → **198**, `KX_FLOOR` 90 → **92**; FZ4 re-spelled to
+  count the three `::balloon` calls BY NAME. Rule debt **1384** (three
+  decisions), one look debt, one `:0` suite debt.
+
+- **1385** — **two rows of the RDW suites answer to state an earlier run left
+  behind**, and one of them flipped item A's `ALL PASS (90)` into a red with
+  nothing in the tree changed. `C2` of `test_rdw_keys_1245` searches for a
+  pixel where the snapped and un-snapped picks disagree; whether one exists
+  depends on the zoom, hence on the main window's width, which `set_geom`
+  restores **per schematic file** from `~/.xschem/geometry` and which **every**
+  Tcl `exit` rewrites (`Tcl_CreateExitHandler` → `xwin_exit` → `store_geom`).
+  Proved with `--preinit 'set initial_geometry ...'`, touching nothing:
+  1110x761 → ALL PASS, 900x761 → **C1** red, 700x761 → **C2** red. ⚠ The
+  corollary is a hole in CLAUDE.md's own `~/.xschem` rule: **an ordinary
+  `--script` run writes that file**. The second case is `FZ7` of
+  `test_rdw_window_1245`, which read `.rdw.b.fontsize` as `active` because the
+  PREVIOUS run's FZ11/FZ17/FZ18 left the X pointer on it — mitigated by issue
+  1384's new section parking the pointer, not fixed at FZ11. **NOT FIXED**:
+  the C-section fix needs a ruling (pin the geometry, widen the search, or
+  drive at a fixed zoom) and issue 1303's two filed numbers must be re-taken
+  under whichever wins. Rule debt **1385**.
+
+- **1386** — **eighteen rows of `test_rdw_keys_1245` are a standing red on
+  `:0`** (Xwayland), and nobody had filed it. Found while PAYING that file's
+  own `:0` suite debt during issue 1384. Measured at HEAD with both RDW UX
+  items out of the tree: `18 FAILED (72 passed)`; with 1384 in,
+  `18 FAILED (74 passed)` — the same count, the two extra passes being 1384's
+  own HP1/HP2, which are green on both servers. Stable core F1, B2–B5, V2, V3,
+  V7, D1, RA1–RA6, KD1, plus a two-row rim out of {F3, F6, C2, LK2, CP9}. Five
+  unrelated mechanisms — key delivery, focus grants, the seized-binding
+  gestures, the descend re-latch and the whole raise section, whose own look
+  debt already records that `:99` cannot reproduce what it tests. `C2` belongs
+  to issue 1385 instead. Same `:99` suite: ALL PASS (92), four runs.
+  **NOT FIXED**; the suite debt now points here, and a crew reporting this file
+  must give both arms.
+
+- **1387** — **two Tcl command modes seize one canvas, nobody decides, and
+  neither of them works in a tab.** Filed while repairing issue 1384; none of it
+  is 1384's. Four parts, all measured on `:99`. (1) `rdw::pick_start` asks
+  `winfo exists [xschem get current_win_path]`, which is **0 in a tab** (tabs
+  share the one real `.drw`; `top_path` is empty), so 1/2/3 with nothing
+  selected does nothing there **and says nothing, not even in the CIW** — a
+  refusal that names itself is this file's own rule. (2)
+  `ase::ui::sod_statusbar` still carries the `regsub {\.drw$}` arithmetic that
+  1384 corrected in its copy, and answers `.x1.statusbar.10` for a tab; the copy
+  could not correct the original because `rdw.tcl` deliberately does not call
+  into `ase_window.tcl`. (3) An RDW pick and an ASE select-on-design can be live
+  at once — each self-serialises only against its own kind — so
+  `<ButtonPress-1>` is seized twice, last arm winning silently, and TWO 80 ms
+  pumps write `.statusbar.10` with neither reading the other. 1384's synchronous
+  re-assert makes the label agree with the seize instead of contradicting it,
+  which is an improvement and not a decision. (4) `ase_window.tcl:1884` states
+  that an 80 ms re-assert costs "at most a sub-frame flicker"; measured with the
+  same mechanism it is **16-40 % visible** while the pointer moves, with the
+  slot's width swinging 8 <-> 471 px at ~12 Hz. Row **HT14** of
+  `test_rdw_window_1245.tcl` pins part 1's silence so a fix cannot land without
+  the hint following. **NOT FIXED**; part 3 needs a ruling, parts 2 and 4 are
+  ASE's file and want an ASE row each.
+
+- **1388** — **the settings file did not know which PDK it was for**, and the
+  identity work uncovered a sharper defect than the grammar: the startup
+  `catch {::op_param_lists::load}` (`xschem.tcl:17550`) runs while `xschem.tcl`
+  is sourced, and a PDK workarea is entered with `--script
+  <ws>/cadence_style_rc`, which `xinit.c:3793` sources **after** it — measured,
+  `env(PDK)` is still UNSET at the top of the `--script` phase. Of the four
+  candidate identities only `env(PDK)` survives measurement: `env(PDK_ROOT)` is
+  set by none of the three workareas (`::PDK_ROOT` is a *location* shared by
+  every PDK in one open_pdks install), `$::XSCHEM_LIBRARY_PATH` is **EMPTY** in
+  all three, and the registered `op_annot` descriptors are **byte-identical
+  between sky130A and gf180mcuD**, which is the user's own example. FIXED:
+  `[pdk <name>]` sections plus `[pdk *]`, un-scoped rows apply to every PDK,
+  PDK beats un-scoped as a **rank** (two reader passes, no rank field), another
+  PDK's rows are never parsed and never rewritten, a Save **edits the rows
+  where they already are** and invents no section, the grammar version does not
+  move, and the three shipped `cadence_style_rc` files declare the PDK with
+  `op_param_lists::set_pdk`, which re-reads the tiers. ⚠ A **second** defect was
+  found only by a real launch and not by any row: `set_pdk` compared `pdk`
+  before and after its own write, and the rcs set `env(PDK)` FIRST, so the two
+  were equal and the section was silently lost — the store now records the PDK
+  its rows were READ under. Section **PK** of `test_op_param_store_1245`,
+  `OL_FLOOR` 135 → **158**, including **PK20/PK21, the two-process fence owed
+  since issue 1380** and **PK7b**, the row that defect minted. Rule debt **1388** (which
+  scope a Save writes into), one look debt (the two-axis header).
+
+- **1389** — **ASE-L would start a second simulation on top of the first.** The
+  user's 14:07 bench run annotated blank and printed zilch in RDW; the cause was
+  not the annotator but a **double launch**. `/tmp/Xschem.log.1` carries two
+  `xschem netlist` lines and two `This run is starting the simulator…` lines
+  before either `simulation finished`, because both `Simulation > Netlist and
+  Run` and the `N&>` strip button are plain Tk button commands and **nothing
+  anywhere checked whether a run was in flight**. The deck says `set appendwrite`
+  (issue 0929), so run 2 appended its Operating Point plot to the raw run 1 had
+  not finished writing — `xschem raw points` 2, `xschem annotate_op` 423 vectors
+  and every row blank, against **8248 vectors / 212 devices** from the identical
+  deck with one dataset. FIXED: one predicate, `ase::run_in_flight`, keyed on the
+  **results file** (not the session, not the widget — two ASE-L sessions on one
+  cellview and a `Netlist and Run` racing a `Run` are the same hazard as a
+  double-click), with three consumers: `ase::run_deck`'s gate (the authority,
+  covering both buttons, `ase::run`, `run_existing`, a CIW paste and any script),
+  the two ASE-L doors, and `do_stop`'s fallback. The gate sits at the **top** of
+  `run_deck`, not "just before `eval execute`" as the plan asked: between those
+  two points `run_deck` deletes the raw and rewrites the deck, so a late refusal
+  would destroy the live run's results file — issue 0929's own symptom,
+  manufactured by the fix for it. Lock set after the `-1` check, cleared in
+  `run_done` from `meta`'s `rawlock`, and self-healing when `::execute(pipe,$id)`
+  is gone. ⚠ **Three defects were found by the adversary pass and fixed by the
+  integrator, and each had shipped green.** (1) *The CIW was FOCUSED, not merely
+  raised* — the user's own emphasised requirement. `raise_toplevel`'s mapped arm
+  is `wm withdraw` + `wm deiconify` and **a re-map is an activation**, so it and
+  `raise_activate_toplevel` are indistinguishable in the property that matters,
+  and the row that spied which one was called could not see it. Measured on all
+  three X servers here: a plain `raise` rises **without** the keyboard on
+  `:99`/openbox and is issue 0054's **no-op** on `:0`/Xwayland *and on the user's
+  own screen* (`172.20.160.1:0`, the Windows X server, `_NET_SUPPORTING_WM_CHECK`
+  **not found** — no EWMH WM at all). Shipped: plain raise, verify against the
+  toplevel holding the keyboard, re-map only if it did nothing. A focus restore
+  and a `-topmost` pulse were both tried and both rejected on the measurement.
+  (2) *The refusal named a remedy that was a no-op* — `do_stop` was keyed on the
+  session's `run_id` attr, so the refused session, a CIW/script run, and any
+  session closed and reopened mid-run all answered *"no simulation running for
+  this session"* over a live run: the user could neither run nor stop. `do_stop`
+  now falls back to the lock, through the same predicate. (3) *The residual race
+  §8 called unreached is reached by the originating gesture* — `do_run` calls
+  `update` in its design-window routing arm, so a second press dispatched there
+  launched while the outer press was refused **as a failure**: status `running` →
+  `fail`, a red *Error* over a healthy run, and the same sentence in the CIW
+  twice, once `note` and once `error`. Both doors now route a raise out of
+  `ase::run` through `ase::ui::run_raised`, which recognises the refusal by its
+  own minted sentence. Section **RG** of `test_ase_core.tcl`, 184 → **203** in
+  both arms (the arms are equal by coincidence — NT14 skips under X, RG6's
+  behavioural leg skips headless), ten neutralisations across four passes. The
+  refusal reads issue 1391's `ase::ui::menu_path_stop` and never retypes it (RG5
+  fences the absence of a copy; grep confirms the only two literals in `src/` are
+  both comments). Rule debt **1389** (the `note`-not-`error` tag and the wording),
+  look debt **1389** (on the user's own WM-less screen the CIW can only be raised
+  by a re-map, so the emphasised half is **not** delivered there), suite debt
+  `test_ase_core` (one `:0` run).
+
+- **1390** — **the dump coverage check could never pass under `preserve`.** On
+  the same 14:07 bench run, a red `#!` line said *"only **0 of the 78** devices
+  your schematic asks about are in it, so the rest of the rows will be blank"* on
+  a run whose annotation was perfect — and it fired on **every** run of that
+  bench. `ase::op_report_missing_dump` built its `have` set from the dump's block
+  headers **verbatim** and compared against `devs`, which `op_annot::devpath`
+  lowercases unconditionally; the user's `ngspice-ver50` is registered `-casemode
+  preserve`, so `show all` writes `M.x1.x23.XM2.M…` and the comparison could
+  never match. Reproduced one device, one file, spelling the only difference:
+  lowercase → silence, preserve-cased → `op_dump_partial`. The VALUES were always
+  fine — `save.c:4175 raw_lookup_name`'s fold rung resolves the lowercase query
+  against the stored mixed-case name, measured `1.37276e-12` either way — so this
+  was purely a diagnostic that lied. FIXED by running the C ladder's own shape in
+  Tcl: exact spelling first (an all-lowercase dump still answers on rung 1,
+  unchanged), then the case-folded alias, with two headers differing only in case
+  **declining** exactly as `raw_build_fold_table` stores −1 (DECISIONS.md D2). The
+  ratified sentence is untouched. Rows **Y6–Y10** of `test_op_dump_altshow.tcl`,
+  65 → **70**, paired lowercase/preserve twins required byte-identical; Y6 reds on
+  the shipped exact-only compare, Y10 on a naive fold with no D2 decline. Rule
+  debt **1390**: the fold is **unconditional** and does not consult the run's case
+  mode — `devs` carries no case, so an exact compare under `distinguish` is
+  today's defect unmoved, and gating on the *requested* mode would be the wrong
+  gate because `Raw.case_sensitive` is a property of the READ.
+
+- **1391** — **eight glyphs on the action strip and not a word between them.**
+  `OP,TR = --> X N&> > ! ~`, and no tooltip anywhere in `ase_window.tcl`. FIXED:
+  all eight carry a balloon tip, plus the temperature entry — but the
+  load-bearing half is the **mint**. Eleven `ase::ui::lbl_*` constants and five
+  `>`-separated menu-path composers now live in the same label section as
+  `lbl_outputs`/`lbl_save_all`, and **the menubar is built from them**, so the tip
+  and the menu entry are one string and cannot drift (the 0661 shape: a printed
+  `Outputs > Save All` beside a menu reading `Outputs > Save All… > …`, string
+  match 0). ⚠ **FIVE** strip buttons have a menubar twin, not the three the brief
+  listed nor the four the first draft's comments claimed in eight places across
+  three files — `OP,TR` is `Analyses > Choose…`. The count was corrected
+  everywhere against a walk of the shipped `ase::ui::strip_tips` table (5 menu
+  paths, 3 bare action names), and the issue now records what the mint does
+  **not** yet reach: all three bare-named actions also sit on a per-pane CONTEXT
+  menu spelled differently (`Add…`, `Delete`), which is not built from these
+  constants. One measured cost: `balloon` does a plain bind on `<FocusOut>` and
+  `$top.tb.temp` already carried `ase::ui::temp_commit` there — arming the tip
+  second **deleted the commit outright**, so a typed temperature clicked away from
+  never reached the deck; the builder arms the balloon first and the commit
+  appends with `+`, and row **W1s3** reads the composed script back and reds if
+  either half goes. Rows **W1s1–W1s6** of `test_ase_window.tcl`, 229 → **245**,
+  every one read off the LIVE widget and compared to the constant **and** a
+  literal golden. Item 1389's refusal consumes `ase::ui::menu_path_stop` from
+  here. Rule debt **1391** (nine unratified tooltip strings and the deliberate
+  mixed form), look debt **1391** (a tip is pixels; `balloon_show` returns early
+  unless the pointer is physically over the widget, so every row asserts the
+  `<Enter>` binding and no headless row can prove one appeared).
+
+- **1392** — **the blank-row diagnosis named a box that was already ticked.**
+  `cadence::_annot_cause` classified the user's bench `noparams` and told them to
+  *"Run the simulation again with device parameter saving turned on"* — which was
+  already on. That is what sent them to `Outputs > Save All…`, visible in their
+  action log at line 64, hunting a tick that was already there. The honest fourth
+  cause is *"the results file holds more than one operating point, so the device
+  numbers were not merged"*. Mechanism measured: on a 2-plot raw with a fresh
+  sidecar beside it, `_annot_devparams_present` answers 0 (savecurrents' `i(@…)`
+  is skipped on purpose), so the tail arm fires. **FILED, NOT FIXED, and
+  deliberately**: issue 1389 closes the only measured route in, so building the
+  fourth cause now would add a branch nobody can reach. ⚠ The adversary pass
+  recorded the consequence honestly: on that exact shape the shipped code printed
+  a wrong line and, after 1390, prints **nothing at all** —
+  `op_annot::opdump_autofill` refuses in silence on its `raw points != 1` gate.
+  1389's lock is a per-process dict, so two xschem processes on one cell still
+  reach it. §6 of the issue says what would turn the judgement over.
+
+- **1393** — **the annotation level is taken only when THIS session owns the
+  nearest one.** Minted by the `descend_run_batch` (`doc/claude/descend_run_batch/`)
+  while closing 0643. `ase::ui::annot_ensure_loaded` (`src/ase_window.tcl:2782-2793`)
+  resolves the hierarchy level it stamps the results basis at from
+  `ase::session_for_current`, but takes it **only when
+  `[lindex $s 0] eq $key`** — i.e. only when the nearest ancestor session is the
+  one being refreshed. `session_for_current` (`src/ase.tcl:9263`) walks
+  deepest-first and returns the NEAREST session, deliberately (issue 0168: a
+  session bound to an intermediate cell simulates that cell as its deck's top).
+  With one session the two coincide and the guard is invisible; with a **second**
+  session bound to a descendant cell they diverge, `$level` stays `{}`, and
+  `annotate_op` leaves `raw->level` at `currsch` (`src/scheduler.c:2540-2542`
+  only overrides it `if(level >= 0)`), so `sch_waves_loaded()` (`src/draw.c:2853`)
+  cannot place the deck-absolute paths and every device row on the sheet renders
+  **blank, with no sentence**. Measured on the same bench that closed 0643, both
+  sides of the door: `db_attach $raw 0` → `raw_level=0 sim_sch_path='x1.x1.'`,
+  `db_attach $raw {}` → `raw_level=2 sim_sch_path=''`. **FILED, NOT BUILT, and
+  deliberately** — the reported bench runs one ASE-L session, where the guard can
+  only pass, and building an unreachable branch is the defect 1392 was just
+  written about; it also needs two nested ASE-L sessions, which no suite in the
+  tree sets up. The option set is three-way and turns on asking a *different*
+  question: (a) `ase::stack_level [ase::ui::design_path $key]` — the mint
+  `descend_run_batch` just added at `src/ase.tcl:6016` answers "where does MY
+  design sit on this stack", which is what the proc actually wants; (b) drop the
+  `eq $key` test — cheapest and **wrong**, it would stamp the outer session's raw
+  at the inner session's level; (c) refuse in words instead of drawing blanks,
+  on the argument that the silence is the real user-facing bug. Rule debt
+  **1393**; §6 names what would turn the not-built judgement over (a user report,
+  anything that makes a second session ordinary, or any change to
+  `session_for_current`'s scan direction).
+
+- **1394** — **a zero-instance child schematic turns a later `xschem netlist`
+  into a modal that hangs a scripted run.** ⚠ **PRE-EXISTING, reproduced at HEAD
+  `19f8e351` with no `ase::` code in the picture** — found by crew A of the
+  `descend_run_batch` while building a fixture, filed against the batch only
+  because the batch is what walked into it, and **not** reproducible on the real
+  `sky130_tests_ase/tb_bandgap` bench (whose descended netlist is byte-identical
+  to the top one). On a two-level fixture whose child has **zero instances**,
+  `descend ; go_back ; xschem netlist -noalert <f>` pops
+  `Please Set netlisting mode (Options menu)` and a scripted run **hangs on it
+  forever**. Two halves, both verified against the source rather than copied:
+  `load_schematic()` moves `netlist_type` to `CAD_SYMBOL_ATTRS` for any file with
+  `xctx->instances == 0` (`src/save.c:6469`), and `CAD_SYMBOL_ATTRS` is 5
+  (`src/xschem.h:229`), which is not one of the five formats the netlist
+  dispatcher tests — so it falls into the dispatcher's `else`, and that `else` is
+  the message box (`src/scheduler.c:9167-9169`). **`-noalert` cannot suppress
+  it**: `alert` (cleared at `src/scheduler.c:9089`) is passed to the five
+  `global_*_netlist()` back ends and is not consulted on that arm at all. Under
+  `--nogui` the modal is skipped and the wrong mode is used silently instead,
+  which is the quieter half of the same defect. ⚠ **What is NOT established is
+  crew A's stated cause** — "the parent reload does not put it back". The very
+  next lines *are* a restore (`src/save.c:6474-6480`) and `go_back` does reach
+  them (`src/actions.c:6505-6506`, `reset_undo` 1), so on a straight reading the
+  type should come back; the issue records that honestly and names two
+  candidates instead, the leading one being that `save_netlist_type` is
+  initialised to **0** per context (`src/xinit.c:913`, and `alloc_xschem_data()`
+  runs per window and per tab), 0 being no more a valid format than 5. Worst
+  property: the hang produces no exit code, no banner and no `FAIL`, so it is the
+  one shape `tests/banner_rule.tcl` and the two shell readers cannot classify.
+  In the meantime the RT rows drive the trip with a probe, RT11 stubs
+  `ase::netlist_in_place`, and the RT child fixture is given one instance —
+  workarounds to be reverted when this closes.
+
+- **1395** — **registration persists through one door, and the choice persists
+  through one too many.** Filed 2026-09-08 as item D of the ASE-L
+  simulator-choice batch (`doc/claude/ase_simchoice_batch/CREW_BRIEF.md`), which
+  is also what fixes it. Two halves of one boundary, and the shipped tree has
+  each backwards. **Registration does not reach disk through every door**:
+  `ase::sim_register` (`src/ase.tcl:1300`) and `sim_unregister` (`:1459`) write
+  nothing, and the registry survives a restart only because the GESTURE saves —
+  `ase::ui::simdlg_commit` (`src/ase_window.tcl:4649`) is `catch
+  {ase::sim_write_conf}` and is the ONE production call site of the writer. So
+  the Simulators dialog persists and the CIW does not, while
+  `src/xschem.tcl:4935` promises persistence unconditionally and issue **1370**'s
+  own comment (`src/ase_window.tcl:288`) already calls the CIW a real door and
+  records that *this user's* `ngspice-ver50` entry was created through it — 1370
+  fixed that door's DISPLAY half and left its PERSISTENCE half. **The choice
+  reaches disk when it must not**: the entry in force is the process-global
+  `ase::sim_use` (`:711`), in no `schema_keys` entry, so changing it cannot move
+  `ase::session_dirty` (`:8996`), needs no save and prompts on no shutdown — and
+  yet `sim_write_body` (`:3157`) writes an `ase::sim_select` line (`:3200`/`:3203`),
+  so a choice gesture lands in the environment file anyway. Measured with
+  `::USER_CONF_DIR` redirected to scratch: two registrations leave **no conf file
+  at all**, and the writer, once called by hand, wrote `ase::sim_select bb`.
+  ⚠ **The state key `simulator` is the BACKEND** (`ngspice`) and is already
+  state and already dirties; the registry entry (`ngspice-ver50`) is the thing
+  this issue is about. The fix: `ase::sim_default` for the installation default,
+  a three-valued `sim_entry` state key (in `omit_if_empty`, or all 104 committed
+  `.state` files stop round-tripping byte-identically), persistence moved from
+  the gesture to the mutation and gated on `sim_origin eq session`,
+  `ase::sim_clear` deliberately excluded because teardown is not a choice, and
+  `sim_write_body` writing the default and never the in-force choice. Rule debt
+  **1395** (two ASE-L windows still share one `ase::sim_use`: the run applies the
+  running session's choice, but the other window's bar may momentarily name the
+  other one — recorded, not fixed).
+
+- **1396** — Save State overwrote an existing state with no confirmation. `Session > Save
+  State` is always a Save-As and its only guard was `save_as_needs_confirm`, which by
+  decision **D13** asked only on read-only + same-target; a different existing state was
+  destroyed in silence. The user retired D13 on 2026-09-09 ("Just confirm if overwriting
+  an existing state"; undo explicitly not wanted). Fix: a second predicate
+  `ase::ui::save_as_overwrites_other`, the two sentences moved into the `lbl_*` family,
+  and two defects the fix itself introduced — `<Return>` arming the popup that the same
+  key raised, and a confirm orphaned by its own form's Escape — closed by
+  `ase::ui::confirm_safe_default` and `ase::ui::confirm_owned_by`. Rule debt **1396**
+  (the new sentence, the untitled-session rule S-3, and whether unwritable deserves a
+  third sentence).
+
+- **1397** — headless suites write the developer's real `~/.xschem/geometry` and evict
+  their entries. `store_geom` keeps the 100 most recent per-schematic geometries in
+  `$USER_CONF_DIR/geometry`; suites that open a schematic without redirecting
+  `::USER_CONF_DIR` write the real file. Measured: **50 of 101 lines were scratch paths**
+  after one session, i.e. half the developer's remembered window geometries permanently
+  displaced. Two fixes proposed, neither taken: a per-suite redirect closed by a lint row,
+  or one scratch `HOME` in the harness (measured to give an identical check count and
+  leave the file byte-identical).
+
+- **1398** — ASE-L rendered in a typeface nobody chose, and went blank in the dark scheme.
+  `ase::theme` named Arial and Courier, neither installed; the ladder was inverted and 52
+  of 53 fonted widgets were bold; `apply_theme` set a background and never a foreground,
+  so the shipped `dark_gui_colorscheme 1` rendered 58 widgets at 1.119:1 and the
+  temperature entry at 1.000:1; and pixel column widths against point fonts clipped at any
+  other `tk scaling` while ratcheting on resize. Fix: four roles derived from
+  `TkDefaultFont`/`TkFixedFont` via `font configure` (never `font actual`), one
+  refuse-don't-clamp size knob, a foreground wherever there is a background, and column
+  widths derived from `font measure` with a `-minwidth` of the heading's own ink.
+  `ase::palette` is untouched. `PLAN.md` Stage 1 only.
+- **1399** — `test_wave_sigbrowser_0312` has two standing reds (BF21a, BF24a) on the
+  display arm. Proved pre-existing against a shadow tree built from `git show HEAD:`. The
+  suite is not in `run_regression.tcl`'s case list, so T1 has never covered it.
+
+**The next free number is 1400.**

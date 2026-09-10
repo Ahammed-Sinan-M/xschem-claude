@@ -106,6 +106,15 @@ set repo [file normalize [file join $here .. ..]]
 set A_HOME [file normalize [pwd]]
 source [file join $here scratch.tcl]
 set scratch [test_scratch simcaps0948]
+
+## ⚠ THIS SUITE REGISTERS SIMULATORS, AND REGISTRATION NOW REACHES THE DISK
+## (2026-09-08). ase::sim_register persists the registry into
+## $::USER_CONF_DIR/ase_simulators at the moment it changes, which is the
+## developer's own ~/.xschem/ase_simulators here. The stubs below are /bin/sh
+## and deliberately broken files; writing them over the user's real list would
+## take away the build they actually use. This suite is not ABOUT the saving,
+## so it opts out of it -- the one test seam ase::sim_touch honours.
+catch {set ::ase::sim_autosave 0}
 set ASETCL [file join $repo src ase.tcl]
 
 # --- the answer discipline ---------------------------------------------------
@@ -1661,6 +1670,14 @@ check {J7 an answer that could not be worked out is not remembered, so asking ag
 ## A SIMULATION FOLDER NOTHING CAN BE WRITTEN INTO IS A FACT ABOUT THE FOLDER.
 ## Blaming the program for it is issue 0949's category error wearing different
 ## clothes, and remembering the blame is issue 0950's.
+##
+## ⚠ THIS ROW USED TO REQUIRE THAT NOTHING WHATEVER WAS SAID, AND THAT WAS
+## ISSUE 0960. Not accusing the program is right and still asserted here; not
+## saying anything at all is what switched every capability warning off for
+## the rest of the session, silently, for a user whose folder they could have
+## fixed. The row now requires the ONE sentence about the FOLDER and asserts,
+## by comparison, that it is not the one about the program. Section N is where
+## the rest of that behaviour lives.
 a_budget_set 30000
 set J8ND [file join $scratch j8simdir]
 file delete -force $J8ND
@@ -1678,8 +1695,10 @@ if {[file writable $J8ND]} {
   set J8CACHE [a_capcache]
   a_nd $NDBASE
   catch {file attributes $J8ND -permissions 0755}
-  set J8GOT [list $J8F [a_rep_n $J8R] $J8CACHE]
-  set J8EXP [list [list 0 NOKEY-usable] 0 0]
+  set J8GOT [list $J8F [a_rep_n $J8R] $J8CACHE [a_rep_rv $J8R] \
+                  [expr {[a_rep_msg $J8R] ne \
+                         [a_ans ase::sim_why cap_not_a_simulator ngspice $S_GOOD]}]]
+  set J8EXP [list [list 0 NOKEY-usable] 1 0 cap_noplace 1]
 }
 check {J8 a simulation folder nothing can be written into answers that nothing is known, instead of accusing the program} $J8GOT $J8EXP
 
@@ -2019,6 +2038,230 @@ if {$K5REL eq {}} {
 }
 check {K5 a program named by a relative location is still found after the folder changes under it} $K5GOT $K5EXP
 
+## ISSUE 0961 -- `./name` IS A PATH, NOT A PATH LOOKUP. The resolve-before-the-
+## move above carves out a BARE name like `ngspice`, which exec looks up on the
+## PATH and which the folder change cannot affect. The carve-out used to be
+## spelled "[file dirname $prog] ne {.}", and [file dirname ./ng] is ALSO {.}:
+## so `./ng` was left relative and then looked for inside the probe's own
+## folder, where it does not exist, while `bin/ng` -- the same program, named
+## differently -- ran. Row K5 above cannot see it: it builds a MULTI-segment
+## repo-root-relative name, which takes the branch that always worked.
+set K5BWD [file join $scratch k5bwd]
+file delete -force $K5BWD
+file mkdir $K5BWD
+set K5BDECK [file join $K5BWD k5b.sp]
+a_wr $K5BDECK "* deck\n.control\nwrite k5bout.raw\n.endc\n.end\n"
+## A dot-slash name only names the program while the process is standing in the
+## folder that holds it, so the reading is taken from there -- and the process
+## is put back into a folder that certainly exists afterwards, for the reason
+## row K4 records.
+set K5BCD [catch {cd [file dirname $S_GOOD]}]
+set K5BN0 [a_runs good]
+set K5BANS [a_ans ase::cap_run ./[file tail $S_GOOD] [list -b $K5BDECK] $K5BWD 10]
+set K5BSTARTED [expr {[a_runs good] > $K5BN0}]
+catch {cd $A_HOME}
+set K5BGOT [list $K5BCD [a_capran $K5BANS] [lindex $K5BANS 0] $K5BSTARTED \
+                 [file exists [file join $K5BWD k5bout.raw]]]
+set K5BEXP [list 0 OK 0 1 1]
+check {K5b a simulator whose location is written ./name is started too, and is not looked for inside the probe's own folder} \
+  $K5BGOT $K5BEXP
+
+## AND THE CARVE-OUT ITSELF IS STILL THERE, which is the half a wrong fix
+## breaks: a name with no separator in it at all is a PATH lookup, and making
+## it absolute against the folder the editor happens to be standing in would
+## stop every user who registered plain `ngspice` from being measured. This
+## suite put $BIN on the PATH at the top, and the process is standing in the
+## repo root, where no file of that name exists -- so a pass here can only have
+## come from the PATH.
+set K5CWD [file join $scratch k5cwd]
+file delete -force $K5CWD
+file mkdir $K5CWD
+set K5CDECK [file join $K5CWD k5c.sp]
+a_wr $K5CDECK "* deck\n.control\nwrite k5cout.raw\n.endc\n.end\n"
+catch {cd $A_HOME}
+set K5CHERE [file exists [file join [pwd] [file tail $S_GOOD]]]
+set K5CN0 [a_runs good]
+set K5CANS [a_ans ase::cap_run [file tail $S_GOOD] [list -b $K5CDECK] $K5CWD 10]
+set K5CSTARTED [expr {[a_runs good] > $K5CN0}]
+catch {cd $A_HOME}
+set K5CGOT [list $K5CHERE [a_capran $K5CANS] [lindex $K5CANS 0] $K5CSTARTED \
+                 [file exists [file join $K5CWD k5cout.raw]]]
+set K5CEXP [list 0 OK 0 1 1]
+check {K5c a name with no separator in it is still the PATH lookup it was, and is not resolved against the folder the editor was standing in} \
+  $K5CGOT $K5CEXP
+
+## STRUCTURAL, and it is the half of issue 0961 that costs the NEXT reader:
+## the comment above the runner stated the false rule as fact -- "a bare name
+## with no folder in it" -- which is the sentence that made `./ng` look safe.
+## A rule stated in a comment and a rule implemented in code have to be the
+## same rule, so this row reads both: the comment says SEPARATOR, and the body
+## no longer decides it with [file dirname].
+## The comment block immediately above a proc, which a_body deliberately throws
+## away: it is the place the rule is STATED.
+proc a_lead_comment {src procline} {
+  set lines [split $src "\n"]
+  set at -1
+  for {set i 0} {$i < [llength $lines]} {incr i} {
+    if {[string match "$procline*" [lindex $lines $i]]} { set at $i ; break }
+  }
+  if {$at < 0} { return NOPROC }
+  set out {}
+  for {set i [expr {$at - 1}]} {$i >= 0} {incr i -1} {
+    set l [lindex $lines $i]
+    if {![regexp {^\s*#} $l]} { break }
+    set out [linsert $out 0 $l]
+  }
+  return [join $out "\n"]
+}
+set K5DC [string tolower [a_lead_comment [a_slurp $ASETCL] {proc ase::cap_run }]]
+set K5DBODY [a_body ase::cap_run]
+set K5DGOT [list [expr {$K5DC ne {noproc} && [string length $K5DC] > 40}] \
+                 [expr {[string first {separator} $K5DC] >= 0}] \
+                 [expr {[string first {no folder in it} $K5DC] >= 0}] \
+                 [expr {[string first {file dirname} $K5DBODY] >= 0}]]
+set K5DEXP [list 1 1 0 0]
+check {K5d STRUCTURAL the rule the comment states and the rule the code tests are the same rule: a separator, not a dirname} \
+  $K5DGOT $K5DEXP
+
+## ============================================================================
+## ISSUE 0961, THE HALF THE FIRST PASS GOT WRONG -- IT IS NOT LATENT
+## ============================================================================
+## That pass wrote "latent" into three documents and "reachable only by calling
+## ase::cap_run directly, which nothing in the tree does" into the issue file.
+## Both are false, and the route is ordinary:
+##
+##   ase::sim_status takes its PATH arm whenever NOTHING IS IN FORCE -- nothing
+##   registered, or the choice deliberately cleared -- and puts
+##   `[lindex [auto_execok $backend] 0]` in `resolved`. ase::sim_capabilities
+##   hands that straight to the probe, which hands it to ase::cap_run.
+##
+## auto_execok answers a RELATIVE `./ngspice` whenever $PATH carries an EMPTY
+## element -- a leading, doubled or trailing `:` -- or a literal `.`, and the
+## program sits in the current directory. Measured on tcl 8.6.17, all four
+## spellings; a relative PATH folder answers `bin/ngspice` the same way.
+##
+## WHAT IT COST, measured on this tree with the predicate put back to
+## `[file dirname $prog] ne {.}`: this same gesture answered
+##   known 1 usable 0 appendwrite 0 blanket_op_save 0 hier_op_names 0
+## with the program STARTED ZERO TIMES. That is not a missing answer, it is a
+## verdict about a simulator nobody ran -- issue 0929's symptom arriving
+## through the PATH door.
+proc k5_dg {d k} { if {[catch {dict get $d $k} v]} { return NOKEY } ; return $v }
+set K5EPATH $::env(PATH)
+set K5EDIR [file join $scratch k5e_cwd]
+file delete -force $K5EDIR
+file mkdir $K5EDIR
+set S_K5E [a_stub [file join $K5EDIR ngspice] k5e $RAW_BOTH $RAW_BCONST 0]
+a_resetall
+## The name has to be looked up FRESH: auto_execok caches its answer per name
+## for the life of the interpreter, and an entry left behind here would poison
+## every later row that asks about the same word.
+unset -nocomplain ::auto_execs
+catch {cd $K5EDIR}
+set ::env(PATH) ":/usr/bin:/bin"
+set K5EAEO [lindex [auto_execok ngspice] 0]
+set K5EST [a_ans ase::sim_status ngspice]
+set K5EN0 [a_runs k5e]
+set K5ECAPS [a_cap ngspice]
+set K5ESTARTED [expr {[a_runs k5e] > $K5EN0}]
+set ::env(PATH) $K5EPATH
+unset -nocomplain ::auto_execs
+catch {cd $A_HOME}
+a_resetall
+set K5EGOT [list $K5EAEO [k5_dg $K5EST source] [k5_dg $K5EST resolved] \
+                 [k5_dg $K5ECAPS known] [k5_dg $K5ECAPS usable] $K5ESTARTED]
+set K5EEXP [list ./ngspice path ./ngspice 1 1 1]
+check {K5e with nothing in force the PATH arm hands the probe auto_execok's own answer, which is RELATIVE when $PATH has an empty element -- and the program is still started} \
+  $K5EGOT $K5EEXP
+
+## STRUCTURAL, and it is the sentence the adversary refuted. The note above
+## ase::sim_capabilities_at said "Every caller of this proc hands it a path the
+## user themselves named -- a registered entry's own `path`, or what they typed
+## in the Program field". Row K5e is a caller that does neither. What issue
+## 0935 actually forbids is measuring a REFUSED resolution's `resolved`, and
+## guard 1 in the wrapper is what stops that; auto_execok's answer on the
+## nothing-in-force arm is the file that really will start, and is right to
+## measure. The note has to say that, because the next reader who believes the
+## old one will look for a caller that cannot exist.
+set K5FC [string tolower [a_lead_comment [a_slurp $ASETCL] {proc ase::sim_capabilities_at }]]
+set K5FGOT [list [expr {$K5FC ne {noproc} && [string length $K5FC] > 40}] \
+                 [expr {[string first {hands it a path the user themselves named} $K5FC] >= 0}] \
+                 [expr {[string first {auto_execok} $K5FC] >= 0}] \
+                 [expr {[string first {nothing is in force} $K5FC] >= 0}]]
+set K5FEXP [list 1 0 1 1]
+check {K5f STRUCTURAL the note above the probe core does not claim every caller names the path itself, and says where auto_execok supplies it instead} \
+  $K5FGOT $K5FEXP
+
+## STRUCTURAL, same defect one file over: ase::cap_run's own header is where
+## the next reader lands, so the route that reaches it with a relative name is
+## named THERE, and the word that was wrong is kept out.
+set K5GC [string tolower [a_lead_comment [a_slurp $ASETCL] {proc ase::cap_run }]]
+set K5GGOT [list [expr {[string first {auto_execok} $K5GC] >= 0}] \
+                 [expr {[string first {latent} $K5GC] >= 0}]]
+set K5GEXP [list 1 0]
+check {K5g STRUCTURAL the runner's own header names the route that reaches it with a relative name, and never calls it latent} \
+  $K5GGOT $K5GEXP
+
+## THE WINDOWS BACKSLASH GATE, WHICH UNTIL NOW WAS GUARDED BY NOTHING -- the
+## adversary deleted `&& $::tcl_platform(platform) eq {windows}` from the
+## predicate and no row moved. On Unix a backslash is an ORDINARY CHARACTER in
+## a file name, so `sim_k5h\bs` is a bare name and stays a PATH lookup; with
+## the gate gone it would be read as a path, made absolute against the folder
+## the editor is standing in, and not found. Measured first with tclsh 8.6.17:
+## bare on the PATH runs (rc 0, with and without the wall-clock cap), the same
+## name normalized against a folder that does not hold it fails with
+## "no such file or directory".
+if {$::tcl_platform(platform) eq {windows}} {
+  puts "  K5h SKIPPED LOUDLY: a backslash IS a separator on this platform, so there is no bare name of this shape to test"
+  set K5HGOT SKIP-WINDOWS ; set K5HEXP SKIP-WINDOWS
+} else {
+  set K5HWD [file join $scratch k5hwd]
+  file delete -force $K5HWD
+  file mkdir $K5HWD
+  set K5HDECK [file join $K5HWD k5h.sp]
+  a_wr $K5HDECK "* deck\n.control\nwrite k5hout.raw\n.endc\n.end\n"
+  set K5HNAME {sim_k5h\bs}
+  set S_K5H [a_stub [file join $BIN $K5HNAME] k5h $RAW_BOTH $RAW_BCONST 0]
+  catch {cd $A_HOME}
+  ## $BIN is on the PATH and the process is standing in the repo root, where no
+  ## file of this name exists -- so a pass here can only have come from the PATH.
+  set K5HHERE [file exists [file join [pwd] $K5HNAME]]
+  set K5HN0 [a_runs k5h]
+  set K5HANS [a_ans ase::cap_run $K5HNAME [list -b $K5HDECK] $K5HWD 10]
+  set K5HSTARTED [expr {[a_runs k5h] > $K5HN0}]
+  catch {cd $A_HOME}
+  set K5HGOT [list [file exists $S_K5H] $K5HHERE [a_capran $K5HANS] \
+                   [lindex $K5HANS 0] $K5HSTARTED \
+                   [file exists [file join $K5HWD k5hout.raw]]]
+  set K5HEXP [list 1 0 OK 0 1 1]
+}
+check {K5h a backslash is an ordinary character in a Unix file name, so a name carrying one and no slash is still the PATH lookup it was} \
+  $K5HGOT $K5HEXP
+
+## AND THE OTHER HALF OF THE GATE, WHICH NO BEHAVIOURAL ROW ON THIS BOX CAN
+## REACH: on Windows the backslash IS a separator and must count. Row K5h
+## cannot see that clause being deleted outright -- a bare name stays bare
+## either way here -- so this row reads the decision itself: there is exactly
+## one backslash test, and the line above it is the platform gate. Checking
+## only "the body mentions windows" would be vacuous: line 2 of the body
+## already does, for NUL vs /dev/null.
+proc a_gateline {body} {
+  if {$body eq {NOPROC} || [string match RAISED:* $body]} { return [list NOBODY 0 0] }
+  set lines [split $body "\n"]
+  set n 0 ; set gated 0
+  for {set i 0} {$i < [llength $lines]} {incr i} {
+    if {[string first {string first \\} [lindex $lines $i]] < 0} { continue }
+    incr n
+    set prev [expr {$i > 0 ? [lindex $lines [expr {$i - 1}]] : {}}]
+    if {[string first {windows} $prev] >= 0 && \
+        [string first {tcl_platform} $prev] >= 0} { set gated 1 }
+  }
+  return [list OK $n $gated]
+}
+check {K5i STRUCTURAL the backslash counts as a separator on Windows only, and the platform gate is the line that says so} \
+  [a_gateline [a_body ase::cap_run]] [list OK 1 1]
+
+
 ## STRUCTURAL, and no behavioural row can see it once the folder is right: the
 ## deck names its results with a bare file name and no folder in it. That is
 ## the only form measured to survive every hostile folder name, and a deck that
@@ -2078,6 +2321,646 @@ foreach l [split [a_slurp $M2LOG] "\n"] {
 }
 check {M2 the batch-mode flag still reaches the program that is measured} \
   [list $M2HAS] [list 1]
+
+# ============================================================================
+# N. A SIMULATION FOLDER THE PROBE CANNOT USE -- ISSUE 0960
+# ============================================================================
+# Measured on the built binary before this section existed, both shapes, three
+# presses of Run each, with a real ngspice registered and selected:
+#
+#   read-only simulation folder:
+#     RO press 1..3 : caps={known 0 unmeasured noplace} kind='' said={}
+#   a writable folder in which .ase_probe is an ordinary FILE:
+#     BL press 1..3 : caps={known 0 unmeasured noplace} kind='' said={}
+#
+# Nothing said, on any press, for the rest of the session. Every warning the
+# capability feature exists to give them is switched off with it -- including
+# the one that costs them their results, that a build which keeps only the
+# last analysis of a run will throw the other analyses away.
+#
+# THE SECOND SHAPE IS THE ONE THE USER DID NOTHING TO EARN: the folder is
+# perfectly writable and one stray file -- a leftover from a crashed run -- is
+# sitting at the name the probe needs. It is fixed by deleting one file, which
+# is why the sentence has to say which file.
+#
+# ⚠ THE FAULT IS THE FOLDER'S, AND THE SENTENCE MAY NOT ACCUSE THE PROGRAM.
+# That is issue 0949's category error, which the silence being fixed here was
+# the price of. Row N1 asserts the sentence is not the one about a program
+# that produced no results, and row N5 asserts the two shapes read as two
+# different sentences that name the folder or the file, never the simulator.
+
+## The two shapes, built here rather than described. Each returns the path the
+## sentence has to name: the blocking FILE for the occupied shape, the FOLDER
+## for the read-only one.
+proc n_occupied {dir} {
+  catch {file attributes $dir -permissions 0755}
+  file delete -force $dir
+  file mkdir $dir
+  a_wr [file join $dir .ase_probe] "zz leftover from a crashed run\n"
+  set b [a_nd $dir]
+  return [file normalize [file join $b .ase_probe]]
+}
+proc n_readonly {dir} {
+  catch {file attributes $dir -permissions 0755}
+  file delete -force $dir
+  file mkdir $dir
+  catch {file attributes $dir -permissions 0555}
+  return [file normalize [a_nd $dir]]
+}
+proc n_free {dir} {
+  catch {file attributes $dir -permissions 0755}
+  file delete -force $dir
+}
+
+## THE CONTROL FIRST, and it is half the acceptance: in an ordinary folder the
+## same build and the same run still get the warning. Without it a fix that
+## said the new sentence always would pass every row below.
+set N1PLAIN [file join $scratch n1plain]
+n_free $N1PLAIN
+a_nd $N1PLAIN
+a_resetall
+a_use ngcap-n1a $S_F1
+set N1CTRL [a_report ngspice 2]
+
+set N1DIR [file join $scratch n1occupied]
+set N1AT [n_occupied $N1DIR]
+a_resetall
+a_use ngcap-n1b $S_F1
+set N1OCC [a_report ngspice 2]
+set N1NOTSIM [a_ans ase::sim_why cap_not_a_simulator ngspice $S_F1]
+check {N1 a stray file at the name the probe needs is said out loud, naming the file, and the same run in an ordinary folder still gets the warning it always got} \
+  [list [a_rep_rv $N1CTRL] [a_rep_n $N1CTRL] \
+        [a_rep_rv $N1OCC] [a_rep_n $N1OCC] \
+        [expr {[string first $N1AT [a_rep_msg $N1OCC]] >= 0}] \
+        [expr {[a_rep_msg $N1OCC] ne $N1NOTSIM}]] \
+  [list cap_no_append 1 cap_noplace 1 1 1]
+
+## THE OTHER SHAPE. Skips loudly rather than quietly where the box cannot
+## build it -- a user who can write into a folder with no write permission on
+## it is root, and root can never meet this state.
+set N2DIR [file join $scratch n2readonly]
+set N2AT [n_readonly $N2DIR]
+if {[file writable $N2DIR]} {
+  puts "  N2 SKIPPED LOUDLY: this box can write into a folder with no write permission on it"
+  set N2GOT SKIP-NO-RO ; set N2EXP SKIP-NO-RO
+} else {
+  a_resetall
+  a_use ngcap-n2 $S_F1
+  set N2R [a_report ngspice 2]
+  set N2W [a_capfields ngspice {known unmeasured noplace_why noplace_at}]
+  set N2GOT [list [a_rep_rv $N2R] [a_rep_n $N2R] \
+                  [expr {[string first $N2AT [a_rep_msg $N2R]] >= 0}] \
+                  [expr {[a_rep_msg $N2R] ne [a_rep_msg $N1OCC]}] $N2W]
+  set N2EXP [list cap_noplace 1 1 1 [list 0 noplace readonly $N2AT]]
+}
+a_nd $NDBASE
+n_free $N2DIR
+check {N2 a simulation folder nothing can be written into is said out loud too, in its own words, naming the folder} $N2GOT $N2EXP
+
+## NOT A NAG. The state does not clear itself, so a sentence on every Run
+## would be one on every Run for the rest of the session. Said once for the
+## place it is about; the lever that forgets what was measured is the one that
+## lets it be said again.
+set N3DIR [file join $scratch n3occupied]
+set N3AT [n_occupied $N3DIR]
+a_resetall
+a_use ngcap-n3 $S_F1
+set N3A [a_report ngspice 2]
+set N3B [a_report ngspice 2]
+set N3C [a_report ngspice 2]
+a_ans ase::sim_caps_clear
+set N3D [a_report ngspice 2]
+check {N3 the sentence is said once for the place it is about and not again on every Run, and forgetting what was measured lets it be said again} \
+  [list [a_rep_rv $N3A] [a_rep_n $N3A] [a_rep_rv $N3B] [a_rep_n $N3B] \
+        [a_rep_rv $N3C] [a_rep_n $N3C] [a_rep_rv $N3D] [a_rep_n $N3D]] \
+  [list cap_noplace 1 {} 0 {} 0 cap_noplace 1]
+
+## THE ANSWER CARRIES WHICH PLACE WAS IN THE WAY, so whoever says the sentence
+## reads it rather than working it out a second time. Only the code that tried
+## knows which of the two shapes it hit.
+set N4DIR [file join $scratch n4occupied]
+set N4AT [n_occupied $N4DIR]
+a_resetall
+a_use ngcap-n4 $S_F1
+check {N4 the answer that nothing was measured says WHICH place was in the way and what was wrong with it} \
+  [a_capfields ngspice {known unmeasured noplace_why noplace_at}] \
+  [list 0 noplace occupied $N4AT]
+
+## PLAIN ENGLISH, TWO SENTENCES, AND EACH PHRASE MINTED IN ONE PLACE -- the
+## same technique rows F5 and F6 use on the 0948 sentences, because ruling
+## D5-4 is the same ruling: no caller re-words what the mint already said.
+set N5P [file join $scratch nowhere .ase_probe]
+set N5A [a_ans ase::sim_why cap_noplace {} $N5P occupied]
+set N5B [a_ans ase::sim_why cap_noplace {} [file dirname $N5P] readonly]
+## ⚠ THE TWO ARE COMPARED ON ONE PATH, and a sabotage pass is why. With each
+## arm asked about the path it would really be given, one arm's text can be
+## pasted over the other's and the two sentences STILL differ -- by the path
+## alone. Measured: the whole occupied arm replaced by the read-only wording
+## left this row green.
+set N5SAME [a_ans ase::sim_why cap_noplace {} $N5P readonly]
+## THE THIRD ARM, asked for here so row N6 can take it apart too. `other` is
+## the value ase::cap_noplace_at answers with for the catch-all, and any value
+## the switch does not name reaches the same arm.
+set N5C [a_ans ase::sim_why cap_noplace {} $N5P other]
+## THE FOURTH ARM (close-out round). Reached when the simulation folder setting
+## names something that is not a directory at all -- see ase::cap_noplace_at.
+set N5D [a_ans ase::sim_why cap_noplace {} [file dirname $N5P] notdir]
+set N5FALL [a_ans ase::sim_why zz_no_such_kind {} $N5P]
+check {N5 the two shapes read as two different plain-English sentences, each naming what is in the way, and neither is the catch-all} \
+  [list [a_plain $N5A {} $N5P] [a_plain $N5B {} [file dirname $N5P]] \
+        [expr {$N5A ne $N5B}] [expr {$N5A ne $N5SAME}] \
+        [expr {[string first $N5P $N5A] >= 0}] \
+        [expr {[string first [file dirname $N5P] $N5B] >= 0}] \
+        [expr {$N5A ne $N5FALL}] [expr {$N5B ne $N5FALL}]] \
+  [list PLAIN PLAIN 1 1 1 1 1 1]
+
+## THE SENTENCE IS COMPOSED FROM TWO PIECES OF SOURCE -- the shape both shapes
+## share, and the arm that says what is in the way -- so unlike row F6, which
+## measures the two flat 0948 sentences, EVERY piece here has to be measured
+## and not just the runs between substitutions: the run that spans the join
+## between the two source strings is text no source line can ever match.
+##
+## ⚠ THE PATH COMES OUT FIRST AND THE SENTENCE ENDINGS SECOND, in that order,
+## because a path can have a full stop in it -- `.ase_probe` is the one this
+## very section builds -- and splitting at full stops first cuts the path in
+## half, so what is left of it is never taken out at all.
+proc n_pieces {m path} {
+  set out {}
+  foreach chunk [split [string map [list $path \x01] $m] \x01] {
+    foreach piece [split $chunk "."] {
+      set t [string trim $piece]
+      if {[string length $t] >= 25} { lappend out $t }
+    }
+  }
+  return $out
+}
+##
+## ⚠ ALL THREE ARMS, AND THE THIRD WAS MISSING. This row was named "each fixed
+## piece of THE TWO SENTENCES" and looped `occupied` and `readonly` only, while
+## ase::sim_why cap_noplace mints THREE -- so the catch-all could be re-worded
+## in a second place, or half of it pasted into a caller, with this row green.
+## That is the same hole the catch-all's missing behavioural row was.
+set N6SRC [a_nocomment [a_slurp $ASETCL]]
+set N6N 0 ; set N6ALLONE 1 ; set N6MISS {}
+foreach m [list $N5A $N5B $N5C $N5D] \
+        p [list $N5P [file dirname $N5P] $N5P [file dirname $N5P]] {
+  if {$m eq {} || $m eq {NOPROC} || [string match RAISED:* $m] || $m eq $N5FALL} {
+    set N6ALLONE 0 ; continue
+  }
+  foreach c [n_pieces $m $p] {
+    incr N6N
+    if {[a_count $N6SRC $c] != 1} { set N6ALLONE 0 ; lappend N6MISS $c }
+  }
+}
+check {N6 STRUCTURAL each fixed piece of ALL FOUR sentences exists in exactly one place in the source} \
+  [list [expr {$N6N >= 12}] $N6ALLONE $N6MISS] [list 1 1 {}]
+
+## THE ACCEPTANCE'S OTHER HALF: a user who clears the obstruction gets the
+## warnings back on the very next Run, with nothing else done and no restart.
+set N7DIR [file join $scratch n7occupied]
+set N7AT [n_occupied $N7DIR]
+a_resetall
+a_use ngcap-n7 $S_F1
+set N7BEFORE [a_report ngspice 2]
+file delete -force $N7AT
+set N7AFTER [a_report ngspice 2]
+check {N7 deleting the one file that was in the way brings the warnings back on the next Run, with nothing else done} \
+  [list [a_rep_rv $N7BEFORE] [a_rep_rv $N7AFTER] \
+        [expr {[a_rep_msg $N7AFTER] eq [a_ans ase::sim_why cap_no_append ngspice $S_F1]}]] \
+  [list cap_noplace cap_no_append 1]
+
+## BOTH SHAPES AT ONCE, WHICH IS THE ONLY PLACE THE ORDER OF THE TWO TESTS
+## SHOWS. A read-only folder that ALSO has a file sitting at the name the
+## probe needs is one the user cannot empty: deleting that file needs write
+## permission on the folder it is in. "Delete or rename that file" is then a
+## fix they cannot carry out, so the folder's own sentence is the one to say,
+## and the other shape reports itself on the next Run once the folder is
+## writable. A sabotage pass that swapped the two tests reddened NOTHING
+## before this row existed.
+set N8DIR [file join $scratch n8both]
+n_free $N8DIR
+file mkdir $N8DIR
+a_wr [file join $N8DIR .ase_probe] "zz leftover in a folder that is read-only\n"
+catch {file attributes $N8DIR -permissions 0555}
+set N8AT [file normalize [a_nd $N8DIR]]
+if {[file writable $N8DIR]} {
+  puts "  N8 SKIPPED LOUDLY: this box can write into a folder with no write permission on it"
+  set N8GOT SKIP-NO-RO ; set N8EXP SKIP-NO-RO
+} else {
+  a_resetall
+  a_use ngcap-n8 $S_F1
+  set N8R [a_report ngspice 2]
+  set N8GOT [list [a_capfields ngspice {noplace_why noplace_at}] \
+                  [a_rep_rv $N8R] \
+                  [expr {[a_rep_msg $N8R] eq \
+                         [a_ans ase::sim_why cap_noplace {} $N8AT readonly]}]]
+  set N8EXP [list [list readonly $N8AT] cap_noplace 1]
+}
+a_nd $NDBASE
+n_free $N8DIR
+check {N8 a folder that is read-only AND has a file in the way is reported as the read-only one, because deleting that file is not something the user can do} $N8GOT $N8EXP
+
+## ==========================================================================
+## THE THIRD ARM -- THE ONE NOBODY MEASURED (issue 0960, repair round)
+## ==========================================================================
+## ase::sim_why cap_noplace has THREE arms, not two. Rows N1-N8 above measure
+## `occupied` and `readonly`; the third, the catch-all, shipped with no row on
+## it at all -- so it could regress to this issue's ORIGINAL defect, silence,
+## with this section green.
+##
+## IT IS REACHED WITH ORDINARY FILESYSTEM SHAPES, and both of the two below
+## were driven live through ase::sim_capabilities + ase::cap_report on the
+## built binary before these rows were written:
+##
+##   a DANGLING SYMBOLIC LINK at .ase_probe -- the crashed-run leftover this
+##     issue is about, one link deep. `file exists` follows the link and
+##     answers 0, so the `occupied` test cannot see it; `file mkdir` fails
+##     with EEXIST. Measured: caps = {known 0 unmeasured noplace noplace_why
+##     other noplace_at <folder>}, rv = cap_noplace.
+##   a .ase_probe DIRECTORY WITH NO WRITE PERMISSION -- it exists, it is a
+##     directory, so the parent mkdir succeeds and all 64 attempts to make a
+##     place inside it fail. Same answer.
+##
+## ⚠ THE FOLDER TEST RUNS FIRST IN ase::cap_noplace_at, SO THE CATCH-ALL IS
+## REACHED ONLY AFTER THAT TEST HAS MADE A NEW ENTRY IN THE FOLDER AND REMOVED
+## IT AGAIN. That is what lets the catch-all's sentence assert the folder can
+## be written into.
+##
+## ⚠ AND FOR ONE ROUND IT DID NOT EARN THAT. The first test read
+## `file writable`, which on a DIRECTORY is POSIX access(W_OK) and ignores the
+## SEARCH bit, so mode 0600 and mode 0200 folders -- every create refused --
+## fell through to this arm. Rows N14 and N15 are those two shapes, and the
+## write-up that claimed "the catch-all is only ever reached when the folder
+## IS writable" was false for the whole of that round. Do not restore that
+## sentence: the ONLY thing the order licenses is what the first test actually
+## measured.
+##
+## The sentence that shipped before the repair round said "<folder> is your
+## simulation folder, and no place to write a test result could be made in it.
+## Check that you can write into it." -- it names the folder, which for the
+## shapes below is the one thing that is FINE. Row N11 holds the replacement
+## to the state it is minted for.
+
+## The two shapes, built here rather than described. Each returns the probe
+## place the sentence has to name, or empty when this box cannot build it.
+proc n_link {link target} {
+  if {![catch {file link -symbolic $link $target}]} { return 1 }
+  if {![catch {exec ln -s $target $link}]} { return 1 }
+  return 0
+}
+proc n_probe_free {dir} {
+  catch {file attributes $dir -permissions 0755}
+  foreach p [glob -nocomplain -directory $dir .ase_probe] {
+    catch {file attributes $p -permissions 0755}
+  }
+  file delete -force $dir
+}
+proc n_dangling {dir} {
+  n_probe_free $dir
+  file mkdir $dir
+  set b [a_nd $dir]
+  set link [file join $b .ase_probe]
+  set tgt  [file join $b zzgone]
+  a_wr $tgt "zz a target that is about to go away\n"
+  if {![n_link $link $tgt]} { return {} }
+  file delete -force $tgt
+  if {[file exists $link]} { return {} }
+  return [file normalize $link]
+}
+proc n_roprobe {dir} {
+  n_probe_free $dir
+  file mkdir $dir
+  set b [a_nd $dir]
+  set p [file join $b .ase_probe]
+  file mkdir $p
+  catch {file attributes $p -permissions 0555}
+  return [file normalize $p]
+}
+## CREATABILITY, TESTED BY TRYING, which is the only honest test on a
+## directory -- and this row-side copy is deliberately NOT the one under test,
+## so a fix that answers by inference cannot make its own test agree with it.
+## Leaves nothing behind on either answer.
+proc n_can_create {dir} {
+  set t [file join $dir .zz_row_try_[pid]_[clock clicks]]
+  if {[file exists $t]} { return 0 }
+  if {[catch {file mkdir $t}]} { return 0 }
+  if {![file isdirectory $t]} { return 0 }
+  catch {file delete -force -- $t}
+  return 1
+}
+
+
+## SHAPE ONE, THROUGH THE REAL SEAM. The answer has to carry the probe place,
+## not the folder: the folder is writable and there is nothing for the user to
+## do to it, while `<folder>/.ase_probe` is the one thing they can delete.
+set N9DIR [file join $scratch n9dangling]
+set N9AT [n_dangling $N9DIR]
+if {$N9AT eq {}} {
+  puts "  N9 SKIPPED LOUDLY: this box could not make a dangling symbolic link"
+  set N9GOT SKIP-NO-DANGLING ; set N9EXP SKIP-NO-DANGLING
+} else {
+  a_resetall
+  a_use ngcap-n9 $S_F1
+  set N9W [a_capfields ngspice {known unmeasured noplace_why noplace_at}]
+  set N9R [a_report ngspice 2]
+  set N9GOT [list $N9W [a_rep_rv $N9R] [a_rep_n $N9R] \
+                  [expr {[string first $N9AT [a_rep_msg $N9R]] >= 0}] \
+                  [expr {[file writable [file dirname $N9AT]]}]]
+  set N9EXP [list [list 0 noplace other $N9AT] cap_noplace 1 1 1]
+}
+a_nd $NDBASE
+check {N9 a dangling symbolic link left at the probe place is said out loud, and what is said names that place and not the folder, which is fine} $N9GOT $N9EXP
+
+## SHAPE TWO. A .ase_probe that exists, is a directory, and cannot be written
+## into: every one of the 64 attempts to make a place inside it fails. The
+## sentence is neither of the other two arms'.
+set N10DIR [file join $scratch n10roprobe]
+set N10AT [n_roprobe $N10DIR]
+if {[file writable $N10AT]} {
+  puts "  N10 SKIPPED LOUDLY: this box can write into a folder with no write permission on it"
+  set N10GOT SKIP-NO-RO ; set N10EXP SKIP-NO-RO ; set N10SAY {}
+} else {
+  a_resetall
+  a_use ngcap-n10 $S_F1
+  set N10W [a_capfields ngspice {known unmeasured noplace_why noplace_at}]
+  set N10R [a_report ngspice 2]
+  set N10SAY [a_rep_msg $N10R]
+  set N10GOT [list $N10W [a_rep_rv $N10R] [a_rep_n $N10R] \
+                   [expr {[string first $N10AT $N10SAY] >= 0}] \
+                   [expr {$N10SAY ne [a_ans ase::sim_why cap_noplace {} $N10AT readonly]}] \
+                   [expr {$N10SAY ne [a_ans ase::sim_why cap_noplace {} $N10AT occupied]}] \
+                   [expr {[file writable [file dirname $N10AT]]}]]
+  set N10EXP [list [list 0 noplace other $N10AT] cap_noplace 1 1 1 1 1]
+}
+a_nd $NDBASE
+check {N10 a probe place that exists and cannot be written into is said out loud too, in words that are neither of the other two arms} $N10GOT $N10EXP
+
+## THE SENTENCE HELD TO THE STATE IT IS MINTED FOR. The three literals below
+## are this row's own, and they are the defect written down: the folder IS
+## writable whenever this arm is reached, so a sentence that tells the user to
+## check whether they can write into it names the wrong object and gives
+## advice that cannot help. It must say instead that the folder is fine and
+## name what they can act on.
+##
+## ⚠ THE LAST TWO FIELDS ARE THE POINT AND THEY ARE NOT THE SAME QUESTION.
+## `file writable` is what the code used to infer from and is kept here only
+## as the misleading witness; n_can_create is a REAL create, and it is the one
+## that has to say yes before the sentence may claim the folder can be written
+## into. Rows N14 and N15 are the shapes where the two disagree.
+if {$N10SAY eq {}} {
+  puts "  N11 SKIPPED LOUDLY: the catch-all sentence could not be reached on this box"
+  set N11GOT SKIP-NO-RO ; set N11EXP SKIP-NO-RO
+} else {
+  set N11GOT [list [a_plain $N10SAY {} $N10AT] \
+                   [expr {[string first {Check that you can write into it} $N10SAY] >= 0}] \
+                   [expr {[string first {can be written into} $N10SAY] >= 0}] \
+                   [expr {[file writable [file dirname $N10AT]]}] \
+                   [n_can_create [file dirname $N10AT]]]
+  set N11EXP [list PLAIN 0 1 1 1]
+}
+check {N11 the catch-all sentence is true of the state it is minted for: it says the simulation folder can be written into, instead of telling the user to check something that is already so} $N11GOT $N11EXP
+
+## ISSUE 0960's OWN DEFECT SURVIVING INSIDE ITS FIX, and it is the reason this
+## repair exists. Measured live on the built binary, ONE process, no registry
+## edit and no ase::sim_caps_clear between the two facts: a read-only folder
+## said its sentence; the user made the folder writable and met the catch-all;
+## rv={} said={}. ase::cap_noplace_once was keyed on the PLACE alone and both
+## arms answered with the folder, so the second fact was withheld -- which is
+## exactly the silence this issue was filed about.
+set N12DIR [file join $scratch n12fuse]
+n_probe_free $N12DIR
+file mkdir $N12DIR
+set N12B [file normalize [a_nd $N12DIR]]
+catch {file attributes $N12DIR -permissions 0555}
+if {[file writable $N12DIR]} {
+  puts "  N12 SKIPPED LOUDLY: this box can write into a folder with no write permission on it"
+  set N12GOT SKIP-NO-RO ; set N12EXP SKIP-NO-RO
+} else {
+  a_resetall
+  a_use ngcap-n12 $S_F1
+  set N12A [a_report ngspice 2]
+  catch {file attributes $N12DIR -permissions 0755}
+  set N12P [file join $N12B .ase_probe]
+  file mkdir $N12P
+  catch {file attributes $N12P -permissions 0555}
+  set N12C [a_report ngspice 2]
+  set N12GOT [list [a_rep_rv $N12A] [a_rep_rv $N12C] \
+                   [expr {[a_rep_msg $N12C] ne [a_rep_msg $N12A]}] \
+                   [a_capf ngspice noplace_why]]
+  set N12EXP [list cap_noplace cap_noplace 1 other]
+}
+a_nd $NDBASE
+check {N12 a user who fixes the read-only folder and then meets the catch-all is told the second fact too, in one session and with no registry edit} $N12GOT $N12EXP
+
+## AND THE KEY ITSELF, on the pair that shares a place. The catch-all and the
+## occupied arm both answer with the probe place, so nothing but a key that
+## carries WHAT was wrong can tell "a file is sitting there" from "it exists
+## and cannot be used". The user deletes the leftover file, something puts a
+## directory there that the probe cannot write into, and both facts are about
+## one path in one session.
+set N13DIR [file join $scratch n13key]
+set N13AT [n_occupied $N13DIR]
+a_resetall
+a_use ngcap-n13 $S_F1
+set N13A [a_report ngspice 2]
+file delete -force $N13AT
+file mkdir $N13AT
+catch {file attributes $N13AT -permissions 0555}
+if {[file writable $N13AT]} {
+  puts "  N13 SKIPPED LOUDLY: this box can write into a folder with no write permission on it"
+  set N13GOT SKIP-NO-RO ; set N13EXP SKIP-NO-RO
+} else {
+  set N13B [a_report ngspice 2]
+  set N13GOT [list [a_rep_rv $N13A] [a_capf ngspice noplace_at] \
+                   [a_capf ngspice noplace_why] [a_rep_rv $N13B] \
+                   [expr {[a_rep_msg $N13B] ne [a_rep_msg $N13A]}]]
+  set N13EXP [list cap_noplace $N13AT other cap_noplace 1]
+}
+a_nd $NDBASE
+check {N13 two different things wrong at ONE probe place are two different facts, and the second is not swallowed by the first} $N13GOT $N13EXP
+
+## ==========================================================================
+## THE SHAPE `file writable` CANNOT SEE (issue 0960, close-out round)
+## ==========================================================================
+## `file writable` on a DIRECTORY is POSIX access(W_OK). It answers about the
+## WRITE bit and says nothing whatever about the SEARCH (x) bit, and a create
+## needs both. A simulation folder at mode 0600 -- what `chmod -R 600 project/`
+## leaves behind, the reflex after a leaked secret -- therefore ANSWERS
+## `file writable` 1 and REFUSES EVERY CREATE. Measured on this box, in one
+## tclsh, before these rows were written:
+##
+##   mode 0600 : file writable = 1 | mkdir "permission denied" | touch the same
+##   mode 0200 : file writable = 1 | mkdir "permission denied" | touch the same
+##
+## That is why the rows below exist and why they are not a corner case: an
+## ordinary permission accident lands a whole family of folders here.
+##
+## ⚠ ON THE TREE THESE ROWS WERE WRITTEN AGAINST BOTH SHAPES LANDED IN THE
+## CATCH-ALL, because ase::cap_noplace_at INFERRED creatability from
+## `file writable`. Driven live through ase::sim_capabilities +
+## ase::cap_report on the built binary, mode 0600:
+##   noplace_why = other, noplace_at = <folder>/.ase_probe, rv = cap_noplace
+## and the sentence the user read was
+##   "... <folder>/.ase_probe is where a test result has to go, and it could
+##    not be made or used. Your simulation folder itself can be written into,
+##    so delete <folder>/.ase_probe or make it writable."
+## BOTH CLAUSES FALSE: nothing can be written into that folder, and there is
+## no .ase_probe to delete. These two rows hold the answer to what a real
+## create does, not to what access(W_OK) says.
+
+## The two shapes. Each returns the SIMULATION FOLDER -- the object the
+## sentence has to name, because the fix is the folder's permissions.
+proc n_mode {dir mode} {
+  n_probe_free $dir
+  file mkdir $dir
+  set b [file normalize [a_nd $dir]]
+  catch {file attributes $b -permissions $mode}
+  return $b
+}
+## MODE 0600 -- rw, no search. The row pins the trap itself: `file writable`
+## says 1 on this folder, a real create says no, and the answer has to follow
+## the create. It must be the FOLDER's arm (the user's fix is chmod), it must
+## name the folder, and it must NOT tell them the folder can be written into.
+set N14DIR [file join $scratch n14mode0600]
+set N14AT [n_mode $N14DIR 0600]
+if {[n_can_create $N14AT]} {
+  puts "  N14 SKIPPED LOUDLY: this box can create inside a folder with no search bit"
+  set N14GOT SKIP-NO-NOX ; set N14EXP SKIP-NO-NOX
+} else {
+  a_resetall
+  a_use ngcap-n14 $S_F1
+  set N14W [a_capfields ngspice {known unmeasured noplace_why noplace_at}]
+  set N14R [a_report ngspice 2]
+  set N14SAY [a_rep_msg $N14R]
+  set N14GOT [list $N14W [a_rep_rv $N14R] [a_rep_n $N14R] \
+                   [expr {[file writable $N14AT]}] \
+                   [expr {[string first $N14AT $N14SAY] >= 0}] \
+                   [expr {[string first {can be written into} $N14SAY] >= 0}] \
+                   [expr {$N14SAY eq [a_ans ase::sim_why cap_noplace {} $N14AT readonly]}] \
+                   [a_plain $N14SAY {} $N14AT]]
+  set N14EXP [list [list 0 noplace readonly $N14AT] cap_noplace 1 1 1 0 1 PLAIN]
+}
+catch {file attributes $N14AT -permissions 0755}
+a_nd $NDBASE
+check {N14 a simulation folder at mode 0600 -- write bit set, no search bit, so `file writable` says yes and every create is refused -- is reported as the folder that will not take a new entry, not as a probe place to delete} $N14GOT $N14EXP
+
+## MODE 0200 -- write only. Same arm, and this row carries the half that makes
+## the advice actionable: there is NOTHING at the probe place (the folder
+## cannot even be looked into), so a sentence offering a file to delete is
+## advice the user cannot carry out.
+set N15DIR [file join $scratch n15mode0200]
+set N15AT [n_mode $N15DIR 0200]
+if {[n_can_create $N15AT]} {
+  puts "  N15 SKIPPED LOUDLY: this box can create inside a write-only folder"
+  set N15GOT SKIP-NO-NOX ; set N15EXP SKIP-NO-NOX
+} else {
+  a_resetall
+  a_use ngcap-n15 $S_F1
+  set N15W [a_capfields ngspice {known unmeasured noplace_why noplace_at}]
+  set N15R [a_report ngspice 2]
+  set N15SAY [a_rep_msg $N15R]
+  set N15GOT [list $N15W [a_rep_rv $N15R] [a_rep_n $N15R] \
+                   [expr {[file writable $N15AT]}] \
+                   [expr {[file exists [file join $N15AT .ase_probe]]}] \
+                   [expr {[string first {can be written into} $N15SAY] >= 0}] \
+                   [expr {[string first {Delete or rename that file} $N15SAY] >= 0}] \
+                   [expr {$N15SAY ne [a_ans ase::sim_why cap_noplace {} $N15AT occupied]}]]
+  set N15EXP [list [list 0 noplace readonly $N15AT] cap_noplace 1 1 0 0 0 1]
+}
+catch {file attributes $N15AT -permissions 0755}
+a_nd $NDBASE
+check {N15 a write-only simulation folder lands in the same arm, and what is said offers no file to delete, because there is none and the folder cannot even be looked into} $N15GOT $N15EXP
+
+## ⚠ THIS ROW WAS NOT RED BEFORE THE FIX AND CANNOT HAVE BEEN. It guards a
+## cost the fix introduces: answering "will this folder take a new entry?" by
+## TRYING means making and removing an entry in the user's simulation folder.
+## Before the fix nothing tried, so there was nothing to leave behind. It is
+## proved by SABOTAGE instead -- drop the delete from ase::cap_dir_takes_entry
+## and this row reddens by name while N9 and N10 stay green.
+##
+## The shape is the catch-all one, which is the only one where the trial
+## SUCCEEDS: the folder takes an entry and `.ase_probe` is what cannot be
+## used. Expected leftovers are exactly what the fixture put there.
+set N16DIR [file join $scratch n16litter]
+set N16AT [n_roprobe $N16DIR]
+if {[file writable $N16AT]} {
+  puts "  N16 SKIPPED LOUDLY: this box can write into a folder with no write permission on it"
+  set N16GOT SKIP-NO-RO ; set N16EXP SKIP-NO-RO
+} else {
+  set N16ND [file normalize [file dirname $N16AT]]
+  a_resetall
+  a_use ngcap-n16 $S_F1
+  set N16BEFORE [a_walk $N16ND]
+  set N16R [a_report ngspice 2]
+  set N16AFTER [a_walk $N16ND]
+  set N16GOT [list [a_rep_rv $N16R] $N16BEFORE $N16AFTER]
+  set N16EXP [list cap_noplace [list .ase_probe] [list .ase_probe]]
+}
+a_nd $NDBASE
+check {N16 finding out whether the folder will take a new entry leaves nothing behind in the user's simulation folder} $N16GOT $N16EXP
+
+## ⚠ N17 -- THE ARM THIS ROUND ALMOST SHIPPED WRONG, and the shape an earlier
+## comment in src/ase.tcl called unreachable. `set_netlist_dir` creates the
+## folder only `if {![file exist $netlist_dir]}`, so a ::netlist_dir naming an
+## existing REGULAR FILE is handed back verbatim and reaches the probe. Before
+## the `notdir` arm the folder arm answered, and a regular file was called
+## "your simulation folder" with advice -- give it write and search permission
+## -- that cannot be carried out on a file. The row pins the object AND the
+## advice: it must not say "your simulation folder", must not offer permissions
+## as the fix, and must say it is a file.
+set N17F [file join $scratch n17plainfile]
+catch {file delete -force -- $N17F}
+set n17fh [open $N17F w] ; puts $n17fh {not a folder} ; close $n17fh
+set ::netlist_dir $N17F
+set N17AT [file normalize [set_netlist_dir 0]]
+a_resetall
+a_use ngcap-n17 $S_F1
+set N17W [a_capfields ngspice {known unmeasured noplace_why noplace_at}]
+set N17R [a_report ngspice 2]
+set N17SAY [a_rep_msg $N17R]
+set N17GOT [list $N17W [a_rep_rv $N17R] \
+                 [expr {[file isdirectory $N17AT]}] \
+                 [expr {[file isfile $N17AT]}] \
+                 [expr {[string first $N17AT $N17SAY] >= 0}] \
+                 [expr {[string first {is your simulation folder} $N17SAY] >= 0}] \
+                 [expr {[string first {search permission} $N17SAY] >= 0}] \
+                 [expr {[string first {is a file, not a folder} $N17SAY] >= 0}] \
+                 [a_plain $N17SAY {} $N17AT]]
+set N17EXP [list [list 0 noplace notdir $N17AT] cap_noplace 0 1 1 0 0 1 PLAIN]
+a_nd $NDBASE
+catch {file delete -force -- $N17F}
+check {N17 a simulation folder setting that names an existing regular file is reported as a file, never as "your simulation folder", and is not offered a permission fix that cannot be carried out} $N17GOT $N17EXP
+
+## ⚠ N18 -- THE ADVICE CLAUSE, which rows N14 and N15 CANNOT see. They compare
+## what was said against `ase::sim_why`'s own mint, so ANY wording satisfies
+## them: reverting the folder arm's advice to the old "Make it writable, or
+## choose another one" left the whole suite ALL PASS (measured 2026-09-07, the
+## close-out round's adversary). That wording is the one mode 0600 disproves --
+## `chmod u+w` changes nothing there, the missing bit is SEARCH -- and it is the
+## sentence the user is being asked to ratify on rule debt 0960. A sentence with
+## no row can regress green, so this row greps the clause itself.
+set N18SAY [a_ans ase::sim_why cap_noplace {} [file dirname $N5P] readonly]
+check {N18 the folder arm's advice names SEARCH permission, not just write -- the mode 0600 shape is refused by the search bit and chmod u+w does not help} \
+  [list [expr {[string first {search permission} $N18SAY] >= 0}] \
+        [expr {[string first {write and search} $N18SAY] >= 0}] \
+        [expr {[string first {Make it writable, or choose another one} $N18SAY] >= 0}]] \
+  [list 1 1 0]
+
+n_probe_free $N14DIR
+n_probe_free $N15DIR
+n_probe_free $N16DIR
+
+n_probe_free $N9DIR
+n_probe_free $N10DIR
+n_probe_free $N12DIR
+n_probe_free $N13DIR
+
+a_nd $NDBASE
+n_free $N1PLAIN
+n_free $N1DIR
+n_free $N3DIR
+n_free $N4DIR
+n_free $N7DIR
 
 # ============================================================================
 # H. NOTHING ELSE MOVED

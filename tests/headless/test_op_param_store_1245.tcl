@@ -325,6 +325,26 @@ proc check_true {name cond} { check $name [expr {$cond ? 1 : 0}] 1 }
 # --- locations (cwd-independent) --------------------------------------------
 set here [file normalize [file dirname [info script]]]      ;# tests/headless
 set repo [file normalize [file join $here .. ..]]           ;# repo root
+
+## ⚠ THE PROJECT SETTINGS FILE IS A SNAPSHOT, NOT AN ABSENCE (issue 1381).
+## Row H1 used to assert that `<repo>/.xschem` did not exist, which was true
+## only for as long as nothing ever SAVED a list there.  It is a legitimate
+## user artifact -- the RDW's Save button with project scope writes exactly
+## `<repo>/.xschem/op_param_lists.conf`, by design, and `op_param_lists::load`
+## reads it back at startup -- so a developer who had used the feature in their
+## own tree redded this suite for having used it, and the obvious way to green
+## it again is to delete their file.  That happened: a real saved list was
+## destroyed because a red row read as litter.  What H1 actually means is "THIS
+## SUITE WROTE NOTHING HERE", so take the file's identity before anything runs
+## and compare it at the end.
+proc ol_conf_stamp {} {
+  global repo
+  set f [file join $repo .xschem op_param_lists.conf]
+  if {![file exists $f]} { return {ABSENT} }
+  if {[catch {list [file size $f] [file mtime $f]} st]} { return {UNREADABLE} }
+  return $st
+}
+set H_CONF0 [ol_conf_stamp]
 source [file join $here scratch.tcl]
 set scratch [test_scratch op_param_store]
 set OL_AUDIT [file join $here full_audit.sh]
@@ -1677,6 +1697,256 @@ check {W7b a two-hop chain and a DANGLING link both resolve to the real file and
         [ol_lines_eq [ol_bytes $W7B_DEEPT] {param class mos annotation deeprow deeprow 0}] \
         [llength [glob -nocomplain -directory $W7B *.new]]] \
   [list 0 0 0 0 1 link 1 1 link 1 0 1 0 0]
+
+# W7c / W7d / W7e — THE TILDE AND THE BOUND (repair round, 2026-09-07).
+# The same hole as issue 1286's, because that resolver and this one are copies
+# of each other; fixed in both at once so they do not drift a third time.
+#
+# ⚠ `file join` AND `file normalize` EXPAND A LEADING TILDE; THE KERNEL DOES
+# NOT. A symlink whose stored target is literally `~/notes.conf` is, to the
+# operating system, a link into a folder NAMED `~` beside the link: readlink
+# says `~/notes.conf`, and with no such folder there the link reads as
+# DANGLING. Measured in tclsh: [file join /a/b {~/x}] answers `~/x`, and
+# `file normalize` then answers `/home/<you>/x`. So `_resolve_target` turned
+# such a link into a path in the user's HOME and `write_conf` OVERWROTE
+# WHATEVER FILE WAS ALREADY THERE while returning 1 — this issue's own headline
+# symptom, bytes somewhere else with rc still success, arriving through this
+# issue's own fix.
+#
+# THE REMEDY IS MEASURED, NOT INVENTED: put a `./` in front of the target
+# before joining. [file normalize [file join /a/b ./~/x]] answers `/a/b/~/x`,
+# kernel-identical, and the other target shapes are unchanged: `sub/y` ->
+# /a/b/sub/y, `/abs/z` -> /abs/z (absolute still wins), `../up.conf` ->
+# /a/up.conf.
+#
+# W7c overrides HOME for the duration of the call, so the row neither depends
+# on nor writes into the developer's real home directory.
+set W7C [file join $scratch w7c]
+file delete -force $W7C
+file mkdir $W7C
+## ⚠ `file join` CANNOT BUILD THIS PATH — it treats a bare ~ as absolute and
+## throws the prefix away — so the folder literally named ~ is spelled with a
+## slash.
+file mkdir $W7C/~
+set W7C_HOME [file join $scratch w7c_home]
+file delete -force $W7C_HOME
+file mkdir $W7C_HOME
+set W7C_BYST [file join $W7C_HOME w7cnotes.conf]
+ol_put $W7C_BYST "# KEEP ME: an unrelated file that happens to share the name\n"
+set W7C_LINK [file join $W7C w7clink.conf]
+set W7C_MK [catch {exec ln -s {~/w7cnotes.conf} $W7C_LINK}]
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7crow w7crow 0}}
+ol_ans ::op_param_lists::said_clear
+set W7C_HOME0 $::env(HOME)
+set ::env(HOME) $W7C_HOME
+set W7C_R [ol_ans ::op_param_lists::write_conf $W7C_LINK]
+set ::env(HOME) $W7C_HOME0
+set W7C_BYSTB [ol_bytes $W7C_BYST]
+check {W7c a link whose stored target starts with a tilde is followed the way the system follows it — as an ordinary folder named ~ beside the link — so the settings land there and an unrelated file of the same name in your home directory is left byte-for-byte as it was} \
+  [list $W7C_MK $W7C_R \
+        [expr {[catch {file type $W7C_LINK} W7C_T] ? "RAISED" : $W7C_T}] \
+        [ol_lines_eq [ol_bytes $W7C/~/w7cnotes.conf] {param class mos annotation w7crow w7crow 0}] \
+        $W7C_BYSTB] \
+  [list 0 1 link 1 "# KEEP ME: an unrelated file that happens to share the name\n"]
+
+# W7d — AND IT MUST NOT RAISE. `file normalize` RAISES on a `~nosuchuser` no
+# password entry matches (measured: `user "nosuchuser_xschem" doesn't exist`),
+# and this writer's own contract is "Returns 1, or 0 with a report; never
+# raises." Measured before this repair: write_conf raised.
+#
+# ⚠ THIS WRITER THEN SUCCEEDS, AND THAT IS THE RIGHT ANSWER HERE — unlike
+# ase::sim_write_conf, it creates a missing parent directory (the `file mkdir`
+# above), so the kernel-identical target `<link's dir>/~nosuchuser_xschem/…`
+# is made and written. The row's subject is WHERE the bytes are, not whether
+# the save failed: a directory literally named `~nosuchuser_xschem` beside the
+# link, and nothing under any real home.
+set W7D [file join $scratch w7d]
+file delete -force $W7D
+file mkdir $W7D
+set W7D_LINK [file join $W7D w7dlink.conf]
+set W7D_MK [catch {exec ln -s {~nosuchuser_xschem/list.conf} $W7D_LINK}]
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7drow w7drow 0}}
+ol_ans ::op_param_lists::said_clear
+set W7D_R [ol_ans ::op_param_lists::write_conf $W7D_LINK]
+check {W7d a link pointing into the home directory of a user who does not exist does NOT raise — this writer's contract is that it never does — and the settings land in a directory literally named ~nosuchuser_xschem beside the link, never under any real home} \
+  [list $W7D_MK $W7D_R [ol_nsaid] \
+        [expr {[catch {file type $W7D_LINK} W7D_T] ? "RAISED" : $W7D_T}] \
+        [ol_lines_eq [ol_bytes $W7D/~nosuchuser_xschem/list.conf] {param class mos annotation w7drow w7drow 0}] \
+        [llength [glob -nocomplain -directory $W7D *.new]]] \
+  [list 0 1 0 link 1 0]
+
+# W7e — THE BOUND AND THE SENTENCE MUST NAME THE SAME NUMBER. The refusal says
+# "more than 16 links deep". The resolver spends one pass per link and needs one
+# further pass to see that the last thing is not a link, so a loop of exactly 16
+# passes refused a chain of exactly 16. Measured before this repair: 15 saved,
+# 16 was refused as "more than 16".
+proc ol_mkchain {dir n leaf} {
+  file delete -force $dir
+  file mkdir $dir
+  ol_put [file join $dir $leaf] "# the real settings file\n"
+  for {set i [expr {$n - 1}]} {$i >= 0} {incr i -1} {
+    set t [expr {$i == $n - 1 ? $leaf : "c[expr {$i + 1}].conf"}]
+    catch {file link -symbolic [file join $dir c$i.conf] $t}
+  }
+  return [file join $dir c0.conf]
+}
+set W7E16 [ol_mkchain [file join $scratch w7e16] 16 w7ereal16.conf]
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7e16 w7e16 0}}
+ol_ans ::op_param_lists::said_clear
+set W7E16_R [ol_ans ::op_param_lists::write_conf $W7E16]
+set W7E17 [ol_mkchain [file join $scratch w7e17] 17 w7ereal17.conf]
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7e17 w7e17 0}}
+ol_ans ::op_param_lists::said_clear
+set W7E17_R [ol_ans ::op_param_lists::write_conf $W7E17]
+check {W7e a chain of exactly sixteen links still saves and only the seventeenth is refused — the number the refusal sentence names and the number the resolver allows are the same number} \
+  [list $W7E16_R \
+        [ol_lines_eq [ol_bytes [file join $scratch w7e16 w7ereal16.conf]] {param class mos annotation w7e16 w7e16 0}] \
+        [expr {[catch {file type $W7E16} W7E_T] ? "RAISED" : $W7E_T}] \
+        $W7E17_R [ol_saidmatch {*more than 16*}] \
+        [ol_lines_eq [ol_bytes [file join $scratch w7e17 w7ereal17.conf]] {param class mos annotation w7e17 w7e17 0}]] \
+  [list 1 1 link 0 1 0]
+
+# W7f .. W7i — THE TEMPORARY FILE IS PART OF THE TARGET (issue 1378), AND THE
+# TILDE SHAPE THAT NEITHER DANGLES NOR RAISES (close-out round, 2026-09-07).
+# The same hole as issue 1286's, in both writers, fixed in both at once — this
+# is the fourth member of the family (directory target, symlink target, tilde
+# target, chain bound) and the last one 1276/1286 had open.
+#
+# ⚠ THE RESOLVER ABOVE GUARDS `$path`. NOTHING GUARDED `[_tmpname $path]`. The
+# temp name is deterministic, `open <tmp> w` FOLLOWS a symbolic link and
+# `file rename` does NOT, so a stale `<conf>.new` left behind as a link meant:
+# the settings were written THROUGH the link into an unrelated file, and then
+# the LINK ITSELF was moved onto the user's settings file. Measured on this
+# writer before the repair, verbatim from W7f's RED line: rc 1, nothing said,
+# the settings file is now a `link`, and the bystander lost its own content and
+# gained the settings. rc 1, zero reports, bytes somewhere the user never named
+# — this issue's own headline symptom, one step further down.
+#
+# THE REMEDY, AND WHAT IT DOES ABOUT THE RACE. A leftover temp of a kind this
+# writer could have left (a regular file, or a link) is REMOVED first, and the
+# temp is then created with CREAT|EXCL, which POSIX requires to FAIL on an
+# existing path including a symbolic link, dangling or not. Measured in tclsh
+# 8.6.17 on this tree: `open <link> {WRONLY CREAT EXCL} 0666` raises `file
+# already exists` over a link to a real file, over a DANGLING link and over a
+# directory, and the link's target is left untouched; `open <path> w` over a
+# dangling link CREATES the target. So the unlink/create window is still there
+# and is NOT closed by ordering — what closes it is that anything planted in it
+# makes the create FAIL and the user is told, instead of the write being
+# followed somewhere else.
+#
+# ⚠ AND THE REMOVAL MUST NEVER BE `file delete -force`. Row W1 above makes
+# `<path>.new` a DIRECTORY on purpose, and a user's directory at that name is
+# not this writer's to delete: `file delete -force` removes a directory tree,
+# and `file delete` with no -force removes an EMPTY one (measured, both). W7h
+# below is the fence: a NON-EMPTY directory at the temp name, with a file
+# inside it that must still be there afterwards.
+
+# W7f — RED ON THE TREE AS FOUND. This is the row issue 1378 was filed for.
+set W7F [file join $scratch w7f]
+file delete -force $W7F
+file mkdir $W7F
+set W7F_CONF [file join $W7F op_param_lists.conf]
+set W7F_BYST [file join $W7F unrelated_notes.txt]
+ol_put $W7F_CONF "# the settings file the user has\nversion 2\n"
+ol_put $W7F_BYST "# KEEP ME: an unrelated file the user also keeps in this directory\n"
+set W7F_BEFORE [ol_bytes $W7F_BYST]
+## The temp name is deterministic, so nothing has to be guessed to arrange this.
+set W7F_MK [catch {exec ln -s unrelated_notes.txt $W7F_CONF.new}]
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7frow w7frow 0}}
+ol_ans ::op_param_lists::said_clear
+set W7F_R [ol_ans ::op_param_lists::write_conf $W7F_CONF]
+set W7F_AFTER [ol_bytes $W7F_BYST]
+check {W7f a stale temporary file left behind as a symlink is not written through — your settings file stays a real file of its own instead of quietly becoming a link, and the unrelated file that link pointed at keeps its own bytes} \
+  [list $W7F_MK $W7F_R \
+        [expr {[catch {file type $W7F_CONF} W7F_T] ? "RAISED" : $W7F_T}] \
+        [ol_lines_eq [ol_bytes $W7F_CONF] {param class mos annotation w7frow w7frow 0}] \
+        [expr {$W7F_AFTER eq $W7F_BEFORE ? 1 : 0}] \
+        [ol_count $W7F_AFTER w7frow] \
+        [llength [glob -nocomplain -directory $W7F *.new]]] \
+  [list 0 1 file 1 1 0 0]
+
+# W7g IS THE COUNTERWEIGHT AND IT WAS GREEN ON THE TREE AS FOUND. A guard that
+# refuses a stale temp is worthless if it also refuses the ordinary leftover
+# this writer itself drops on a mid-save failure — the user would then have a
+# save that can never succeed again. Its sabotage is dropping the removal and
+# keeping the exclusive create.
+set W7G [file join $scratch w7g]
+file delete -force $W7G
+file mkdir $W7G
+set W7G_CONF [file join $W7G op_param_lists.conf]
+ol_put $W7G_CONF "# the settings file the user has\nversion 2\n"
+ol_put $W7G_CONF.new "ZZ_STALE_TEMP left behind by a save that was interrupted\n"
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7grow w7grow 0}}
+ol_ans ::op_param_lists::said_clear
+set W7G_R [ol_ans ::op_param_lists::write_conf $W7G_CONF]
+set W7G_TXT [ol_bytes $W7G_CONF]
+check {W7g an ordinary leftover temporary file from an earlier interrupted save is simply replaced — the save still succeeds, says nothing, leaves no temporary behind and none of the stale text is in your settings file} \
+  [list $W7G_R [expr {[catch {file type $W7G_CONF} W7G_T] ? "RAISED" : $W7G_T}] \
+        [ol_lines_eq $W7G_TXT {param class mos annotation w7grow w7grow 0}] \
+        [ol_count $W7G_TXT ZZ_STALE_TEMP] \
+        [llength [glob -nocomplain -directory $W7G *.new]] [ol_nsaid]] \
+  [list 1 file 1 0 0 0]
+
+# W7h IS A FENCE AND IT WAS GREEN ON THE TREE AS FOUND. It forbids the obvious
+# wrong shape of W7f's fix — an unconditional `file delete -force` on the temp
+# name — from becoming a new hole of the very family this issue is about. W1
+# above uses an EMPTY directory, which a plain `file delete` also removes; this
+# one has a file inside it that has to still be there.
+set W7H [file join $scratch w7h]
+file delete -force $W7H
+file mkdir $W7H
+set W7H_CONF [file join $W7H op_param_lists.conf]
+ol_put $W7H_CONF "# keepw7h the settings file the user has\nversion 2\nparam class mos annotation keepw7h keepw7h 0\n"
+set W7H_BEFORE [ol_bytes $W7H_CONF]
+file mkdir $W7H_CONF.new
+ol_put [file join $W7H_CONF.new inside_the_folder] "DO NOT DELETE ME\n"
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7hrow w7hrow 0}}
+ol_ans ::op_param_lists::said_clear
+set W7H_R [ol_ans ::op_param_lists::write_conf $W7H_CONF]
+check {W7h a directory sitting at the temporary name is never deleted to make room — the save is refused with a sentence, the directory and the file inside it are still there, and the settings file you already had is untouched} \
+  [list $W7H_R [expr {[ol_nsaid] >= 1 ? 1 : 0}] \
+        [expr {[catch {file type $W7H_CONF.new} W7H_T] ? "RAISED" : $W7H_T}] \
+        [ol_count [ol_bytes [file join $W7H_CONF.new inside_the_folder]] {DO NOT DELETE ME}] \
+        [expr {[ol_bytes $W7H_CONF] eq $W7H_BEFORE ? 1 : 0}] \
+        [ol_lines_eq [ol_bytes $W7H_CONF] {param class mos annotation w7hrow w7hrow 0}]] \
+  [list 0 1 directory 1 1 0]
+
+# W7i — THE TILDE SHAPE NO ROW COVERED, AND IT IS THE WORST OF THE THREE.
+# GREEN ON THE TREE AS FOUND: the `./` guard landed last round and this row
+# covers a shape that guard was never measured against. W7c uses `~/x`, which
+# DANGLES, and W7d uses `~nosuchuser/x`, which RAISES. Neither is the shape
+# that goes quietly wrong: `~<a user who really exists>/x` neither dangles nor
+# raises — `file normalize` hands back that user's REAL home directory and the
+# writer would write there. Measured in tclsh: [file normalize [file join /a/b
+# {~root/x}]] -> /root/x, against /a/b/~root/x with the guard.
+#
+# `root` is used because it is the one account every one of these machines has
+# and the one no test may write into: if the guard is ever dropped the row reds
+# on the RETURN VALUE, because the save into /root is refused by the operating
+# system, rather than by actually putting a file there.
+set W7I [file join $scratch w7i]
+file delete -force $W7I
+file mkdir $W7I
+set W7I_LINK [file join $W7I w7ilink.conf]
+set W7I_MK [catch {exec ln -s {~root/list.conf} $W7I_LINK}]
+ol_reset
+ol_ans ::op_param_lists::set_list class mos annotation {{w7irow w7irow 0}}
+ol_ans ::op_param_lists::said_clear
+set W7I_R [ol_ans ::op_param_lists::write_conf $W7I_LINK]
+check {W7i a link whose stored target names the home directory of a user who really does exist is still followed the way the system follows it — into an ordinary directory named after that user beside the link — and not into that user's real home directory} \
+  [list $W7I_MK $W7I_R [ol_nsaid] \
+        [expr {[catch {file type $W7I_LINK} W7I_T] ? "RAISED" : $W7I_T}] \
+        [ol_lines_eq [ol_bytes $W7I/~root/list.conf] {param class mos annotation w7irow w7irow 0}] \
+        [expr {[file exists /root/list.conf] ? 1 : 0}] \
+        [llength [glob -nocomplain -directory $W7I *.new]]] \
+  [list 0 1 0 link 1 0 0]
 
 # A TARGET THAT EXISTS BUT CANNOT BE READ. Under DD-7 the writer READS the file
 # it is about to write, so an unreadable-but-present target is a new failure
@@ -4884,14 +5154,873 @@ set ::rdw::blocks {}
 ol_ans ::rdw::set_list annotation
 ol_ans ::rdw::status {}
 
+# ============================================================================
+# SECTION PK — ISSUE 1388: THE SETTINGS FILE TAKES THE PDK INTO ACCOUNT
+# ============================================================================
+# The user's words, 2026-09-07: "When saving config - such as parameter lists
+# ... the PDK should be taken into account - user might want something
+# different for sky130 and gf180mcu. A given launch, with a set of libraries
+# will not have more than one PDK included." They were then shown two shapes
+# and RULED: ONE FILE, PDK SECTIONS, `[pdk sky130A]`, and the PDK section beats
+# the un-scoped rows.
+#
+# ⚠ THE CRUX WAS NOT THE GRAMMAR, IT WAS THE IDENTITY, AND THREE OF THE FOUR
+# CANDIDATES DIE ON CONTACT. Measured 2026-09-08 by sourcing each of this
+# tree's three workarea rcs in a live xschem on :99 and printing what is set:
+#
+#   workarea      env(PDK)     env(PDK_ROOT)  ::PDK      XSCHEM_LIBRARY_PATH
+#   sky130A       sky130A      UNSET          sky130A    {} (EMPTY)
+#   gf180mcuD     gf180mcuD    UNSET          UNSET      {} (EMPTY)
+#   ihp-sg13g2    ihp-sg13g2   UNSET          UNSET      {} (EMPTY)
+#
+#   * `env(PDK)` is set by all three, distinct, and is the name a person types.
+#   * `env(PDK_ROOT)` is set by NONE of them. sky130A sets a TCL GLOBAL
+#     `::PDK_ROOT` = `/home/analog/eda/tools/share/pdk`, the directory that
+#     HOLDS pdks — a LOCATION, identical for every PDK in one open_pdks
+#     install, so keyed on it every PDK would share one section.
+#   * `$::XSCHEM_LIBRARY_PATH` is EMPTY in all three (registry-only Cadence
+#     mode sets it so). It does not distinguish the three PDKs; it
+#     distinguishes nothing.
+#   * THE REGISTERED DESCRIPTORS CANNOT TELL sky130A FROM gf180mcuD, WHICH IS
+#     THE USER'S OWN EXAMPLE: both register exactly {nmos pmos} and both
+#     declare byte-identical `{id id 0} {gm gm 1} {gds gds 1} {vgs vgs 2}
+#     {vth vth 2} {vds vds 2}`. Only IHP differs. The most semantically honest
+#     candidate is the one that cannot answer the question that was asked.
+#
+# ⚠ AND THE HARD PART IS *WHEN*, NOT WHICH. `catch {op_param_lists::load}`
+# (xschem.tcl:17550) runs while xschem.tcl is sourced; a workarea is entered
+# with `--script <ws>/cadence_style_rc`, which xinit.c:3793 sources AFTER that.
+# MEASURED: `env(PDK)` is UNSET at the top of the --script phase, which is
+# already later than the load. So the three shipped rcs now DECLARE the PDK
+# (`op_param_lists::set_pdk`), which re-reads the two tiers — row PK11 pins
+# that wiring, because without it the feature is dead for exactly the three
+# PDKs this tree ships and every row below would still be green.
+#
+# ⚠ WHAT IS NOT HERE, DELIBERATELY. No store key gains a PDK field and nothing
+# merges two PDKs: the user's own constraint makes the PDK a PER-PROCESS
+# CONSTANT, so a row for another PDK is never parsed into the store at all.
+# That is the same structural move DD-7 makes about provenance — you cannot
+# leak a row you never read — and it is why `effective`, `governs`, `apply`
+# and every existing row are untouched by this item.
+#
+# ⚠ AND THE VERSION DOES NOT MOVE. Row PK12 pins it: the user's real file says
+# `version 2` and is completely correct under this grammar, so a bump would
+# report a mismatch at every launch about a file with nothing wrong with it and
+# DD-11 would then rewrite their version line for no behavioural reason.
+
+set PK_OLDPDK [ol_ans ::op_param_lists::pdk]
+set PK_ROOT [file join $scratch pdk1388]
+file mkdir $PK_ROOT
+proc pk_conf {name lines} {
+  global PK_ROOT
+  return [ol_conf [file join $PK_ROOT $name] $lines]
+}
+## Load a fixture under a named PDK from a clean store, and answer what a
+## reader gets. NEVER `load` — these rows are about ONE file, and the two-tier
+## reader is section T's subject and the fence's, below.
+proc pk_load {conf pdkname args} {
+  ol_reset
+  ol_ans ::op_param_lists::forget_pdk
+  if {$pdkname ne {NONE}} { ol_ans ::op_param_lists::set_pdk $pdkname }
+  ol_ans ::op_param_lists::load_conf $conf 0
+  set out {}
+  foreach a $args { lappend out [ol_ans ::op_param_lists::get_list class $a annotation] }
+  return $out
+}
+
+## ONE CHILD, ONE CWD, ONE PDK — the only way to ask what a real LAUNCH does.
+## `env -u PDK` is how "this launch has no PDK" is expressed to a real process,
+## and it must be explicit: inheriting the parent's environment would make the
+## no-PDK arm depend on the developer's shell. `2>@1` is deliberate — the
+## store's reports go to stderr, so a row that counts what the USER SEES
+## (PK14) reads them here and nowhere else. Used by PK14 and by PK20/PK21.
+proc pk_child {dir pdkname kid} {
+  global OL_BIN
+  set sh "cd [list $dir] && exec [list $OL_BIN] --nogui --pipe -q --nolog --script [list $kid]"
+  if {$pdkname eq {NONE}} {
+    set pre [list env -u PDK]
+  } else {
+    set pre [list env PDK=$pdkname]
+  }
+  if {[catch {exec {*}$pre sh -c $sh 2>@1} out]} { return "EXECFAIL:$out" }
+  return $out
+}
+proc pk_field {txt name} {
+  if {[regexp "$name=(\[^\n\]*)" $txt -> v]} { return [string trim $v] }
+  return "NO$name"
+}
+
+## Where did a row land? The line number of the first line carrying <needle>,
+## 0 for none — so a row can compare a written row's position against the
+## header's rather than trusting a whole-file string compare.
+proc pk_lineof {txt needle} {
+  set n 0
+  foreach l [split $txt "\n"] { incr n ; if {[string first $needle $l] >= 0} { return $n } }
+  return 0
+}
+
+# --- PK0: the identity, as the shipped workareas actually declare it ---------
+# STRUCTURAL, so it reds when a workarea stops declaring rather than when a
+# probe happens not to be run. The three greps are the three measurements in
+# the header above, taken from the files themselves.
+set PK0 {}
+foreach _ws {sky130A gf180mcuD ihp-sg13g2} {
+  set _rc [ol_slurp [file join $repo $_ws cadence_style_rc]]
+  lappend PK0 [expr {[ol_count $_rc "set ::env(PDK) $_ws"] >= 1 ? 1 : 0}]
+  lappend PK0 [ol_count $_rc {set XSCHEM_LIBRARY_PATH {}}]
+  lappend PK0 [ol_count $_rc {env(PDK_ROOT)}]
+}
+check {PK0 THE IDENTITY IS `env(PDK)` AND THE OTHER CANDIDATES ARE MEASURABLY DEAD: each of the three shipped workarea rcs names its own PDK in env(PDK), each sets XSCHEM_LIBRARY_PATH to EMPTY so the library path distinguishes nothing at all, and not one of them ever mentions env(PDK_ROOT)} \
+  $PK0 {1 1 0 1 1 0 1 1 0}
+
+# --- PK1: the one definition of this launch's PDK ---------------------------
+ol_reset
+ol_ans ::op_param_lists::forget_pdk
+set PK1_ENV0 [ol_ans ::op_param_lists::pdk]
+set ::env(PDK) pk_from_env
+set PK1_ENV1 [ol_ans ::op_param_lists::pdk]
+ol_ans ::op_param_lists::set_pdk pk_declared
+set PK1_DECL [ol_ans ::op_param_lists::pdk]
+ol_ans ::op_param_lists::forget_pdk
+set PK1_BACK [ol_ans ::op_param_lists::pdk]
+ol_ans ::op_param_lists::said_clear
+ol_ans ::op_param_lists::set_pdk {two words}
+set PK1_BADN [ol_ans ::op_param_lists::pdk]
+set PK1_BADS [ol_nsaid]
+set PK1_BADT [expr {[string first {could not be written} [ol_saidtext]] >= 0 ? 1 : 0}]
+ol_ans ::op_param_lists::forget_pdk
+unset -nocomplain ::env(PDK)
+set PK1_GONE [ol_ans ::op_param_lists::pdk]
+check {PK1 ONE DEFINITION OF THIS LAUNCH'S PDK: nothing set answers empty, the PDK environment variable answers itself, an explicit declaration beats the environment, forgetting the declaration goes back to the environment, and a name carrying whitespace is REFUSED with a sentence and leaves the launch with NO PDK rather than a name no section header could be written with} \
+  [list $PK1_ENV0 $PK1_ENV1 $PK1_DECL $PK1_BACK $PK1_BADN $PK1_BADS $PK1_BADT $PK1_GONE] \
+  {{} pk_from_env pk_declared pk_from_env {} 1 1 {}}
+
+# --- PK1b: THE HEADER SPELLER AND THE HEADER PARSER ARE INVERSES ------------
+# ⚠ MINTED BY THIS ITEM'S ADVERSARY, WHO DELETED `_pdk_why`'s SECOND REFUSAL
+# OUTRIGHT AND LEFT THE WHOLE SUITE GREEN. Two things were unfenced and they
+# are the same thing seen from each side: `_pdk_why` refuses a name carrying
+# `]` (its own comment claimed whitespace was "the one refusal"), and
+# `_scope_header`'s `pdk` arm — the WRITING half of the pair — had no
+# production caller at all, because the shipped Save invents no section.
+# So this row makes the pair its caller: for every name the store ACCEPTS,
+# spelling a header and parsing it back is the identity; for each of the two it
+# REFUSES, that round trip is exactly what breaks — `[pdk a b]` parses as no
+# header at all and `[pdk a]b]` comes back as the PDK `a`, silently answering a
+# different launch. The refusals are not taste; they are this round trip.
+set PK1B_OK {} ; set PK1B_OKW {}
+foreach _n {sky130A gf180mcuD ihp-sg13g2 sg13g2 A * 130a-plus.2} {
+  lappend PK1B_OKW [ol_ans ::op_param_lists::_pdk_why $_n]
+  lappend PK1B_OK [ol_ans ::op_param_lists::_section_of \
+                     [ol_ans ::op_param_lists::_scope_header [list pdk $_n]]]
+}
+set PK1B_EXPOK {} ; set PK1B_EXPW {}
+foreach _n {sky130A gf180mcuD ihp-sg13g2 sg13g2 A 130a-plus.2} {
+  lappend PK1B_EXPOK [list ok [list pdk $_n]] ; lappend PK1B_EXPW {}
+}
+## `*` is the ONE name whose round trip is deliberately not the identity: it
+## is the way back to the every-PDK rows, so it comes back as `{any {}}`, and
+## that is harmless rather than wrong — a launch named `*` matches "every PDK",
+## which includes it.
+set PK1B_EXPOK [linsert $PK1B_EXPOK 5 [list ok [list any {}]]]
+set PK1B_EXPW  [linsert $PK1B_EXPW  5 {}]
+set PK1B_BAD {}
+foreach _n [list {sky 130A} {a]b} "a\tb"] {
+  set _w [ol_ans ::op_param_lists::_pdk_why $_n]
+  set _rt [ol_ans ::op_param_lists::_section_of \
+             [ol_ans ::op_param_lists::_scope_header [list pdk $_n]]]
+  ## refused, AND the round trip really would have lost the name
+  lappend PK1B_BAD [expr {$_w ne {} ? 1 : 0}]
+  lappend PK1B_BAD [expr {$_rt eq [list ok [list pdk $_n]] ? 1 : 0}]
+}
+check {PK1b THE HEADER THE WRITER SPELLS IS THE HEADER THE READER PARSES: every PDK name the store accepts survives `_scope_header` -> `_section_of` unchanged, `*` comes back as the every-PDK scope by design, and each of the two names the store REFUSES - one carrying whitespace, one carrying `]` - is refused precisely because that round trip would NOT return it, so a launch would silently answer another PDK's section} \
+  [list $PK1B_OK $PK1B_OKW $PK1B_BAD] \
+  [list $PK1B_EXPOK $PK1B_EXPW {1 0 1 0 1 0}]
+
+# --- PK1c: forgetting the declaration does not re-read ----------------------
+# `forget_pdk`'s own comment says so in capitals and nothing drove it: replacing
+# its whole body with `return [load]` left the suite green (this item's
+# adversary). The store is the user's DATA; the declaration is a fact about the
+# LAUNCH. Dropping the second must not rebuild the first.
+set PK1C_C [pk_conf forget.conf {
+  {version 2}
+  {param class mos annotation N n 0}
+  {[pdk sky130A]}
+  {param class mos annotation S s 1}
+}]
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::set_pdk sky130A
+ol_ans ::op_param_lists::load_conf $PK1C_C 0
+set PK1C_A [ol_ans ::op_param_lists::get_list class mos annotation]
+set PK1C_RET [ol_ans ::op_param_lists::forget_pdk]
+set PK1C_B [ol_ans ::op_param_lists::get_list class mos annotation]
+set PK1C_P [ol_ans ::op_param_lists::pdk]
+check {PK1c FORGETTING THE DECLARATION DROPS THE IDENTITY AND NOT THE ROWS: after `forget_pdk` this launch has no PDK again, but the store still holds exactly what the declaration read - the PDK section's row, not the un-scoped one - because a re-read there would hand a caller a store it never asked to be rebuilt, and it returns nothing to say so} \
+  [list $PK1C_A $PK1C_RET $PK1C_B $PK1C_P] \
+  [list {{S s 1}} {} {{S s 1}} {}]
+
+# --- PK2: AN OLD FILE LOADS UNCHANGED ---------------------------------------
+# The non-negotiable, and it is asserted as an IDENTITY between two launches,
+# not as "it still parses": a file with no section header must give the same
+# store to a PDK launch and to a PDK-less one, and must say nothing at all.
+set PK2_C [pk_conf old.conf {
+  {# a file written before any of this existed}
+  {version 2}
+  {param class mos annotation id id 0}
+  {param class mos annotation gm gm 1}
+  {list class res annotation}
+  {param flavor mos *nfet* annotation vth vth 2}
+}]
+set PK2_NONE [pk_load $PK2_C NONE mos]
+set PK2_NSAY [ol_nsaid]
+set PK2_SKY  [pk_load $PK2_C sky130A mos]
+set PK2_SSAY [ol_nsaid]
+set PK2_SFL  [ol_ans ::op_param_lists::get_list flavor {mos *nfet*} annotation]
+set PK2_SEMPTY [list [ol_ans ::op_param_lists::owns class res annotation] \
+                     [ol_ans ::op_param_lists::get_list class res annotation]]
+check {PK2 AN OLD FILE LOADS UNCHANGED AND SILENTLY: every row in it has no PDK scope, so a launch under sky130A and a launch with no PDK build the SAME store - the class list, the flavor entry and the deliberately EMPTIED list all identical - and neither launch says one word about a PDK} \
+  [list $PK2_NONE $PK2_SKY [expr {$PK2_NONE eq $PK2_SKY ? 1 : 0}] \
+        $PK2_NSAY $PK2_SSAY $PK2_SFL $PK2_SEMPTY] \
+  [list {{{id id 0} {gm gm 1}}} {{{id id 0} {gm gm 1}}} 1 0 0 {{vth vth 2}} {1 {}}]
+
+# --- PK3: the four launches over ONE file -----------------------------------
+set PK3_C [pk_conf three.conf {
+  {version 2}
+  {param class mos annotation N n 0}
+  {param class res annotation RN rn 1}
+  {[pdk sky130A]}
+  {param class mos annotation S s 1}
+  {param class res annotation RS rs 1}
+  {[pdk gf180mcuD]}
+  {param class mos annotation G g 2}
+}]
+set PK3_SKY  [pk_load $PK3_C sky130A   mos res]
+set PK3_SSAY [ol_saidhits {gf180mcuD}]
+## ⚠ THE TWO WORDINGS ARE ASSERTED BY TEXT, NOT BY A NAME HIT. `_skip_why`
+## splits its sentence in two because "this launch is PDK <other>" and "this
+## launch has no PDK" are different facts and the second is the one a user
+## meets first — and the PDK NAME appears either way, so a substring count of
+## the name scores both wordings identical. MEASURED by this item's adversary:
+## replacing the whole proc body with the no-PDK sentence alone left the suite
+## ALL PASS. These two lines are the difference.
+set PK3_STXT [expr {[string first {and this launch is PDK sky130A, so they are read and not applied} [ol_saidtext]] >= 0 ? 1 : 0}]
+set PK3_GF   [pk_load $PK3_C gf180mcuD mos res]
+set PK3_GSAY [ol_saidhits {sky130A}]
+set PK3_IHP  [pk_load $PK3_C ihp-sg13g2 mos res]
+set PK3_NONE [pk_load $PK3_C NONE      mos res]
+set PK3_NSAY [ol_nsaid]
+set PK3_NTXT [expr {[string first {and this launch has no PDK, so they are read and not applied} [ol_saidtext]] >= 0 ? 1 : 0}]
+check {PK3 A ROW WITH NO PDK APPLIES TO EVERY PDK, A PDK ROW BEATS IT, AND IT LEAKS TO NO OTHER PDK: under sky130A the mos list is sky130A's and the res list is sky130A's; under gf180mcuD the mos list is gf180's and the res list falls back to the un-scoped row because gf180 has none - so sky130A's res row did NOT leak; under a PDK with no section of its own both lists are the un-scoped ones; each launch is told once per section it skipped; and the sentence it is told NAMES THE OTHER PDK when this launch has one and says it has NONE when it does not, in those words} \
+  [list $PK3_SKY $PK3_SSAY $PK3_STXT $PK3_GF $PK3_GSAY $PK3_IHP $PK3_NONE $PK3_NSAY $PK3_NTXT] \
+  [list {{{S s 1}} {{RS rs 1}}} 1 1 \
+        {{{G g 2}} {{RN rn 1}}} 1 \
+        {{{N n 0}} {{RN rn 1}}} \
+        {{{N n 0}} {{RN rn 1}}} 2 1]
+
+# --- PK4: the PDK axis is a RANK, not file order ----------------------------
+# The distinction the user's own sentence turns on. Row DD-8's flavor rule IS
+# file order; this one is not, and an earlier draft that made it file order
+# was false for exactly the user who puts their section at the top.
+set PK4_BELOW [pk_conf rank_below.conf {
+  {version 2}
+  {param class mos annotation N n 0}
+  {[pdk sky130A]}
+  {param class mos annotation S s 1}
+}]
+set PK4_ABOVE [pk_conf rank_above.conf {
+  {version 2}
+  {[pdk sky130A]}
+  {param class mos annotation S s 1}
+  {[pdk *]}
+  {param class mos annotation N n 0}
+}]
+set PK4_B [pk_load $PK4_BELOW sky130A mos]
+set PK4_A [pk_load $PK4_ABOVE sky130A mos]
+set PK4_AN [pk_load $PK4_ABOVE NONE mos]
+check {PK4 THE PDK SECTION BEATS THE UN-SCOPED ROWS WHEREVER IT SITS: the same two rows with the section BELOW the un-scoped row and with the section ABOVE it give the same winner, which is what makes this a RANK and not the file order the flavor globs use - and moving the section to the top still leaves the un-scoped row answering a launch with no PDK} \
+  [list $PK4_B $PK4_A [expr {$PK4_B eq $PK4_A ? 1 : 0}] $PK4_AN] \
+  [list {{{S s 1}}} {{{S s 1}}} 1 {{{N n 0}}}]
+
+# --- PK5: a header this reader cannot read poisons its section ---------------
+set PK5_C [pk_conf badhdr.conf {
+  {version 2}
+  {param class mos annotation N n 0}
+  {[pdk sky 130A]}
+  {param class mos annotation B b 1}
+  {param class res annotation BR br 1}
+  {[pdk sky130A]}
+  {param class res annotation OK ok 1}
+}]
+set PK5 [pk_load $PK5_C sky130A mos res]
+set PK5_SAY [ol_nsaid]
+set PK5_TXT [expr {[string first {is not a section header} [ol_saidtext]] >= 0 ? 1 : 0}]
+set PK5_AT  [expr {[string first {:3:} [ol_saidtext]] >= 0 ? 1 : 0}]
+check {PK5 A MALFORMED SECTION HEADER POISONS ITS SECTION RATHER THAN LEAVING THE ROWS UN-SCOPED: the rows under it reach neither the mos list nor the res list, so rows the user wrote for ONE PDK cannot silently apply to EVERY PDK; it is reported once, on the header's own line number; and the next well-formed header recovers, so one typo costs one section and not the file} \
+  [list $PK5 $PK5_SAY $PK5_TXT $PK5_AT] \
+  [list {{{N n 0}} {{OK ok 1}}} 1 1 1]
+
+# --- PK5b: THE WRITER'S HALF OF THE SAME FENCE ------------------------------
+# ⚠ PK5 ABOVE LOOKS LIKE THE FENCE ON `_scope_applies`'s `bad` ARM AND IS NOT.
+# MEASURED by this item's adversary: with `_scope_applies` sabotaged to return
+# 1 for a `bad` scope, PK5 stayed GREEN and so did the whole suite — because
+# the READER had a second mechanism (its phase loop tested `[lindex $scope 0]
+# ne $phase` as well, and `bad` matches neither pass). The WRITER has no second
+# mechanism, and the same sabotage made it REPLACE the user's rows under an
+# unreadable header:
+#     [pdk sky 130A]                    [pdk sky 130A]
+#     list  class mos summary     ->    list  class mos summary
+#     param class mos summary OLD       param class mos summary NEW   <- GONE
+# which is the exact opposite of the design's own "applying them to nothing is
+# the safe direction". The reader now asks ONE predicate (`_scope_applies`,
+# then `_phase_of` as a partition), and this row is the writer's fence: rows
+# nobody can scope are DATA nobody may rewrite.
+set PK5B_C [pk_conf w_badhdr.conf {
+  {# a header with a typo in it}
+  {version 2}
+  {[pdk sky 130A]}
+  {list class mos summary}
+  {param class mos summary OLD old 0}
+}]
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::set_pdk sky130A
+ol_ans ::op_param_lists::load_conf $PK5B_C 0
+set PK5B_READ [ol_ans ::op_param_lists::get_list class mos summary]
+ol_ans ::op_param_lists::set_list class mos summary {{NEW new 1}}
+set PK5B_RC [ol_ans ::op_param_lists::write_conf $PK5B_C]
+set PK5B_T [ol_slurp $PK5B_C]
+check {PK5b ROWS UNDER A HEADER NOBODY CAN READ ARE NEVER REWRITTEN BY A SAVE: this launch never read them - the store answers the PDK seed, not `OLD` - so the writer copies the typo'd header and both of its rows through verbatim and puts THIS session's list somewhere it can be read back, under a `[pdk *]` header of its own below them; the user's unreachable rows are still on disk for them to fix the header and get back} \
+  [list $PK5B_READ $PK5B_RC \
+        [ol_count $PK5B_T {[pdk sky 130A]}] \
+        [ol_count $PK5B_T {param class mos summary OLD old 0}] \
+        [ol_count $PK5B_T {# a header with a typo in it}] \
+        [ol_count $PK5B_T {[pdk *]}] \
+        [ol_count $PK5B_T {param class mos summary NEW new 1}] \
+        [expr {[pk_lineof $PK5B_T {[pdk *]}] > [pk_lineof $PK5B_T {OLD old 0}] ? 1 : 0}]] \
+  [list {} 1 1 1 1 1 1 1]
+
+# --- PK6: `[pdk *]` is the way back, including with no PDK at all ------------
+set PK6_C [pk_conf back.conf {
+  {version 2}
+  {[pdk gf180mcuD]}
+  {param class mos annotation G g 0}
+  {[pdk *]}
+  {param class res annotation EVERY e 1}
+}]
+set PK6_SKY  [pk_load $PK6_C sky130A   mos res]
+set PK6_GF   [pk_load $PK6_C gf180mcuD mos res]
+set PK6_NONE [pk_load $PK6_C NONE      mos res]
+check {PK6 `[pdk *]` GOES BACK TO THE EVERY-PDK ROWS: the row under it reaches sky130A, gf180mcuD and a launch with no PDK alike, while the row above it reaches gf180mcuD alone - so the way back is not merely accepted, it really un-scopes} \
+  [list $PK6_SKY $PK6_GF $PK6_NONE] \
+  [list {{} {{EVERY e 1}}} {{{G g 0}} {{EVERY e 1}}} {{} {{EVERY e 1}}}]
+
+# --- PK7: a late declaration re-reads, and never over your own edits ---------
+set PK7_C [pk_conf late.conf {
+  {version 2}
+  {param class mos annotation N n 0}
+  {[pdk sky130A]}
+  {param class mos annotation S s 1}
+}]
+## (a) the supported order: the file is read PDK-less (which is what the
+## startup load really does), then the rc declares the PDK.
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::load_conf $PK7_C 0
+set PK7_PRE [ol_ans ::op_param_lists::get_list class mos annotation]
+ol_ans ::op_param_lists::said_clear
+set ::env(PK7SAVE) 1
+## set_pdk re-reads the TIERS, so point the project tier at the fixture by
+## making the fixture the project file of a scratch cwd.
+set PK7_PD [file join $PK_ROOT proj7]
+file mkdir [file join $PK7_PD .xschem]
+file copy -force $PK7_C [file join $PK7_PD .xschem op_param_lists.conf]
+set PK7_OLDPWD [pwd]
+set PK7_OLDUCD [expr {[info exists ::USER_CONF_DIR] ? $::USER_CONF_DIR : {NOVAR}}]
+set ::USER_CONF_DIR [file join $PK_ROOT nouser7]
+cd $PK7_PD
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::load
+set PK7_A [ol_ans ::op_param_lists::get_list class mos annotation]
+set PK7_RE [ol_ans ::op_param_lists::set_pdk sky130A]
+set PK7_B [ol_ans ::op_param_lists::get_list class mos annotation]
+## (b) the same store built by a launch that knew its PDK from the start
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::set_pdk sky130A
+ol_ans ::op_param_lists::load
+set PK7_C2 [ol_ans ::op_param_lists::get_list class mos annotation]
+## (c) a declaration that arrives after an edit re-reads NOTHING and says so
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::load
+ol_ans ::op_param_lists::set_list class mos annotation {{MINE mine 0}}
+ol_ans ::op_param_lists::said_clear
+set PK7_DRE [ol_ans ::op_param_lists::set_pdk sky130A]
+set PK7_D [ol_ans ::op_param_lists::get_list class mos annotation]
+set PK7_DSAY [expr {[string first {were NOT re-read} [ol_saidtext]] >= 0 ? 1 : 0}]
+cd $PK7_OLDPWD
+if {$PK7_OLDUCD eq {NOVAR}} { unset -nocomplain ::USER_CONF_DIR } else { set ::USER_CONF_DIR $PK7_OLDUCD }
+check {PK7 A PDK DECLARED AFTER THE FILES WERE READ RE-READS THEM, EXACTLY - which is the whole reason the door exists, because the startup load runs before any `--script` rc can name the PDK: the PDK-less read sees the un-scoped row, the declaration makes it byte-identical to a process that knew its PDK from the start, and the re-read names the file it re-read; and a declaration arriving AFTER this session changed a list re-reads NOTHING, keeps the user's own edit, and says so rather than discarding it silently} \
+  [list $PK7_A $PK7_B $PK7_C2 [expr {$PK7_B eq $PK7_C2 ? 1 : 0}] \
+        [llength $PK7_RE] $PK7_D [llength $PK7_DRE] $PK7_DSAY] \
+  [list {{N n 0}} {{S s 1}} {{S s 1}} 1 1 {{MINE mine 0}} 0 1]
+
+# --- PK7b: THE ENVIRONMENT-THEN-DECLARE ORDER, WHICH IS WHAT THE RCS DO ------
+# ⚠ THIS ROW EXISTS BECAUSE PK7 WAS GREEN WHILE THE FEATURE WAS DEAD IN A REAL
+# LAUNCH. PK7 declares through the override alone, so `pdk` really did change
+# across `set_pdk`'s own write. THE SHIPPED RCS DO NOT: they set `env(PDK)`
+# FIRST and declare SECOND, so `pdk` already answered the new name before
+# `set_pdk` was called, a before/after comparison of it was EQUAL, and the
+# re-read was skipped. MEASURED end to end in a project directory whose conf
+# carried a `[pdk sky130A]` section, with the real sky130A workarea rc:
+#     AT-STARTUP pdk=          mos={id id 0} {gm gm 1}
+#     AFTER-RC   pdk=sky130A   mos={id id 0} {gm gm 1}      <- the section LOST
+# The question the code has to ask is about THE ROWS IN THE STORE — "they were
+# read under X, the launch is now Y" — not about two readings of `pdk`. This
+# row drives the rc's order exactly.
+set PK7B_PD [file join $PK_ROOT proj7b]
+file mkdir [file join $PK7B_PD .xschem]
+file copy -force $PK7_C [file join $PK7B_PD .xschem op_param_lists.conf]
+set PK7B_OLDPWD [pwd]
+set PK7B_OLDUCD [expr {[info exists ::USER_CONF_DIR] ? $::USER_CONF_DIR : {NOVAR}}]
+set ::USER_CONF_DIR [file join $PK_ROOT nouser7b]
+cd $PK7B_PD
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+unset -nocomplain ::env(PDK)
+ol_ans ::op_param_lists::load
+set PK7B_A [ol_ans ::op_param_lists::get_list class mos annotation]
+## the rc's order, exactly: set the environment variable, THEN declare it
+set ::env(PDK) sky130A
+set PK7B_MID [ol_ans ::op_param_lists::pdk]
+set PK7B_RE  [ol_ans ::op_param_lists::set_pdk $::env(PDK)]
+set PK7B_B   [ol_ans ::op_param_lists::get_list class mos annotation]
+## and declaring the SAME PDK a second time re-reads nothing: the rows are
+## already the right ones, so the door is idempotent rather than merely cheap
+set PK7B_RE2 [ol_ans ::op_param_lists::set_pdk sky130A]
+set PK7B_C3  [ol_ans ::op_param_lists::get_list class mos annotation]
+unset -nocomplain ::env(PDK)
+cd $PK7B_OLDPWD
+if {$PK7B_OLDUCD eq {NOVAR}} { unset -nocomplain ::USER_CONF_DIR } else { set ::USER_CONF_DIR $PK7B_OLDUCD }
+check {PK7b THE SHIPPED RCs' OWN ORDER - set the PDK environment variable, THEN declare it - STILL RE-READS: after the environment is set `pdk` already answers the new name, so a door that asked "did `pdk` change across my own write" would answer no and silently keep the un-scoped rows, which is what a real sky130A launch measured; the question is whether the ROWS were read under a different PDK, so the re-read happens, names the file it re-read, and a second declaration of the same PDK re-reads nothing} \
+  [list $PK7B_A $PK7B_MID [llength $PK7B_RE] $PK7B_B [llength $PK7B_RE2] $PK7B_C3] \
+  [list {{N n 0}} sky130A 1 {{S s 1}} 0 {{S s 1}}]
+
+# --- PK8: the writer edits the rows WHERE THEY ALREADY ARE -------------------
+# The non-negotiable that has already cost this tree a real user file: an
+# existing conf must not be rewritten into the new shape behind the user's
+# back. So a Save under a PDK invents no section, and a file that HAS one for
+# this PDK is edited THERE.
+set PK8_NOSEC [pk_conf w_nosec.conf {
+  {# the user's own words}
+  {version 2}
+  {param class mos annotation N n 0}
+}]
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::set_pdk sky130A
+ol_ans ::op_param_lists::load_conf $PK8_NOSEC 0
+ol_ans ::op_param_lists::set_list class mos annotation {{N n 0} {NEW new 2}}
+set PK8_RC1 [ol_ans ::op_param_lists::write_conf $PK8_NOSEC]
+set PK8_T1  [ol_slurp $PK8_NOSEC]
+set PK8_SEC [pk_conf w_sec.conf {
+  {version 2}
+  {param class mos annotation N n 0}
+  {[pdk sky130A]}
+  {param class mos annotation S s 1}
+}]
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::set_pdk sky130A
+ol_ans ::op_param_lists::load_conf $PK8_SEC 0
+ol_ans ::op_param_lists::set_list class mos annotation {{S s 1} {S2 s2 2}}
+set PK8_RC2 [ol_ans ::op_param_lists::write_conf $PK8_SEC]
+set PK8_T2  [ol_slurp $PK8_SEC]
+check {PK8 A SAVE EDITS THE ROWS WHERE THEY ALREADY ARE AND INVENTS NO SECTION: over a file with no section header the writer adds no `[pdk` line at all and edits the un-scoped rows exactly as it did before this item, comment intact; over a file that already has a section for THIS launch's PDK the new row lands INSIDE that section, below its header, and the un-scoped row above it survives byte for byte} \
+  [list $PK8_RC1 [ol_count $PK8_T1 {[pdk}] \
+        [ol_count $PK8_T1 {# the user's own words}] \
+        [ol_count $PK8_T1 {param class mos annotation NEW new 2}] \
+        $PK8_RC2 [ol_count $PK8_T2 {[pdk sky130A]}] \
+        [ol_count $PK8_T2 {param class mos annotation N n 0}] \
+        [expr {[pk_lineof $PK8_T2 {S2 s2 2}] > [pk_lineof $PK8_T2 {[pdk sky130A]}] ? 1 : 0}] \
+        [expr {[pk_lineof $PK8_T2 {annotation N n 0}] < [pk_lineof $PK8_T2 {[pdk sky130A]}] ? 1 : 0}]] \
+  {1 0 1 1 1 1 1 1 1}
+
+# --- PK9: an appended list restores the un-scoped scope first ----------------
+# The trap nothing else would catch: an appended row lands at the END of the
+# file, and the end of a sectioned file is INSIDE a section.
+set PK9_C [pk_conf w_tail.conf {
+  {version 2}
+  {[pdk gf180mcuD]}
+  {param class mos annotation G g 0}
+}]
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::set_pdk sky130A
+ol_ans ::op_param_lists::load_conf $PK9_C 0
+ol_ans ::op_param_lists::set_list class res annotation {{R r 1}}
+set PK9_RC [ol_ans ::op_param_lists::write_conf $PK9_C]
+set PK9_T  [ol_slurp $PK9_C]
+set PK9_BACK [pk_load $PK9_C sky130A   mos res]
+set PK9_GF   [pk_load $PK9_C gf180mcuD mos res]
+check {PK9 AN APPENDED LIST GETS THE UN-SCOPED SCOPE BACK BEFORE IT IS WRITTEN: the file ended inside another PDK's section, so the writer emits `[pdk *]` above what it appends - and the proof is the RE-READ, where the new list answers under sky130A AND under gf180mcuD while gf180's own row stays gf180's alone; without that one line the new list would silently have become gf180mcuD's} \
+  [list $PK9_RC [ol_count $PK9_T {[pdk *]}] \
+        [expr {[pk_lineof $PK9_T {[pdk *]}] < [pk_lineof $PK9_T {res annotation R r 1}] ? 1 : 0}] \
+        $PK9_BACK $PK9_GF] \
+  [list 1 1 1 {{} {{R r 1}}} {{{G g 0}} {{R r 1}}}]
+
+# --- PK10: another PDK's section is never rewritten by this launch's Save ----
+set PK10_C [pk_conf w_other.conf {
+  {version 2}
+  {param class mos annotation N n 0}
+  {[pdk gf180mcuD]}
+  {param class mos annotation G g 0}
+  {param class mos annotation G2 g2 1}
+}]
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::set_pdk sky130A
+ol_ans ::op_param_lists::load_conf $PK10_C 0
+ol_ans ::op_param_lists::set_list class mos annotation {{N n 0} {NEW new 2}}
+set PK10_RC [ol_ans ::op_param_lists::write_conf $PK10_C]
+set PK10_T  [ol_slurp $PK10_C]
+set PK10_GF [pk_load $PK10_C gf180mcuD mos]
+check {PK10 A SECTION FOR ANOTHER PDK IS NEVER REWRITTEN, EVEN WHEN THIS SESSION CHANGED THE SAME LIST: gf180mcuD's two rows for `mos annotation` were never read into this sky130A store, so the writer copies them verbatim rather than replacing them with a model that does not contain them - and a gf180mcuD launch reading the file afterwards still gets its own two rows, in its own order} \
+  [list $PK10_RC [ol_count $PK10_T {param class mos annotation G g 0}] \
+        [ol_count $PK10_T {param class mos annotation G2 g2 1}] \
+        [ol_count $PK10_T {param class mos annotation NEW new 2}] $PK10_GF] \
+  [list 1 1 1 1 {{{G g 0} {G2 g2 1}}}]
+
+# --- PK11: the three shipped workareas really declare it --------------------
+# Without this wiring every row above is still green and the feature is DEAD
+# for exactly the three PDKs this tree ships, because the startup load runs
+# before any `--script` rc.
+set PK11 {}
+foreach _ws {sky130A gf180mcuD ihp-sg13g2} {
+  set _rc [ol_slurp [file join $repo $_ws cadence_style_rc]]
+  lappend PK11 [ol_count $_rc {::op_param_lists::set_pdk $::env(PDK)}]
+  lappend PK11 [ol_count $_rc {info commands ::op_param_lists::set_pdk}]
+}
+check {PK11 EACH SHIPPED WORKAREA DECLARES ITS PDK TO THE STORE, GUARDED: the startup load runs while xschem.tcl is sourced and a `--script` rc is sourced after it, so without this line the rows for a workarea's own PDK would be skipped as "some other PDK's" - and the guard is there so a build without the store still sources the rc} \
+  $PK11 {1 1 1 1 1 1}
+
+# --- PK12: what did NOT move ------------------------------------------------
+set PK12_SRC [ol_slurp $OL_TCL]
+set PK12_CODE [expr {$PK12_SRC eq {} ? {NOFILE} : [ol_nocomment $PK12_SRC]}]
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::set_pdk sky130A
+set PK12_KEEP [ol_ans ::op_param_lists::pdk]
+ol_ans ::op_param_lists::reset
+set PK12_AFTER [ol_ans ::op_param_lists::pdk]
+ol_ans ::op_param_lists::forget_pdk
+set PK12_V [pk_conf v2.conf {{version 2} {param class mos annotation A a 0}}]
+pk_load $PK12_V sky130A mos
+set PK12_VSAY [ol_nsaid]
+check {PK12 WHAT THE PDK AXIS DID NOT MOVE: the grammar version stays 2, so the emitted header still ends `version 2` and the user's own `version 2` file - which is completely correct under this grammar - draws no mismatch report at any launch and ruling DD-11 never rewrites its version line; `reset` does NOT un-declare the PDK, because the PDK is a fact about the launch and not about the user's data; and the PDK environment variable is read at exactly ONE site in the whole file, `_pdk_env`, so nothing re-derives the identity behind `pdk`'s back} \
+  [list [lindex [ol_ans ::op_param_lists::_header_lines] end] $PK12_VSAY \
+        $PK12_KEEP $PK12_AFTER \
+        [expr {$PK12_CODE eq {NOFILE} ? {NOFILE} : [ol_count $PK12_CODE {env(PDK)}]}] \
+        [ol_count [ol_body ::op_param_lists::_pdk_env] {env(PDK)}]] \
+  [list {version 2} 0 sky130A sky130A 2 2]
+
+# --- PK13: F5's OWN WORKED EXAMPLE, DRIVEN THROUGH A SECTIONED FILE ---------
+# ⚠ THE BLOCKER THIS ITEM'S ADVERSARY FOUND, AND THE REASON IT SURVIVED F5.
+# There are THREE precedence axes and the PDK one is the middle: axis 2 decides
+# WHICH ROWS FILL A KEY, axis 3 (ruling DD-8, file order among flavor globs)
+# decides WHICH KEY ANSWERS A CELL. The first implementation derived `keyorder`
+# — which is axis 3 — from the two passes that implement axis 2, so a `flavor`
+# row inside THIS LAUNCH'S OWN `[pdk ...]` section was tried AFTER every
+# un-scoped one, losing while sitting FIRST in the file and while being the
+# PDK-specific row. MEASURED, on the brief's own example shape:
+#     governs -> flavor {mos *}                <- the broad, LOWER, un-scoped
+# and with the two headers deleted, the same two rows answered
+#     governs -> flavor {mos *nfet_01v8_lvt*}
+# F5 stayed green because ITS fixture has no sections — a row passing for an
+# unstated property of its fixture. So this row reads the SAME worked example
+# out of the SAME emitted header and builds it INSIDE a `[pdk ...]` section:
+# the paragraph the writer stamps into every settings file ("THE FIRST ONE IN
+# THIS FILE WINS ... put the row you want to win ABOVE the other one") is now
+# fenced for sectioned files too, in both orders, because a file that lies to
+# its own reader is what F5 exists to prevent.
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+set PK13_HDR [file join $PK_ROOT pk13hdr.conf]
+ol_ans ::op_param_lists::write_conf $PK13_HDR
+set PK13_EG [ol_precedence_eg [ol_bytes $PK13_HDR]]
+set PK13_W1 NOSENTENCE ; set PK13_W2 NOSENTENCE ; set PK13_N1 NOSENTENCE
+if {[llength $PK13_EG] == 5} {
+  set PK13_C1 [lindex $PK13_EG 0] ; set PK13_G1 [lindex $PK13_EG 1]
+  set PK13_G2 [lindex $PK13_EG 3] ; set PK13_CELL [lindex $PK13_EG 4]
+  ## The example's winner goes INSIDE `[pdk sky130A]` and its loser stays
+  ## un-scoped, then the two swap. The `[pdk *]` line is what makes the second
+  ## fixture's un-scoped row un-scoped while sitting BELOW a section.
+  set PK13_F1 [pk_conf pk13_a.conf [list \
+    {version 2} \
+    {[pdk sky130A]} \
+    "param flavor $PK13_C1 $PK13_G1 annotation first first 0" \
+    {[pdk *]} \
+    "param flavor $PK13_C1 $PK13_G2 annotation second second 0"]]
+  set PK13_F2 [pk_conf pk13_b.conf [list \
+    {version 2} \
+    {[pdk sky130A]} \
+    "param flavor $PK13_C1 $PK13_G2 annotation second second 0" \
+    {[pdk *]} \
+    "param flavor $PK13_C1 $PK13_G1 annotation first first 0"]]
+  ol_reset ; ol_ans ::op_param_lists::forget_pdk
+  ol_ans ::op_param_lists::set_pdk sky130A
+  ol_ans ::op_param_lists::load_conf $PK13_F1 0
+  set PK13_W1 [ol_lbl [ol_ans ::op_param_lists::effective $PK13_C1 annotation $PK13_CELL]]
+  ol_reset ; ol_ans ::op_param_lists::forget_pdk
+  ol_ans ::op_param_lists::set_pdk sky130A
+  ol_ans ::op_param_lists::load_conf $PK13_F2 0
+  set PK13_W2 [ol_lbl [ol_ans ::op_param_lists::effective $PK13_C1 annotation $PK13_CELL]]
+  ## and the same file read by a launch with NO PDK: the section is skipped, so
+  ## only the un-scoped row is there to answer at all.
+  ol_reset ; ol_ans ::op_param_lists::forget_pdk
+  ol_ans ::op_param_lists::load_conf $PK13_F1 0
+  set PK13_N1 [ol_lbl [ol_ans ::op_param_lists::effective $PK13_C1 annotation $PK13_CELL]]
+}
+check {PK13 THE FILE'S OWN FLAVOR PARAGRAPH IS TRUE INSIDE A `[pdk ...]` SECTION TOO: the worked example is read back out of a freshly written header and built with its winner inside this launch's PDK section and its loser un-scoped below - the winner still wins; swap the two rows and the winner swaps with them, so a section changes which ROWS fill a key and never which key answers a cell; and a launch with no PDK, which cannot see the section at all, is answered by the un-scoped row} \
+  [list [llength $PK13_EG] $PK13_W1 $PK13_W2 $PK13_N1] \
+  [list 5 first second second]
+
+# --- PK13b: THE TWO ARRIVAL ORDERS AGREE ABOUT ORDER, NOT ONLY CONTENT ------
+# ⚠ THE SECOND BLOCKER, AND THE SAME ROOT. `set_pdk`'s re-read used to run
+# STRAIGHT OVER the existing store: "first touch of a key clears what came
+# before" really does rebuild every key's CONTENT, but `keyorder` kept the
+# first read's positions and the second read's new keys were APPENDED AFTER
+# them. So the same two files gave DIFFERENT WINNERS depending on how the PDK
+# arrived — and the rc is the default path for all three PDKs this tree ships:
+#     `PDK=sky130A xschem`  (environment first, ONE read)  -> the section wins
+#     the shipped rc        (read, THEN declare)           -> the bare * wins
+# PK7 and PK7b compare the two orders' STORE CONTENTS and stayed green: their
+# fixtures have one class key and no flavor key in the user tier. This row
+# compares their ORDER, across the two tiers, which is the half that was wrong.
+set PK13B_UD [file join $PK_ROOT u13b]
+set PK13B_PD [file join $PK_ROOT p13b]
+file mkdir $PK13B_UD [file join $PK13B_PD .xschem]
+ol_conf [file join $PK13B_UD op_param_lists.conf] {
+  {version 2}
+  {[pdk sky130A]}
+  {param flavor mos *nfet_01v8_lvt* annotation SPECIFIC id 0}
+}
+ol_conf [file join $PK13B_PD .xschem op_param_lists.conf] {
+  {version 2}
+  {param flavor mos * annotation BROAD gm 1}
+}
+set PK13B_OLDPWD [pwd]
+set PK13B_OLDUCD [expr {[info exists ::USER_CONF_DIR] ? $::USER_CONF_DIR : {NOVAR}}]
+set ::USER_CONF_DIR $PK13B_UD
+cd $PK13B_PD
+## (a) the environment supplies it before the read — one read, no re-read
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::set_pdk sky130A
+ol_ans ::op_param_lists::load
+set PK13B_ENVK [ol_ans ::op_param_lists::_keys]
+set PK13B_ENVW [ol_lbl [ol_ans ::op_param_lists::effective mos annotation sky130_fd_pr__nfet_01v8_lvt]]
+## (b) the rc's order — read with no PDK, then declare
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::load
+ol_ans ::op_param_lists::set_pdk sky130A
+set PK13B_RCK [ol_ans ::op_param_lists::_keys]
+set PK13B_RCW [ol_lbl [ol_ans ::op_param_lists::effective mos annotation sky130_fd_pr__nfet_01v8_lvt]]
+cd $PK13B_OLDPWD
+if {$PK13B_OLDUCD eq {NOVAR}} { unset -nocomplain ::USER_CONF_DIR } else { set ::USER_CONF_DIR $PK13B_OLDUCD }
+check {PK13b A PDK THAT ARRIVES LATE BUILDS THE SAME STORE IN THE SAME ORDER AS ONE THAT WAS THERE ALL ALONG: the personal file's PDK-scoped flavor row and the project file's un-scoped one answer the same cell, and the winner is the personal one either way - because the re-read REBUILDS the store rather than adding to it, so the key order is the files' order and not the order the two reads happened to touch them in; the key lists themselves are identical, which is the part a content-only comparison cannot see} \
+  [list $PK13B_ENVW $PK13B_RCW [expr {$PK13B_ENVK eq $PK13B_RCK ? 1 : 0}] $PK13B_ENVK] \
+  [list SPECIFIC SPECIFIC 1 {{flavor {mos *nfet_01v8_lvt*} annotation} {flavor {mos *} annotation}}]
+
+# --- PK14: WHAT A REAL WORKAREA LAUNCH ACTUALLY PRINTS ----------------------
+# ⚠ THE STARTUP READ CANNOT HONESTLY SAY "THIS LAUNCH HAS NO PDK". It runs
+# while xschem.tcl is sourced; the workarea rc that DECLARES the PDK is sourced
+# after it. MEASURED before this was gated, `cd <proj> && xschem --script
+# sky130A/cadence_style_rc` over a conf with three sections printed FIVE lines:
+#     :3: ... `[pdk sky130A]`   ... this launch has no PDK       <- FALSE, it
+#                                     applied one line later
+#     :5: ... `[pdk gf180mcuD]` ... this launch has no PDK
+#     :7: ... `[pdk ihp-sg13g2]`... this launch has no PDK
+#     :5: ... `[pdk gf180mcuD]` ... this launch is PDK sky130A   <- again
+#     :7: ... `[pdk ihp-sg13g2]`... this launch is PDK sky130A   <- again
+# and the read that governs said only the last two. So a read that could still
+# be superseded says nothing about sections, and the read that replaces it does
+# not re-echo what the first one already printed.
+#
+# ⚠ THIS ROW COUNTS THE LINES A USER SEES, IN A CHILD PROCESS, because the
+# echo is stderr and the buffer is not: `said` alone would score the duplicate
+# echo green. It drives the rc's own two lines (set the environment variable,
+# THEN declare) rather than sourcing the rc, so it needs no Tk and runs on both
+# arms; row PK11 is what pins that the shipped rcs really carry those lines.
+# The fixture also carries a MALFORMED ROW, whose sentence must survive the
+# gate and appear exactly ONCE across the two reads.
+set PK14_D [file join $PK_ROOT rc14]
+file mkdir [file join $PK14_D .xschem]
+set PK14_F [file join $PK14_D .xschem op_param_lists.conf]
+ol_conf $PK14_F {
+  {version 2}
+  {param class mos annotation NEUTRAL n 0}
+  {frobnicate the widget}
+  {[pdk sky130A]}
+  {param class mos annotation SKYROW sky 1}
+  {[pdk gf180mcuD]}
+  {param class mos annotation GFROW gf 2}
+  {[pdk ihp-sg13g2]}
+  {param class mos annotation IHPROW ihp 1}
+}
+set PK14_KID [file join $PK_ROOT kid_rc14.tcl]
+ol_put $PK14_KID [encoding convertto utf-8 [string map [list @SCRATCH@ $scratch] {
+set ::netlist_dir {@SCRATCH@}
+## the shipped rc's own two lines, in the shipped rc's own order
+if {![info exists ::env(PDK)]} { set ::env(PDK) sky130A }
+if {[llength [info commands ::op_param_lists::set_pdk]]} {
+  catch {::op_param_lists::set_pdk $::env(PDK)}
+}
+puts "PKPDK=[::op_param_lists::pdk]"
+puts "PKMOS=[::op_param_lists::get_list class mos annotation]"
+exit 0
+}]]
+proc pk_saylines {txt path} {
+  set out {}
+  foreach l [split $txt "\n"] {
+    if {[string first {op_param_lists:} $l] < 0} { continue }
+    if {[string first $path $l] < 0} { continue }
+    lappend out [string trim $l]
+  }
+  return $out
+}
+set PK14_OUT [pk_child $PK14_D NONE $PK14_KID]
+set PK14_SAY [pk_saylines $PK14_OUT $PK14_F]
+set PK14_OWN 0 ; set PK14_DUP 0
+set PK14_SEEN {}
+foreach _l $PK14_SAY {
+  if {[string first {under `[pdk sky130A]`} $_l] >= 0} { incr PK14_OWN }
+  if {[lsearch -exact $PK14_SEEN $_l] >= 0} { incr PK14_DUP }
+  lappend PK14_SEEN $_l
+}
+check {PK14 A REAL WORKAREA LAUNCH IS TOLD ABOUT THE SECTIONS IT SKIPPED, ONCE EACH, AND NEVER ABOUT ITS OWN: a child process whose PDK arrives the way the shipped rcs supply it - environment set and then declared, both AFTER the startup read - applies its own section, prints exactly one sentence per OTHER section, prints not one word about `[pdk sky130A]` which it did apply, and prints the malformed row's own complaint exactly once even though two reads passed over it} \
+  [list [pk_field $PK14_OUT PKPDK] [pk_field $PK14_OUT PKMOS] \
+        [llength $PK14_SAY] $PK14_OWN $PK14_DUP \
+        [expr {[string first {frobnicate} $PK14_OUT] >= 0 ? 1 : 0}]] \
+  [list sky130A {{SKYROW sky 1}} 3 0 0 1]
+
+# --- PK15: the TIER axis is still the outermost one, and the file says so ----
+# The interaction the emitted header did not state and no row drove: a
+# `[pdk sky130A]` list in the USER-GLOBAL file is replaced by an UN-SCOPED list
+# in the project file, because the tier is decided before the PDK is. That is
+# the direction that surprises - the more specific row loses - so the header
+# now says it in one line and this row holds both to it.
+set PK15_UD [file join $PK_ROOT u15]
+set PK15_PD [file join $PK_ROOT p15]
+file mkdir $PK15_UD [file join $PK15_PD .xschem]
+ol_conf [file join $PK15_UD op_param_lists.conf] {
+  {version 2}
+  {[pdk sky130A]}
+  {param class mos summary MYSKY mysky 1}
+}
+ol_conf [file join $PK15_PD .xschem op_param_lists.conf] {
+  {version 2}
+  {param class mos summary PROJ proj 0}
+}
+set PK15_OLDPWD [pwd]
+set PK15_OLDUCD [expr {[info exists ::USER_CONF_DIR] ? $::USER_CONF_DIR : {NOVAR}}]
+set ::USER_CONF_DIR $PK15_UD
+cd $PK15_PD
+ol_reset ; ol_ans ::op_param_lists::forget_pdk
+ol_ans ::op_param_lists::set_pdk sky130A
+ol_ans ::op_param_lists::load
+set PK15_GOT [ol_ans ::op_param_lists::get_list class mos summary]
+cd $PK15_OLDPWD
+if {$PK15_OLDUCD eq {NOVAR}} { unset -nocomplain ::USER_CONF_DIR } else { set ::USER_CONF_DIR $PK15_OLDUCD }
+set PK15_HDR [ol_flatcomment [join [ol_ans ::op_param_lists::_header_lines] "\n"]]
+check {PK15 THE TIER IS DECIDED BEFORE THE PDK IS, AND THE FILE SAYS SO: a `[pdk sky130A]` list in the personal file is replaced by an UN-SCOPED list for the same key in the project file - the less specific row wins, because read order settles the tier and the PDK rank only orders rows WITHIN one file - and the header xschem writes states that interaction rather than leaving the user to discover it} \
+  [list $PK15_GOT \
+        [expr {[string first {The TIER still wins first} $PK15_HDR] >= 0 ? 1 : 0}] \
+        [expr {[string first {whatever section either is in} $PK15_HDR] >= 0 ? 1 : 0}]] \
+  [list {{PROJ proj 0}} 1 1]
+
+# ============================================================================
+# PK20 / PK21 — THE TWO-PROCESS FENCE, WHICH THIS STORE HAS NEVER HAD
+# ============================================================================
+# Owed since issue 1380, and it belongs to this item because this item is about
+# what survives a restart. Every row above this line, and every row of section
+# T, proves something about ONE process: a `write_conf` followed by a
+# `load_conf` in the same interpreter cannot see a store that was never read
+# back at startup at all — which is EXACTLY the defect 1380 filed, where Save
+# wrote the file, said so truthfully, and `op_param_lists::load` had zero
+# callers in src/. A green suite said nothing.
+#
+# So these two rows write in one process and read in ANOTHER, through the
+# STARTUP path and nothing else: the children below never call `load`, never
+# call `load_conf`, and would answer empty if xschem.tcl stopped reading the
+# file back.
+#
+# ⚠ THE CWD IS THE PROJECT TIER (`[pwd]/.xschem/`), so each child is launched
+# through `sh -c 'cd <dir> && exec ...'` rather than being handed a path. That
+# is the point: the path resolution under test is the one a real launch does.
+# `USER_CONF_DIR` is left alone and the user-global file is READ, never
+# written — which is why every class key here is `pkfence`, a name no real file
+# carries, so a developer's own saved lists cannot make these rows pass or fail.
+set PK_FENCE [file join $PK_ROOT fence]
+file mkdir [file join $PK_FENCE .xschem]
+set PK_KIDW [file join $PK_ROOT kid_write.tcl]
+set PK_KIDR [file join $PK_ROOT kid_read.tcl]
+ol_put $PK_KIDW [encoding convertto utf-8 [string map [list @SCRATCH@ $scratch] {
+set ::netlist_dir {@SCRATCH@}
+if {![llength [info commands ::op_param_lists::set_list]]} { puts "PKW=NOPROC" ; exit 0 }
+catch {::op_param_lists::set_list class pkfence summary {{A a 0} {B b 1}}}
+set rc 0
+catch {::op_param_lists::write_conf} rc
+puts "PKW=$rc"
+puts "PKP=[::op_param_lists::conf_path project]"
+exit 0
+}]]
+ol_put $PK_KIDR [encoding convertto utf-8 [string map [list @SCRATCH@ $scratch] {
+set ::netlist_dir {@SCRATCH@}
+if {![llength [info commands ::op_param_lists::get_list]]} { puts "PKR=NOPROC" ; exit 0 }
+puts "PKPDK=[::op_param_lists::pdk]"
+puts "PKR=[::op_param_lists::get_list class pkfence summary]"
+puts "PKR2=[::op_param_lists::get_list class pkfence annotation]"
+exit 0
+}]]
+## `pk_child` and `pk_field` are defined in the section preamble above, because
+## row PK14 needs a child process too.
+set PK20_W [pk_child $PK_FENCE NONE $PK_KIDW]
+set PK20_F [file join $PK_FENCE .xschem op_param_lists.conf]
+set PK20_R [pk_child $PK_FENCE NONE $PK_KIDR]
+check {PK20 THE TWO-PROCESS FENCE (issue 1380): one process sets a list and Saves, and a SECOND, FRESH process reads it back through the startup path alone - it calls neither `load` nor `load_conf`, so if xschem.tcl ever stops reading the settings file back this row goes red where a same-process round trip cannot} \
+  [list [pk_field $PK20_W PKW] \
+        [expr {[pk_field $PK20_W PKP] eq $PK20_F ? 1 : 0}] \
+        [expr {[file isfile $PK20_F] ? 1 : 0}] \
+        [pk_field $PK20_R PKR]] \
+  [list 1 1 1 {{A a 0} {B b 1}}]
+
+## Now the PDK axis, across processes, with the PDK arriving the way a real
+## open_pdks launch supplies it: in the ENVIRONMENT, before xschem starts, so
+## the startup `load` itself sees it. Three launches, one file.
+ol_conf $PK20_F {
+  {version 2}
+  {param class pkfence summary A a 0}
+  {param class pkfence summary B b 1}
+  {param class pkfence annotation NEUTRAL n 0}
+  {[pdk pkskyA]}
+  {param class pkfence annotation SKY s 1}
+  {[pdk pkgfD]}
+  {param class pkfence annotation GF g 2}
+}
+set PK21_S [pk_child $PK_FENCE pkskyA $PK_KIDR]
+set PK21_G [pk_child $PK_FENCE pkgfD  $PK_KIDR]
+set PK21_N [pk_child $PK_FENCE NONE   $PK_KIDR]
+check {PK21 THE PDK REACHES A FRESH PROCESS FROM ITS ENVIRONMENT, AND ONE FILE THEN ANSWERS THREE DIFFERENT LAUNCHES: with PDK set in the environment the startup load itself sees it, so the sky130-shaped launch gets the sky rows, the gf180-shaped launch gets the gf rows and NOT the sky ones, a launch with PDK unset gets the un-scoped row and neither section - and all three get the same un-scoped summary list, because a row with no PDK applies to every PDK} \
+  [list [pk_field $PK21_S PKPDK] [pk_field $PK21_S PKR2] [pk_field $PK21_S PKR] \
+        [pk_field $PK21_G PKPDK] [pk_field $PK21_G PKR2] \
+        [pk_field $PK21_N PKPDK] [pk_field $PK21_N PKR2] \
+        [expr {[pk_field $PK21_S PKR] eq [pk_field $PK21_G PKR] \
+            && [pk_field $PK21_S PKR] eq [pk_field $PK21_N PKR] ? 1 : 0}]] \
+  [list pkskyA {{SKY s 1}} {{A a 0} {B b 1}} \
+        pkgfD  {{GF g 2}} \
+        {} {{NEUTRAL n 0}} 1]
+
+# --- the section leaves the store as it found it ----------------------------
+ol_reset
+ol_ans ::op_param_lists::forget_pdk
+unset -nocomplain ::env(PK7SAVE)
+
 set H_ROOT0 [lsort [glob -nocomplain -directory $repo -tails untitled*]]
-check {H1 HYGIENE the suite creates no untitled* anywhere and no .xschem directory in the repo root, and it left the cwd where it found it} \
+check {H1 HYGIENE the suite creates no untitled* anywhere, leaves the repo's own project settings file byte-for-byte as it found it - which is the developer's file when they have one and still no file when they do not (issue 1381) - and left the cwd where it found it} \
   [list [expr {[lsort [glob -nocomplain -directory $repo -tails untitled*]] eq $H_ROOT0 ? 1 : 0}] \
         [llength [glob -nocomplain -directory $scratch -tails untitled*]] \
         [llength [glob -nocomplain -directory $here -tails untitled*]] \
-        [expr {[file isdirectory [file join $repo .xschem]] ? 1 : 0}] \
+        [expr {[ol_conf_stamp] eq $H_CONF0 ? 1 : 0}] \
         [expr {[pwd] eq $T_OLDPWD ? 1 : 0}]] \
-  {1 0 0 0 1}
+  {1 0 0 1 1}
 
 # ============================================================================
 # THE CHECK-COUNT FLOOR — TRAP 7, WHICH THIS SUITE HAD NO GUARD RAIL FOR
@@ -4936,11 +6065,51 @@ check {H1 HYGIENE the suite creates no untitled* anywhere and no .xschem directo
 # (source-time purity plus the anti-`string toupper` fence) and CL5 (the rc
 # extension door, and the two tables staying two). All five run on BOTH arms.
 # A floor is raised when rows are added and NEVER lowered to make a run pass.
+#
+# ⚠ AND RAISED 135 -> 151 BY ISSUE 1388, SECTION PK's SIXTEEN ROWS: PK0 (the
+# identity, as the
+# three shipped workareas actually declare it, and the two candidates that are
+# measurably dead), PK1 (one definition of this launch's PDK), PK2 (an old file
+# loads unchanged AND silently), PK3 (neutral applies everywhere, a PDK row
+# beats it, and it leaks to no other PDK), PK4 (the PDK axis is a RANK, not
+# file order), PK5 (a malformed header poisons its section), PK6 (`[pdk *]`
+# really un-scopes), PK7 (a late declaration re-reads exactly, and never over
+# the user's own edits), PK7b (the shipped rcs' own environment-then-declare
+# order still re-reads -- the row minted because PK7 was green while a real
+# sky130A launch silently lost its section), PK8 (Save edits the rows where
+# they are and invents no
+# section), PK9 (an appended list gets the un-scoped scope back), PK10 (another
+# PDK's section is never rewritten), PK11 (the three workarea rcs really
+# declare it), PK12 (what did NOT move), and PK20/PK21 -- THE TWO-PROCESS
+# FENCE, owed since issue 1380 and the only rows in this file that read through
+# the STARTUP path in a process that did not write it. All sixteen run on BOTH
+# arms.
+#
+# ⚠ AND RAISED 151 -> 157 BY ISSUE 1388's REPAIR PASS, SIX ROWS ITS ADVERSARY
+# EARNED — every one of them a place where the shipped code was wrong or
+# unfenced while all sixteen rows above stayed green:
+#   PK1b  the header speller and the header parser are inverses (deleting
+#         `_pdk_why`'s `]` refusal outright left the suite green, and
+#         `_scope_header`'s `pdk` arm had no caller at all)
+#   PK1c  `forget_pdk` drops the identity and not the rows (replacing its body
+#         with `return [load]` left the suite green)
+#   PK5b  the WRITER never rewrites rows under a header nobody can read — PK5
+#         looked like that fence and was not, because the reader had a second
+#         mechanism and the writer has none
+#   PK13  the emitted header's flavor paragraph is true INSIDE a section too;
+#         F5's fixture is unsectioned, and the PDK axis had inverted file order
+#         for every sectioned file
+#   PK13b the two PDK arrival orders agree about ORDER, not only content — the
+#         shipped rc path and a `PDK=... xschem` launch gave different winners
+#   PK14  what a real workarea launch PRINTS: one sentence per skipped section,
+#         none about its own, and no duplicate across the two reads
+#   PK15  the tier is decided before the PDK is, and the emitted header says so
+# (Seven names, six new numbers plus PK13b; all seven run on BOTH arms.)
 ## Issue 1345: put the reader's own precision back before the verdict.
 if {$OL_EVP_SAVE eq {NOVAR}} { catch {unset ::ev_precision} } \
 else { set ::ev_precision $OL_EVP_SAVE }
 
-set OL_FLOOR 135
+set OL_FLOOR 158
 set OL_RAN [expr {$npass + $fail}]
 if {$OL_RAN < $OL_FLOOR} {
   puts "FAIL: OLFLOOR the suite ran only $OL_RAN checks, below its floor of\

@@ -64,6 +64,16 @@ source [file join $here scratch.tcl]
 source [file join $here ase_design_window.tcl]  ;# ase_bind_design_window (issue 0698)
 set scratch [test_scratch ase_final]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## F18/F14/F15 pin FOLDED vector names; a registered `-casemode preserve` build
+## makes the raw carry `i(@M.XM1...)` and reds all three. Before the fix this
+## suite read 3 FAILED under the developer's HOME and ALL PASS under a HOME with
+## no registry -- and ABORTED after 25 checks under a registry naming a program
+## that is not there.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 set cellroot  [file join $repo sky130A xschem_libs sky130_tests test_nfet_final]
 set statefile [file join $cellroot ngspice_state1 test_nfet_final.state]
 set schfile   [file join $cellroot schematic test_nfet_final.sch]

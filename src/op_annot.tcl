@@ -2413,7 +2413,10 @@ proc op_annot::place_annotator {} {
 # `go_back` (actions.c:4766) calls `load_backup_as` (save.c:4191) whenever a
 # `<cell>~.sch` sits beside the cell, and that function ends in `set_modify(1)`
 # (save.c:4207). MEASURED on the SHIPPED sky130_tests_ase/bandgap_opamp, which
-# ships with exactly such a `~`:
+# had such a `~` beside it at measurement time. ⚠ IT IS NOT SHIPPED: `*~.sch` is
+# gitignored (.gitignore:75) and no `~.sch` has ever been tracked, so a fresh
+# clone has none -- that is issue 0634, whose fix (80f53d42) makes W19a plant
+# its own. The measurement below stands; the word "ships" never did:
 #
 #     descend x1 ; go_back  ->  modified 0 -> 1     (autosave_backup 1)
 #     descend x1 ; go_back  ->  modified 0 -> 0     (autosave_backup 0)

@@ -1,0 +1,361 @@
+<h1>Why your net is called <code>v(vbg)</code>, and how to get <code>v(VBG)</code> back</h1>
+
+<p>You draw a net and label it <code>VBG</code>. You simulate. You plot it, and the
+waveform viewer calls it <code>v(vbg)</code>. Every capital you typed is gone —
+<code>START</code> is <code>start</code>, <code>EN_N</code> is <code>en_n</code>,
+and a schematic that reads like a datasheet turns into a plot legend that reads
+like a shout in a library.</p>
+
+<p>This is fixable, and the fix has two halves. One is a build of ngspice that can
+keep case. The other is one dialog in xschem's Analog Sim Environment (ASE-L),
+where you tell it about that build. Neither half works alone, which is why this
+tends to feel like it should already be working when it isn't.</p>
+
+<p>Everything below was measured on Ubuntu under WSL2 against the tree as it
+stands today. The example design is <code>tb_bandgap</code> in the
+<code>sky130_tests_ase</code> library, and the starting point is the one people
+actually have: a saved state, <code>ngspice_state1</code>, that you open and
+re-run.</p>
+
+<h2>The short version</h2>
+
+<ol>
+  <li>Build the case-capable ngspice (about ten minutes, mostly compile time).</li>
+  <li>In ASE-L: <b>Setup &rarr; Simulators&hellip; &rarr; Add&hellip;</b>, name it, point
+      <b>Program</b> at the binary you just built.</li>
+  <li>Press <b>Detect</b>. The <b>Case</b> chooser grows two new entries.</li>
+  <li>Pick <b>preserve</b>, press <b>OK</b>, then set <b>Use this one:</b> to your
+      new entry.</li>
+  <li>Re-run. Plot. Capitals.</li>
+</ol>
+
+<p>You do not have to edit the saved state, and you do not have to make a new one.
+The simulator list is global to your xschem install and the case setting rides on
+the entry, so a state you saved months ago picks all of this up the moment you
+open it.</p>
+
+<h2>1. Why it comes back lowercase</h2>
+
+<p>Released ngspice folds node names to lowercase. That is not a bug and it is not
+new — SPICE has been case-insensitive since the 1970s, and PDK model libraries
+depend on it. Your netlist goes out with the capitals intact; the results file
+comes back without them.</p>
+
+<p>The part that costs people an afternoon is the way it fails. A stock ngspice
+<em>accepts</em> the request to keep case and then ignores it. No error, no
+warning, exit status zero. Here is the same deck, three ways:</p>
+
+<pre><code>* case demo
+V1 START 0 DC 1.8
+R1 START VBG 1k
+R2 VBG 0 1k
+.op
+.control
+run
+write case.raw
+.endc
+.end
+</code></pre>
+
+<pre><code>$ ngspice-case-capable -b case.cir          # default
+    0    v(start)    voltage
+    1    i(v1)       current
+    2    v(vbg)      voltage
+
+$ ngspice-case-capable -b -D casemode=preserve case.cir
+    0    v(START)    voltage
+    1    i(V1)       current
+    2    v(VBG)      voltage
+
+$ ngspice -b -D casemode=preserve case.cir   # stock ngspice-45.2
+    0    v(start)    voltage
+    1    i(v1)       current
+    2    v(vbg)      voltage
+</code></pre>
+
+<p>Third block: asked for capitals, got none, and said nothing about it. That is
+why xschem defaults to <code>fold</code> and refuses to offer you anything better
+until it has actually measured your binary. It would rather ask for less than
+promise something your simulator will quietly drop.</p>
+
+<h2>2. Build an ngspice that can keep case</h2>
+
+<p>The case-mode work lives on the <code>ver_50</code> branch of a public fork.
+You do not need to replace your system ngspice, and you should not: build it in
+your home directory, leave <code>/usr/local</code> alone, and point xschem at the
+result by full path. You can keep both and switch between them from the dialog in
+Part 3.</p>
+
+<h3>2.1 Packages</h3>
+
+<pre><code>sudo apt install git build-essential automake autoconf libtool \
+                 bison flex libx11-dev libxaw7-dev libreadline-dev pkg-config
+</code></pre>
+
+<p>Autotools (<code>automake</code>, <code>autoconf</code>, <code>libtool</code>)
+is the part people leave out. A git clone of ngspice has no <code>configure</code>
+script in it — you generate one — so without those three you get a confusing
+failure before compilation even starts.</p>
+
+<h3>2.2 Clone and build</h3>
+
+<pre><code>git clone https://github.com/ananthchellappa/ngspice.git
+cd ngspice
+git checkout ver_50
+
+./autogen.sh                       # generates ./configure — needs autotools
+
+mkdir build-ver_50 &amp;&amp; cd build-ver_50
+../configure --prefix=$PWD/stage --with-readline=yes
+make -j$(nproc)
+make install                       # into ./stage — no sudo, nothing system-wide
+</code></pre>
+
+<p>Two notes on that <code>--prefix</code>. It is a private staging directory
+inside the build, so <code>make install</code> never touches anything outside the
+tree. And it is not optional: ngspice looks for its startup script
+(<code>spinit</code>, which loads the XSPICE code models) under the prefix it was
+configured with. Skip the install step and you get a binary that runs simple decks
+and then puzzles you later.</p>
+
+<p>Your simulator is now:</p>
+
+<pre><code>~/ngspice/build-ver_50/src/ngspice
+</code></pre>
+
+<p>Write that path down. It is the one thing Part 3 needs.</p>
+
+<h3>2.3 Sixty-second self-test</h3>
+
+<p>Before going anywhere near xschem, ask the binary directly. Save this as
+<code>cm.cir</code>:</p>
+
+<pre><code>* casemode probe
+.control
+echo CCM=$curcasemode
+quit
+.endc
+.end
+</code></pre>
+
+<pre><code>$ ~/ngspice/build-ver_50/src/ngspice -b -D casemode=preserve cm.cir | grep CCM
+CCM=preserve
+</code></pre>
+
+<p>That is a pass. A build without the feature prints <code>CCM=</code> — an empty
+answer, cheerfully, with a zero exit status. If you see the empty one, you are
+running the wrong binary; check the path before you change anything else.</p>
+
+<h3>2.4 If you have Claude Code</h3>
+
+<p>The fork carries a <code>CLAUDE.md</code> and an <code>AGENTS.md</code> at its
+root describing the build, the test layout and the house conventions. Clone it,
+run <code>claude</code> in that directory, and ask it to get the build going — it
+will read those, work out which packages your machine is missing, and drive
+<code>autogen.sh</code> / <code>configure</code> / <code>make</code> for you. That
+is genuinely the fastest route through a broken build environment, and it is why
+Part 2.1 exists at all: the manual list is for everyone else.</p>
+
+<h2>3. Tell xschem about it</h2>
+
+<p>Start xschem and open the design you care about. Two doors, use whichever fits:</p>
+
+<ul>
+  <li><b>Tools &rarr; Library Manager</b>, then open the saved state view —
+      <code>sky130_tests_ase</code> &rarr; <code>tb_bandgap</code> &rarr;
+      <code>ngspice_state1</code>. This is the "I already have a state" route.</li>
+  <li><b>Tools &rarr; Launch ASE-L</b> with the schematic open, for a fresh
+      session.</li>
+</ul>
+
+<p>Either way you get the ASE-L window. Now:</p>
+
+<h3>3.1 Setup &rarr; Simulators&hellip;</h3>
+
+<p>A list with three columns — <b>Name</b>, <b>Program</b>, <b>Problem</b> — and a
+<b>Use this one:</b> chooser under it. On a fresh install the list is empty, which
+means ASE-L falls back to whatever <code>ngspice</code> is on your <code>PATH</code>.
+That is the stock one. That is the lowercase one.</p>
+
+<h3>3.2 Add&hellip;</h3>
+
+<p>Four fields:</p>
+
+<ul>
+  <li><b>Name:</b> — anything you like; <code>ngspice-ver50</code> is a good habit
+      because it will appear in the ASE-L status bar and you will want to recognise
+      it at a glance.</li>
+  <li><b>Program:</b> — the full path from Part 2.2, or press <b>Browse&hellip;</b>
+      and go find it.</li>
+  <li><b>Case:</b> — a dropdown. Right now it offers exactly two things:
+      <code>global default (fold)</code> and <code>fold</code>.</li>
+  <li><b>-n:</b> — a <code>--no-spiceinit</code> checkbox. Leave it alone for now;
+      see the gotchas.</li>
+</ul>
+
+<p>The <b>Case</b> dropdown is the step everybody gets stuck on, so it is worth
+saying plainly why it is nearly empty: <b>xschem will only offer you case modes it
+has watched your binary deliver.</b> It has not run your binary yet, so it offers
+the one mode no simulator can fail. It is not broken and it is not ignoring you.</p>
+
+<h3>3.3 Press Detect</h3>
+
+<p>This runs your binary a few times with a tiny throwaway deck — well under a
+second on a local build — and asks it, once per mode, what it actually does. Then
+the <b>Case</b> dropdown grows:</p>
+
+<pre><code>global default (fold)
+fold
+preserve
+distinguish
+</code></pre>
+
+<p>and the status line under the fields tells you what was measured. If the extra
+entries do not appear, the binary in the <b>Program</b> field is not the one you
+built — go back to the self-test in 2.3.</p>
+
+<p>Change the path and the offer follows it, immediately, as you type. Point the
+field at your old stock ngspice and <code>preserve</code> disappears again.</p>
+
+<h3>3.4 Pick preserve, then OK</h3>
+
+<p><b>preserve</b> is the mode you want. <code>VBG</code> stays <code>VBG</code>
+everywhere you can see it, while identity still folds underneath — so
+<code>VBG</code> and <code>vbg</code> remain the same node, your PDK subcircuits
+still resolve, and nothing about the circuit changes. It is a display-and-naming
+change, not an electrical one.</p>
+
+<p><b>distinguish</b> is the strict mode: <code>EN</code>, <code>en</code> and
+<code>En</code> become three different nets. That is occasionally exactly what you
+want and it is a real trap otherwise, because a library written in the old
+assumption will silently come apart. Do not reach for it just to get capitals in
+your plot legend.</p>
+
+<h3>3.5 Use this one:</h3>
+
+<p>Back on the list, set <b>Use this one:</b> to the entry you just made. Close the
+dialog. The ASE-L status bar now reads:</p>
+
+<pre><code>| Status: idle | T=27 C | Simulator: ngspice-ver50 | State: ngspice_state1 |
+</code></pre>
+
+<p>If it reads <code>Simulator: ngspice-ver50 &mdash; will not run</code>, the name
+resolved but the program did not — usually a typo in the path, or a binary without
+the execute bit. The <b>Problem</b> column in the list spells out which.</p>
+
+<p>Your list is written to <code>~/.xschem/ase_simulators</code> and read back at
+startup. This is a one-time setup, not a per-session one.</p>
+
+<h2>4. Re-run and plot</h2>
+
+<p>Case mode is a property of a <em>run</em>, not of a file. A results file you
+already have was written lowercase and stays lowercase forever — nothing can
+retro-fit capitals onto it. So:</p>
+
+<ol>
+  <li><b>Simulation &rarr; Netlist and Run.</b></li>
+  <li><b>Results &rarr; Direct Plot</b> (or <kbd>Ctrl-4</kbd> on the schematic if
+      you load <code>cadence_style_rc</code>), then click the wire or net label you
+      want. <kbd>ESC</kbd> plots the queue.</li>
+</ol>
+
+<p>Click the <code>VBG</code> net and you queue <code>v(VBG)</code>, capitals and
+all. Under <code>fold</code> that same click queued <code>v(vbg)</code>, because
+there was no point asking for a spelling the simulator was about to discard.</p>
+
+<h2>5. Did it actually work? Three checks</h2>
+
+<p><b>The status bar.</b> <code>Simulator:</code> names your entry, with no
+"will not run" after it.</p>
+
+<p><b>The results file.</b> ASE-L writes it beside the netlist, under
+<code>~/.xschem/simulations/</code>. Look at the variable table in the header:</p>
+
+<pre><code>$ head -c 4000 ~/.xschem/simulations/tb_bandgap_ase.raw | head -14
+Variables:
+        0   time     time
+        1   v(CLK)   voltage
+        2   i(E5)    current
+        3   v(E5_int1) voltage
+        4   v(EN_N)  voltage
+</code></pre>
+
+<p>Capitals in there mean the run really delivered <code>preserve</code>. All
+lowercase means it did not, whatever the dialog says, and the CIW will have printed
+a line saying so.</p>
+
+<p><b>The plot legend.</b> The point of the exercise.</p>
+
+<h2>6. Gotchas</h2>
+
+<h3>A <code>.spiceinit</code> beats the flag</h3>
+
+<p>xschem asks for a mode with <code>-D casemode=preserve</code> on the command
+line. An ngspice init file — <code>~/.spiceinit</code>, or one sitting beside the
+deck — overrides that, silently. If you have a <code>set casemode=fold</code>
+anywhere in one, it wins and your run folds.</p>
+
+<p>That is what the <b>-n</b> (<code>--no-spiceinit</code>) checkbox in the row
+editor is for: tick it and ngspice reads no init file at all. Worth knowing about
+before you spend an hour on it; not worth ticking pre-emptively, since init files
+usually carry things you want.</p>
+
+<h3>Check the net's real name before blaming case</h3>
+
+<p>In <code>tb_bandgap</code> the enable net is labelled <code>EN_N</code>. There is
+no net called <code>EN</code>, in any case. Plotting <code>v(EN)</code> fails for
+the ordinary reason and it looks exactly like a case problem. The labels on that
+sheet are <code>CLK</code>, <code>EN_N</code>, <code>START</code>,
+<code>TEMPERAT</code>, <code>VBG</code>, <code>VCC</code>, <code>VSS</code> — worth
+a glance at the schematic before you go hunting.</p>
+
+<h3>Old runs stay old</h3>
+
+<p>Re-open a state and the plots come back the way they were saved. The capitals
+arrive on the next run, not on the next open.</p>
+
+<h3>The global floor</h3>
+
+<p>If you always want to ask for <code>preserve</code>, put this in
+<code>~/.xschem/xschemrc</code>:</p>
+
+<pre><code>set sim_case_mode preserve
+</code></pre>
+
+<p>It is a floor, not an override: any registered simulator that names its own mode
+still wins. And on a stock ngspice it buys you nothing — the flag goes out, the
+simulator ignores it, and you get lowercase with a clear conscience. The registry
+entry is the reliable place to say it.</p>
+
+<h2>Appendix: doing it without the dialog</h2>
+
+<p><code>~/.xschem/ase_simulators</code> is a plain file of Tcl calls, read once at
+startup, and you may edit it by hand:</p>
+
+<pre><code># xschem ASE-L simulator list
+ase::sim_register ngspice-ver50 /home/you/ngspice/build-ver_50/src/ngspice \
+    -args {} -backend {} -casemode preserve -nospiceinit 0
+ase::sim_select ngspice-ver50
+</code></pre>
+
+<p>Two lines: register, then select. Here is the whole chain before and after,
+measured headlessly:</p>
+
+<pre><code>== before registering ==
+requested   : fold
+netlister   : fold
+
+== after registering with -casemode preserve ==
+label       : ngspice-ver50
+selectable  : fold preserve distinguish
+requested   : preserve
+netlister   : preserve
+run flag    : -D casemode=preserve
+</code></pre>
+
+<p>One field, four consumers: the deck the netlister writes, the flag on the
+simulator's command line, the spelling Direct Plot asks for, and the label in the
+status bar. That is the whole mechanism. If your <b>Case</b> dropdown says
+<code>preserve</code> and your plot still says <code>v(vbg)</code>, one of those
+four is being overridden — and the <code>.spiceinit</code> gotcha above is the
+overwhelmingly likely culprit.</p>

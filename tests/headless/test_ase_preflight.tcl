@@ -92,6 +92,15 @@ set tmp [test_scratch ase_preflight]
 set ::USER_CONF_DIR [file join $tmp conf]
 file mkdir $::USER_CONF_DIR
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## PF215c reads the case mode off the entry in force. Before the fix it read
+## `preserve` from the developer's registry and went red -- and went GREEN for
+## the wrong reason under a registry whose entry happened to say `distinguish`,
+## which is the shape of an unisolated suite that a count can never catch.
+eqcheck ISO1377-the-suite-runs-against-an-empty-simulator-registry \
+  [test_sim_registry_state] {0 {} {} path}
+
 # the CIW spy: ase::echo resolves ::ciw_echo BY NAME at call time. The TAG is
 # recorded as well as the text — item 14's finding is that a channel can be
 # correct and still reach nobody.

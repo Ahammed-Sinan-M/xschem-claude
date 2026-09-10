@@ -188,6 +188,25 @@ set KX_RC [file join $repo src cadence_style_rc]
 ## Taken BEFORE anything can write a file (hygiene row S1).
 set S1_ROOT0 [lsort [glob -nocomplain -directory $repo -tails untitled*]]
 
+## ⚠ THE PROJECT SETTINGS FILE IS A SNAPSHOT, NOT AN ABSENCE (issue 1381).
+## These rows used to assert that `<repo>/.xschem/op_param_lists.conf` did not
+## exist, which was true only for as long as nothing ever SAVED one.  It is a
+## legitimate user artifact -- `rdw::button save` with project scope writes
+## exactly there, by design -- so a developer who has used the feature in their
+## own tree redded this suite for having used it, and (worse) the obvious way
+## to green it again is to delete their file.  That happened: a real saved list
+## was destroyed because a red row read as litter.  What the row actually means
+## is "SECTION SD WROTE NOTHING HERE", so take the file's identity up front and
+## compare, the way the `untitled*` leg beside this one already does.
+proc kx_conf_stamp {} {
+  global repo
+  set f [file join $repo .xschem op_param_lists.conf]
+  if {![file exists $f]} { return {ABSENT} }
+  if {[catch {list [file size $f] [file mtime $f]} st]} { return {UNREADABLE} }
+  return $st
+}
+set S1_CONF0 [kx_conf_stamp]
+
 check {FX0 the canvas is mapped and really sized before anything is measured - every row below is silently vacuous without it} \
   [list [winfo ismapped .drw] [expr {[winfo width .drw] > 1 && [winfo height .drw] > 1 ? 1 : 0}]] \
   {1 1}
@@ -2124,12 +2143,20 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
   set SD3_LINE [kx_ans ::rdw::_target_line]
   catch {.rdw.b.delete invoke}
   update
-  check {SD3 the cursor rule end to end: a REAL Button-1 in the read-only pane sets the target row, and a REAL Delete invoke then acts on THAT row and no other - the store loses `ids`, keeps the two rows the cursor was not on, and the NEWEST block's own class is left unowned, so acting on the newest dump instead of the cursor's would red this row} \
-    [list [expr {[llength $SD3_BB] == 4 ? 1 : 0}] $SD3_LINE \
+  ## ⚠ AND THE NO-SELECTION CONDITION IS A LEG, NOT AN ASSUMPTION.  Since the
+  ## user's ruling a standing selection is what Add and Delete act on; the
+  ## shaded row is the target when there is none, which is exactly what a real
+  ## <Button-1> leaves behind (the Text class binding clears `sel`).  Asserting
+  ## it keeps this row a statement about the CURSOR rather than a row that is
+  ## green because of a state nobody wrote down.
+  set SD3_SEL 0
+  catch {set SD3_SEL [llength [.rdw.p.t tag ranges sel]]}
+  check {SD3 the cursor rule end to end: a REAL Button-1 in the read-only pane clears any selection and sets the target row, and a REAL Delete invoke then acts on THAT row and no other - the store loses `ids`, keeps the two rows the cursor was not on, and the NEWEST block's own class is left unowned, so acting on the newest dump instead of the cursor's would red this row} \
+    [list [expr {[llength $SD3_BB] == 4 ? 1 : 0}] $SD3_LINE $SD3_SEL \
           [kx_ans ::op_param_lists::owns class b5cls annotation] \
           [kx_ans ::op_param_lists::get_list class b5cls annotation] \
           [kx_ans ::op_param_lists::owns class b5pcls annotation]] \
-    [list 1 9 1 {{gm gm 1} {gds gds 1}} 0]
+    [list 1 9 0 1 {{gm gm 1} {gds gds 1}} 0]
 
   # --- SD3b  THE REAL DIALOG, WITH NO STUB ANYWHERE (issue 1314) ------------
   ## ⚠ THE REAL SCOPE DIALOG GOES BACK BEFORE THIS ROW, AND THAT IS THE ROW'S
@@ -2405,14 +2432,14 @@ C \{$SD_SYMP\} 300 -120 0 0 \{name=M2\}"
   catch {destroy .rdw.scope}
   kx_ans ::rdw::close
   update idletasks
-  check {SD4 HYGIENE section SD leaves nothing behind: no dialog, no window, no grab, no settings file under the repo's own .xschem and no untitled* anywhere} \
+  check {SD4 HYGIENE section SD leaves nothing behind: no dialog, no window, no grab, no untitled* anywhere, and the repo's own project settings file is byte-for-byte as section SD found it - which is the developer's file when they have one and still no file when they do not (issue 1381)} \
     [list [expr {[winfo exists .rdw.scope] ? 1 : 0}] \
           [expr {[winfo exists .rdw] ? 1 : 0}] \
           [grab current] \
-          [expr {[file exists [file join $repo .xschem op_param_lists.conf]] ? 1 : 0}] \
+          [expr {[kx_conf_stamp] eq $S1_CONF0 ? 1 : 0}] \
           [expr {[lsort [glob -nocomplain -directory $repo -tails untitled*]] eq $S1_ROOT0 ? 1 : 0}] \
           [llength [glob -nocomplain -directory $scratch -tails untitled*]]] \
-    {0 0 {} 0 1 0}
+    {0 0 {} 1 1 0}
 }
 
 # ============================================================================
@@ -2602,9 +2629,15 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
   set CU9_R2 [cu_ranges]
   set CU9_T2 [kx_ans ::rdw::_target_line]
   set CU9_A2 [cu_agree]
-  check {CU9 the shaded line and the row Delete/Add/Up/Down act on are ONE row: a click moves the target the buttons read, and rdw::set_row moves the shading the user sees - two cursors would let a button edit a line nobody is looking at, and every row in section BT would still pass} \
-    [list $CU9_T1 $CU9_A1 $CU9_R2 $CU9_T2 $CU9_A2] \
-    [list 4 1 [cu_span 9] 9 1]
+  ## ⚠ "WITH NO SELECTION STANDING" IS PART OF THE CLAIM NOW, AND IS ASSERTED.
+  ## The user's ruling gave Add and Delete the selected rows when a selection
+  ## is standing; the shaded row is the target when none is, which is what a
+  ## real click leaves behind.  Without this leg the row would read as "the
+  ## shaded row is always the target", which is no longer true.
+  set CU9_SEL [llength [cu_w .rdw.p.t tag ranges sel]]
+  check {CU9 with no selection standing - asserted, not assumed - the shaded line and the row Delete/Add/Up/Down act on are ONE row: a click moves the target the buttons read, and rdw::set_row moves the shading the user sees - two cursors would let a button edit a line nobody is looking at, and every row in section BT would still pass} \
+    [list $CU9_T1 $CU9_A1 $CU9_R2 $CU9_T2 $CU9_A2 $CU9_SEL] \
+    [list 4 1 [cu_span 9] 9 1 0]
 
   # --- CU10  THE FENCE: the selection still works, and still SHOWS ----------
   ## GREEN TODAY on legs 1-3 and it must stay green. A <Button-1> binding that
@@ -4612,14 +4645,27 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
   set KD1_NB_C [kx_nblocks]
   set KD1_NEW [kd_newest]
 
-  check {KD1 THE USER'S THIRD SYMPTOM, DRIVEN WITHOUT GRANTING THE FOCUS THE SHIPPED CODE NEVER GRANTS: press 2 on the canvas, click the parameter row the status line tells you to click - which parks the keyboard on the pane, asserted as a leg - press Delete and accept the defaults, then press 2 again where your hands are, and the window shows the store you just changed instead of the row you just deleted} \
+  ## ⚠ TWO LEGS HERE REVERSED WITH THE USER'S RULING (item: blocks follow a
+  ## list edit).  They used to gold the FROZEN RECORD: the block already in the
+  ## pane kept `zid` after `zid` was deleted, because `_reslot_block` is a
+  ## strict permutation and could re-order rows but never drop one.  The user's
+  ## report was "Delete is not affecting the current display.  Only future
+  ## items sent to the RDW are conforming to the new list", and the ruling was
+  ## REBUILD THEM -- so a block whose device belongs to the edited class is
+  ## re-dumped from the loaded raw, and BOTH the block on screen at the moment
+  ## of the press (leg 7) and the older one still in the store (leg 12) now
+  ## lose the row.  The cost was stated and accepted: a block stops being a
+  ## frozen record of the run and an older dump changes under its reader.
+  ## The row's own subject -- the keyboard is on the pane and stays there -- is
+  ## untouched, and legs 9..11 still prove the press produced a NEW dump.
+  check {KD1 THE USER'S THIRD SYMPTOM, DRIVEN WITHOUT GRANTING THE FOCUS THE SHIPPED CODE NEVER GRANTS: press 2 on the canvas, click the parameter row the status line tells you to click - which parks the keyboard on the pane, asserted as a leg - press Delete and accept the defaults, then press 2 again where your hands are, and the window shows the store you just changed instead of the row you just deleted - and by the user's ruling the block ALREADY in the pane lost the deleted row the moment Delete succeeded, without waiting for that second press} \
     [list $KD1_NB_A [expr {$KD1_ROW > 0 ? 1 : 0}] $KD1_FOCUS \
           $KD1_EFF0 $KD1_EFF1 $KD1_WHERE \
-          [kx_has $KD1_SHOWN { zid }] $KD1_NB_B \
+          [kx_has $KD1_SHOWN { zid }] [kx_has $KD1_SHOWN { zgm }] $KD1_NB_B \
           $KD1_NB_C [kx_has $KD1_NEW { zgm }] [kx_has $KD1_NEW { zid }] \
-          [kx_has [kd_nth 1] { zid }]] \
+          [kx_has [kd_nth 1] { zid }] [kx_has [kd_nth 1] { zgm }]] \
     [list 1 1 .rdw.p.t {{zid zid 0} {zgm zgm 1}} {{zgm zgm 1}} .rdw.p.t \
-          1 1 2 1 0 1]
+          0 1 1 2 1 0 0 1]
 
   ## KD2 -- THE COPY MUST SURVIVE THE NEW KEYBOARD.
   set KD2_L0 [.rdw.p.t bbox 4.0]
@@ -4660,6 +4706,101 @@ if {[kx_ans ::rdw::have_tk] eq {1}} {
     {1 1 1 1 1}
 
   catch {clipboard clear}
+  kx_ans ::rdw::set_list summary
+}
+
+# ============================================================================
+# SECTION HP — ISSUE 1384, THROUGH THE REAL KEYBOARD AND THE REAL STATUS BAR
+# ============================================================================
+# The sentence, the slot, the tooltip arithmetic and all four exits are section
+# HT of test_rdw_window_1245.tcl, which drives `rdw::key` as a COMMAND.  What
+# only this file can add is the user's actual gesture: a bare `1` on the design
+# canvas under src/cadence_style_rc, which is where ruling D-2 put those keys
+# and which cannot be sourced under --nogui at all.
+#
+# ⚠ NO WIDTH IS ASSERTED HERE.  The tooltip half is width-dependent and the
+# main window's width is restored per schematic FILE out of the user's
+# `~/.xschem/geometry` (issue 1385), so it is measured in the window suite,
+# which sets its own geometry.  These two rows are about text on a label.
+if {[kx_ans ::rdw::have_tk] eq {1} && [winfo exists .statusbar.10]} {
+  set HP_SLOT [kx_ans ::rdw::_hint_slot [xschem get current_win_path]]
+  set HP_ANN {Click on instance for annotation OP info in Results Display Window}
+  proc hp_txt {} { global HP_SLOT ; set r {} ; catch {set r [$HP_SLOT cget -text]} ; return $r }
+  proc hp_st  {} { global HP_SLOT ; set r {} ; catch {set r [$HP_SLOT cget -state]} ; return $r }
+  proc hp_pumping {} { return [expr {[info exists ::rdw::hint(after)] ? 1 : 0}] }
+  ## The mode's private binding tag on the design canvas -- the SYNCHRONOUS
+  ## re-assert, which is what actually keeps the sentence on screen while the
+  ## pointer moves (the 80 ms timer alone was measured to lose 16-40% of the
+  ## time to C's per-event blank).  Asked for by name from the proc that owns
+  ## it, so this reader cannot drift from the code.
+  proc hp_tagged {} {
+    set t [kx_ans ::rdw::_hint_tag]
+    if {![winfo exists .drw]} { return NO-CANVAS }
+    return [expr {[lsearch -exact [bindtags .drw] $t] >= 0 ? 1 : 0}]
+  }
+  proc hp_settle {{n 8}} { for {set i 0} {$i < $n} {incr i} { catch {update} ; after 30 } }
+
+  ## -------------------------------------------------------------------------
+  ## HP1 — THE USER'S OWN GESTURE, END TO END.
+  ## Bare `1` on the canvas with nothing selected: cadence_style_rc's bind ->
+  ## rdw::key -> the `none` branch -> pick_start -> the sheet says what the
+  ## mode is waiting for.  Then the mode's own documented exit, a real ESC on
+  ## the canvas, takes it away again.  The slot is asserted BLANK first, so a
+  ## label that already said this cannot make the row pass.
+  kx_ans ::rdw::pick_end
+  kx_reset
+  hp_settle 4
+  set HP1_PRE [list [hp_txt] [hp_st] [hp_pumping] [hp_tagged]]
+  focus -force .drw ; update idletasks
+  event generate .drw <Key-1> -when now
+  update
+  hp_settle 6
+  set HP1_UP [list [hp_txt] [hp_st] [hp_pumping] [hp_tagged] [seized] [kx_listkind]]
+  ## THE MOUSE MOVES, WHICH IS WHAT THE SENTENCE IS ASKING FOR.  C blanks
+  ## `.statusbar.10` at the top of `callback()` on every canvas event, so a row
+  ## that reads the label without ever moving the pointer reads a label nothing
+  ## attacked.  These are real motions on the real canvas, delivered `-when now`
+  ## so no timer can have run between the last one and the read: what survives
+  ## them is the binding tag's work.
+  for {set _i 0} {$_i < 8} {incr _i} {
+    event generate .drw <Motion> -x [expr {60 + $_i * 13}] -y [expr {60 + $_i * 9}] -when now
+  }
+  set HP1_MOVED [list [hp_txt] [hp_st] [hp_tagged]]
+  focus -force .drw ; update idletasks
+  event generate .drw <Key-Escape> -when now
+  update
+  set HP1_DOWN [list [hp_txt] [hp_st] [hp_pumping] [hp_tagged] [seized]]
+  check {HP1 A BARE 1 ON THE DESIGN CANVAS, WITH NOTHING SELECTED, MAKES THE SHEET SAY WHAT THE COMMAND MODE IS WAITING FOR AND KEEPS SAYING IT WHILE THE HAND MOVES - and a real ESC on the canvas takes it back: the profile's own keybinding reaches rdw::key, the none branch arms the pick, .statusbar.10 carries the user's annotation sentence in the -state active C uses for its own mode prompts, the private binding tag is on the canvas and the backstop timer is armed; eight real hover motions delivered synchronously leave the sentence STANDING, which is C's per-event blank being undone in the same binding invocation it happened in; and after the mode's documented exit the label is blank, normal, untagged and unpumped again with the canvas handed back} \
+    [list $HP1_PRE $HP1_UP $HP1_MOVED $HP1_DOWN] \
+    [list [list { } normal 0 0] [list $HP_ANN active 1 1 1 annotation] \
+          [list $HP_ANN active 1] [list { } normal 0 0 0]]
+
+  ## -------------------------------------------------------------------------
+  ## HP2 — THE RULING, THROUGH THE REAL KEYBOARD.
+  ## "If an instance is selected and user presses 1/2/3, only the selected
+  ## instance is processed.  One does not enter command mode in this case."
+  ## Driven at HEAD before the hint existed and already true; what this row
+  ## adds is that the SHEET stays silent on that branch, and it asserts the
+  ## dump really happened so the silence is not the silence of a dead key.
+  kx_ans ::rdw::pick_end
+  kx_reset
+  hp_settle 4
+  xschem unselect_all
+  xschem select instance M1
+  set HP2_SEL [xschem get lastsel]
+  focus -force .drw ; update idletasks
+  event generate .drw <Key-1> -when now
+  update
+  hp_settle 6
+  set HP2 [list [hp_txt] [hp_st] [hp_pumping] [hp_tagged] [seized] \
+                [expr {[kx_nblocks] >= 1 ? 1 : 0}]]
+  xschem unselect_all
+  kx_ans ::rdw::close
+  kx_reset
+  check {HP2 WITH AN INSTANCE SELECTED THE SAME KEY SAYS NOTHING ON THE SHEET, WHICH IS THE USER'S OWN RULING: a real bare 1 with M1 selected dumps M1 and enters NO command mode, so .statusbar.10 is still blank and normal, no backstop timer is running, no binding tag is left on the canvas and the canvas is not seized - and the dump leg is there so the silence cannot be the silence of a key that did nothing} \
+    [list $HP2_SEL $HP2] \
+    [list 1 [list { } normal 0 0 0 1]]
+
   kx_ans ::rdw::set_list summary
 }
 
@@ -4804,7 +4945,20 @@ catch {xschem raw clear}
 ## now spends the one-shot - so it does not move the count.  Issue 1369's
 ## structural row is K18 of test_rdw_window_1245.tcl.  A floor is raised when
 ## rows are added and NEVER lowered to make a run pass.
-set KX_FLOOR 90
+## ⚠ AND RAISED 90 -> 92 BY ISSUE 1384, IN THE SAME COMMIT AS HP1 AND HP2 -
+## the two rows that press a bare `1` on the design canvas under this profile's
+## own binding and read the SHEET's status bar: once with nothing selected,
+## where the pick mode arms and the sentence appears and a real ESC takes it
+## away, and once with an instance selected, where the user's ruling says only
+## that instance is processed and no command mode is entered, so the sheet must
+## stay silent.  Both are behind this file's `[kx_ans ::rdw::have_tk] eq {1}`
+## guard plus a `winfo exists .statusbar.10`, so a display that fails to come
+## up drops them silently - which is exactly what a floor is for.  The
+## sentence, the slot arithmetic, the tooltip and all four exits are section HT
+## of test_rdw_window_1245.tcl, whose RW_FLOOR moves 193 -> 197 in the same
+## commit.  A floor is raised when rows are added and NEVER lowered to make a
+## run pass.
+set KX_FLOOR 92
 set KX_RAN [expr {$npass + $fail}]
 if {$KX_RAN < $KX_FLOOR} {
   puts "FAIL: KXFLOOR the suite ran only $KX_RAN checks, below its floor of\

@@ -68,6 +68,14 @@ set repo    [file normalize [file join $here .. ..]]
 source [file join $here scratch.tcl]
 set scratch [test_scratch ase_unnamed_net]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## AN5/AN6 pin FOLDED names (`v(out)`, `i(v1)`). MEASURED before this line:
+## 2 FAILED under the developer's HOME and under a hostile registry, ALL PASS (28)
+## under a HOME with no registry.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 if {[catch {
 
 # --- fixture -----------------------------------------------------------------

@@ -129,3 +129,86 @@ proc test_scratch_drop {d} {
   if {$i >= 0} { set ::__scratch_dirs [lreplace $::__scratch_dirs $i $i] }
   catch {file delete -force $d}
 }
+
+## ---------------------------------------------------------------------------
+## Simulator-registry isolation (issue 1377)
+## ---------------------------------------------------------------------------
+## `src/xschem.tcl` calls `ase::sim_load_conf` once at startup, beside the other
+## startup loaders, so EVERY `--script` suite begins with whatever is in the
+## person's own `~/.xschem/ase_simulators` already registered, already in force,
+## and already answering `ase::sim_status`. SIX suites pinned expectations
+## against that answer and went red the day the developer registered a build:
+## `test_ase_core` 7, `test_ase_persist` 5, `test_ase_final` 3,
+## `test_ase_preflight` 2 and `test_ase_sod_case` 11 failures, plus
+## `test_ase_final_gf180` which ABORTS on a registry naming a program that is
+## not there. All six are ALL PASS under a HOME with no registry: same tree,
+## same commit, same binary — see
+## doc/claude/issues/1377-four-ase-suites-read-the-developers-simulator-registry.md
+##
+## ⚠ NOTHING HERE TOUCHES A FILE, AND THAT IS THE POINT. The obvious remedy —
+## move `~/.xschem/ase_simulators` aside for the duration — writes the user's
+## live data and loses it on any abort, and there are two aborts in this very
+## defect's own measurements. The registry is already in MEMORY by the time a
+## suite's first line runs, so clearing memory is both sufficient and the only
+## safe move. The user's file is never read, written, renamed or backed up.
+##
+## ⚠ OPT-IN, NOT AUTOMATIC, and deliberately not folded into `test_scratch`.
+## 171 suites source this file and 66 of them speak `ase::`; several are ABOUT
+## the registry (`test_ase_simreg_0931`, `test_sim_casemode_registry`) and build
+## their own fixtures in it. A clear that arrived as a side effect of asking for
+## a directory would be a second invisible dependency replacing the first. The
+## call is one greppable line at the top of a suite, which is also how a reader
+## sees the suite DECLARING its independence instead of inheriting it.
+
+## Forget every registered simulator, every measured capability, and the rc-layer
+## seeds that could put one back. Safe to call more than once, safe to call in a
+## tree where `ase.tcl` was never sourced, and never raises.
+proc test_sim_registry_isolate {} {
+  ## ⚠ AND NOTHING THIS SUITE REGISTERS MAY REACH THE DISK (2026-09-08).
+  ## `ase::sim_register` / `ase::sim_unregister` now persist the registry at the
+  ## moment it changes -- the user's ruling, and the repair for a Command-window
+  ## registration that vanished at the next start. Their target is
+  ## $::USER_CONF_DIR/ase_simulators, i.e. the developer's REAL list when a
+  ## suite has not redirected it, so a suite that registers `/bin/sh` as a
+  ## simulator would take away the build they actually use. Clearing the
+  ## autosave seam is how this helper keeps the promise it already makes above:
+  ## nothing here touches a file. A suite whose SUBJECT is the saving
+  ## (test_ase_simreg_0931, test_ase_simdlg_0937) does not call this helper --
+  ## it redirects ::USER_CONF_DIR into its own scratch instead, and keeps the
+  ## real writer under test.
+  catch {set ::ase::sim_autosave 0}
+  ## the conf layer + the session layer + the choice in force
+  catch {ase::sim_clear}
+  ## measured capability answers are keyed on a resolved path: a cleared
+  ## registry must not leave the OLD program's `altshow` verdict behind, which
+  ## is what moved test_ase_core's C5b/C6/C8 save tier.
+  catch {ase::sim_caps_clear}
+  ## the rc layer, so nothing re-seeds from a workarea rc or a startup file
+  set ::ASE_SIMULATORS {}
+  set ::ASE_SIMULATOR  {}
+  return {}
+}
+## ⚠ THE LAST THREE LINES ABOVE ARE FENCED BY `ISO1377b` IN test_ase_core.tcl,
+## NOT BY THE PER-SUITE ROW. MEASURED on this box: at the instant a suite's first
+## line runs the capability cache is EMPTY and both rc seeds are `{}`, so no HOME
+## anyone can construct reds them — they guard a WORKAREA rc (layer 1 of the
+## registry design) and a suite that probes before it isolates. ISO1377b builds
+## that dirty precondition itself and demands all three clears undo it, because a
+## line nothing can red is a line that quietly stops working.
+
+
+## The registry's observable state, as the four things a suite actually depends
+## on: how many entries exist, which is in force, which entry the resolver
+## attributes an `ngspice` run to, and whether that answer came from the PATH or
+## from the registry. An isolated suite reads {0 {} {} path}.
+proc test_sim_registry_state {} {
+  set n 0 ; set sel {} ; set entry {} ; set src {}
+  catch {set n   [llength [ase::sim_list]]}
+  catch {set sel [ase::sim_selected]}
+  catch {
+    set s [ase::sim_status ngspice]
+    set entry [dict get $s entry]
+    set src   [dict get $s source]
+  }
+  return [list $n $sel $entry $src]
+}

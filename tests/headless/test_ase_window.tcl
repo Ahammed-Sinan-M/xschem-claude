@@ -22,7 +22,10 @@
 #          control the user's 2026-08-24 ruling moved OUT of the schematic's
 #          View menu; tests/headless/test_annot_show_menu.tcl keeps only the
 #          deletion half;
-#          W1s the action strip; W1r/W1u/W1t (issue 0650, R-0653-d req 2)
+#          W1s the action strip, W1s1-W1s6 (issue 1391) its EIGHT tooltips
+#          read back off the live <Enter> bindings plus the menubar twins
+#          they are built from and the `Simulation > Stop` path issue 1389
+#          prints; W1r/W1u/W1t (issue 0650, R-0653-d req 2)
 #          the OP-card remedy's menu path asserted against the LIVE
 #          Outputs entry and the LIVE Save All checkbutton, never
 #          against prose; W1c the per-pane context menus; re-open
@@ -62,6 +65,17 @@
 #          without ngspice. Every generated <Return> goes through the
 #          focus-gated send_return helper (WSLg focus-async, the W6c
 #          diagnosis extended file-wide).
+#   R1-R14 the Netlist-and-Run DOOR asks "is the design REACHABLE" and no
+#          longer "is it CURRENT" (issue 0643, descend_run_batch item B), on a
+#          two-level scratch hierarchy that reproduces the user's reported
+#          `sch_path` `.x1.x1.`: the descended press runs without routing or
+#          moving the user (R4-R6), a design that is nowhere is still refused
+#          in the NEW words after ONE `ifhidden` route (R7-R9), the routing
+#          arm still works (R10), 1389's run_busy is still the first statement
+#          (R11), do_run_existing is untouched (R12), and R13/R14 press the
+#          real Simulation menu entry under X and read the status segment. The
+#          block is LAST in the file and runs in BOTH arms; R2 is the
+#          anti-vacuity anchor (the OLD predicate is false at that exact spot).
 #
 # Runs via full_audit's DEFAULT arm. Standalone repro from the repo ROOT:
 #   ./src/xschem --pipe -q --nolog --script tests/headless/test_ase_window.tcl
@@ -240,6 +254,22 @@ set models  [file join $repo sky130A models libs.tech combined sky130.lib.spice]
 source [file join $here scratch.tcl]
 set scratch [test_scratch ase_window]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## W6 and the run legs drive a real ngspice. MEASURED before this line:
+## ALL PASS (228) under the developer's HOME, 1 FAILED (227) under a HOME with no
+## registry, and 5 FAILED with 44 rows NEVER RUN under a registry naming a WORKING
+## build -- the W6 log window never appears and the suite dies on
+## `invalid command name ".ase7.logwin.t"`.
+## ⚠ READ THE MIDDLE COLUMN. This suite passed on this box ONLY because the
+## developer had a fast local build registered. Isolating it turned W7
+## ("simulator produced output before Stop") RED under every HOME -- 3/3, not a
+## flake -- because W7's 5 s bound was never enough for the ngspice an isolated
+## suite actually runs. W7 carries its own fix and its own measurements; the
+## isolate did not break it, it exposed it.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 # --- scratch lib/cell/view fixture + registry --------------------------------
 # clean nfet schematic (the test_ase_core fixture: nfet_test_claude minus its
 # corner + simulator_commands_shown instances)
@@ -265,6 +295,91 @@ file mkdir [file join $scratch aselib nfet_clean schematic]
 set f [open [file join $scratch aselib nfet_clean schematic nfet_clean.sch] w]
 puts -nonewline $f $sch_text
 close $f
+
+# --- the TWO-LEVEL fixture, for the R reachability rows (issue 0643) --------
+# The user's report is a HIERARCHY report -- "I descend into x1 and again x1,
+# now I click N&>" -- so the door's rows need a stack with something on it, and
+# the flat nfet_clean above cannot supply one. hier_top -x1-> hier_mid -x1->
+# hier_leaf reproduces the reported shape exactly (`sch_path` `.x1.x1.`,
+# MEASURED) in three tiny cells that live entirely in the scratch tree.
+#
+# ⚠ DELIBERATELY NOT the shipped sky130_tests_ase/tb_bandgap the batch was
+# measured on, for two reasons: descending it and coming back would touch a
+# cell that ships with a `<cell>~.sch` beside it (CREW_BRIEF section 4, issue
+# 0626), i.e. WRITE in the repo tree; and the door under test does not care
+# what is in the cells, only that the design is on the stack. `type=subcircuit`
+# is what makes the symbol descendable at all.
+proc w_hier_write {p txt} {
+  file mkdir [file dirname $p]
+  set fh [open $p w]
+  puts -nonewline $fh $txt
+  close $fh
+}
+set hier_sym {v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {type=subcircuit
+format="@name @pinlist @symname"
+template="name=x1"
+}
+V {}
+S {}
+E {}
+B 5 -82.5 -2.5 -77.5 2.5 {name=A dir=inout}
+L 4 -80 0 -40 0 {}
+L 4 -40 -20 40 -20 {}
+L 4 40 -20 40 20 {}
+L 4 40 20 -40 20 {}
+L 4 -40 20 -40 -20 {}
+T {@symname} -38 -6 0 0 0.3 0.3 {}
+T {@name} -5 -32 0 0 0.2 0.2 {}
+}
+w_hier_write [file join $scratch aselib hier_mid  symbol hier_mid.sym]  $hier_sym
+w_hier_write [file join $scratch aselib hier_leaf symbol hier_leaf.sym] $hier_sym
+w_hier_write [file join $scratch aselib hier_top schematic hier_top.sch] \
+{v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {}
+V {}
+S {}
+E {}
+N 200 -100 280 -100 {}
+C {aselib/hier_mid} 360 -100 0 0 {name=x1}
+C {devices/lab_wire} 220 -100 0 0 {name=lT lab=TNET}
+}
+w_hier_write [file join $scratch aselib hier_mid schematic hier_mid.sch] \
+{v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {}
+V {}
+S {}
+E {}
+N 200 -100 280 -100 {}
+C {aselib/hier_leaf} 360 -100 0 0 {name=x1}
+C {devices/ipin} 200 -100 0 0 {name=pA lab=A}
+}
+w_hier_write [file join $scratch aselib hier_leaf schematic hier_leaf.sch] \
+{v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {}
+V {}
+S {}
+E {}
+N 200 -100 280 -100 {}
+C {devices/ipin} 200 -100 0 0 {name=pA lab=A}
+C {devices/gnd} 280 -100 0 0 {name=GND1 lab=GND}
+}
+# a cell that is on NO session's design list: the "design is nowhere" arm needs
+# somewhere real to be standing that is not the design
+w_hier_write [file join $scratch aselib hier_else schematic hier_else.sch] \
+{v {xschem version=3.4.7RC file_version=1.2}
+G {}
+K {}
+V {}
+S {}
+E {}
+N 0 0 100 0 {}
+}
+
 set f [open [file join $scratch library.defs] w]
 puts $f "DEFINE aselib [file join $scratch aselib]"
 puts $f "DEFINE sky130_fd_pr [file join $repo sky130A xschem_libs sky130_fd_pr]"
@@ -411,6 +526,206 @@ check "P4 arg_summary dc row" \
   [ase::ui::arg_summary {type dc enabled 0 source V2 start 0 stop 1.8 step 0.01}] \
   {source=V2 start=0 stop=1.8 step=0.01}
 
+
+# =============================================================================
+# L1398 -- THE FONT AND THEME DERIVATION, AS A RULE RATHER THAN A READING
+# =============================================================================
+# ase::theme used to `font create` three fonts from two families it NAMED --
+# Arial 10 bold and Courier 13 -- and NEITHER FAMILY IS INSTALLED here, so Tk
+# substituted Nimbus Sans / Nimbus Mono PS and ASE-L became the only window in
+# the process not drawn in the system face: the RDW, the CIW, the Calculator,
+# the Library Manager and the property form all render in DejaVu. Issue 1398
+# replaced the nine `font create` lines with a copy of TkDefaultFont's and
+# TkFixedFont's OWN SPECS, taken with `font configure`.
+#
+# ⚠ THESE ROWS ARE WHAT MAKES THAT PERMANENT INSTEAD OF TEMPORARY, and the way
+# they are written is the whole point. A row asserting `-family {DejaVu Sans}`
+# would be THE SAME DEFECT as the one it replaced, one machine later: this box
+# resolves `sans-serif` to DejaVu and the next one need not. So nothing here
+# names a family at all. L1398a forbids the literal in the source; the live
+# rows (W1f1) assert only the RELATION to Tk's own bases.
+#
+# BOTH ARMS. These are a file scan and a pure predicate: `ase::font_size`,
+# `ase::shade` and `ase::ui::colw` are all reachable under --nogui (measured),
+# which is exactly what reading the knob INSIDE ase::theme buys.
+
+set L1398_SRC [file join $repo src ase_window.tcl]
+
+proc l1398_read {p} {
+  if {![file exists $p]} { return {} }
+  set f [open $p r] ; set d [read $f] ; close $f ; return $d
+}
+
+## Strip Tcl comments from ONE line, so every scan below reads code and never
+## prose. Two shapes and both are load-bearing here: a `#` in column 1 (after
+## indentation) is a whole-line comment, and `;#` opens a trailing one. The
+## font block's own comment wall NAMES Arial, Courier, Nimbus and DejaVu on
+## purpose -- it is the record of what went wrong -- so a scanner that could
+## not tell prose from code would red on the explanation of the fix itself.
+proc l1398_code {line} {
+  set t [string trimleft $line]
+  if {[string index $t 0] eq {#}} { return {} }
+  set i [string first {;#} $t]
+  if {$i >= 0} { set t [string range $t 0 [expr {$i - 1}]] }
+  return [string trim $t]
+}
+
+## Every code line of $path that names a font FAMILY, as a sentence naming the
+## file and the line -- because the product of this row is that the next author
+## reads the failure text and knows what to take out and where.
+##
+## TWO TERMS, because a family literal has two spellings and catching one of
+## them would leave the door open:
+##   T1  the `-family` option in any spelling. There is no honest use for it
+##       in this file: the whole spec dict is copied from the base font, so
+##       naming a family is by definition overriding the derivation.
+##   T2  a family NAME, for the positional spelling `font create X {Nimbus
+##       Sans} 10`, which carries no `-family` at all.
+##
+## `times` and `fixed` are deliberately NOT in T2's list. They are ordinary
+## English words ("three times", "fixed at 90 px") and a lint that reds on
+## prose is a lint the next author deletes rather than obeys.
+set L1398_FAMS {arial courier helvetica nimbus dejavu liberation verdana
+                tahoma segoe consolas lucida sans-serif monospace
+                {times new roman}}
+proc l1398_family_scan {path fams} {
+  set bad {}
+  set n 0
+  foreach line [split [l1398_read $path] "\n"] {
+    incr n
+    set t [l1398_code $line]
+    if {$t eq {}} continue
+    if {[regexp -- {(^|[^[:alnum:]_])-family([^[:alnum:]_]|$)} $t]} {
+      lappend bad "[file tail $path]:$n overrides the derivation with -family: $t"
+      continue
+    }
+    set low [string tolower $t]
+    foreach f $fams {
+      if {[string first $f $low] >= 0} {
+        lappend bad "[file tail $path]:$n names the font family `$f`: $t"
+        break
+      }
+    }
+  }
+  return $bad
+}
+
+## THE NON-VACUITY GUARD, and it is not decoration: a scan of a file that has
+## been renamed, gutted or moved scans perfectly clean. The second term proves
+## the font block this row exists to protect is still IN the file being
+## scanned, by its four role names.
+set L1398_ROLES {}
+foreach r {AseEntryFont AseBodyFont AseLabelFont AseMonoFont} {
+  if {[regexp "ase::_mkfont +$r" [l1398_read $L1398_SRC]]} { lappend L1398_ROLES $r }
+}
+check "L1398a SOURCE-GREP src/ase_window.tcl names no font family anywhere in its code: the four roles are DERIVED from TkDefaultFont/TkFixedFont, and a family literal -- ANY family literal, including this machine's own -- is the defect 1398 removed" \
+  [list [l1398_family_scan $L1398_SRC $L1398_FAMS] $L1398_ROLES] \
+  [list {} {AseEntryFont AseBodyFont AseLabelFont AseMonoFont}]
+
+## L1398b THE DETECTOR'S OWN EVIDENCE. A scan that finds nothing is not
+## evidence until it has been shown to find something, and to find it for the
+## right reason. Eight fixtures written as DATA: the three spellings of the
+## defect, the derived line that must stay green, and the four ways a file can
+## LOOK like it names a family without doing it. The last group is not a
+## hypothetical shape -- it is exactly what the shipped comment wall does on
+## four consecutive lines, and a naive grep would red on all four.
+proc l1398_fixture {tag body} {
+  set p [file join $::scratch l1398_$tag.tcl]
+  set f [open $p w] ; puts -nonewline $f $body ; close $f
+  return $p
+}
+set LFAM(opt)     [l1398_fixture opt     "font create AseEntryFont -family Arial -size 10\n"]
+set LFAM(pos)     [l1398_fixture pos     "font create AseMonoFont \{Nimbus Mono PS\} 13\n"]
+set LFAM(dict)    [l1398_fixture dictset "dict set uispec -family \{DejaVu Sans\}\n"]
+set LFAM(derived) [l1398_fixture derived "catch \{set uispec \[font configure TkDefaultFont\]\}\nase::_mkfont AseEntryFont \$uispec normal\n"]
+set LFAM(whole)   [l1398_fixture whole   "  # This window asked for Arial 10 bold and Courier 13.\n"]
+set LFAM(trail)   [l1398_fixture trail   "set x 1 ;# Courier was the old mono face\n"]
+set LFAM(english) [l1398_fixture english "set n 3\nputs \{dragged four times\}\nset w 90 \n"]
+set LFAM(clean)   [l1398_fixture clean   "ase::_mkfont AseLabelFont \$uispec bold\n"]
+check "L1398b the family detector really detects: both spellings and the dict override are caught, the derived lines are not, and neither a whole-line comment nor a trailing one nor the English word `times` is mistaken for a family" \
+  [list [llength [l1398_family_scan $LFAM(opt)     $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(pos)     $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(dict)    $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(derived) $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(whole)   $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(trail)   $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(english) $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(clean)   $L1398_FAMS]]] \
+  {1 1 1 0 0 0 0 0}
+check_true "L1398b ...and the failure text names the file and the line, which is the row's whole product" \
+  [expr {[string first "[file tail $LFAM(opt)]:1" \
+          [lindex [l1398_family_scan $LFAM(opt) $L1398_FAMS] 0]] >= 0}]
+
+## L1398c NO PIXEL CONSTANT IN A TREEVIEW COLUMN. Five treeview sites in
+## ase_window.tcl declare twenty columns between them and every one of them
+## used to be `-width <integer>` with no -minwidth at all. Pixel constants
+## against POINT font sizes break at every `tk scaling`: MEASURED on the
+## shipped code at scaling 2.0, `Enable` needed 65 px in a 63 px column, `Save`
+## 46 in 50, and `Save Options` 128 in 90 -- 72 after four resize cycles.
+##
+## The live rows reach two of the five sites (the three panes at W1f6, Model
+## Files at D1398f). THIS row is what covers the other three -- Results >
+## Select, Setup > Simulators and Simulation > Options -- and what covers all
+## five against an author who has not read any of them.
+proc l1398_pixel_scan {path} {
+  set bad {}
+  set n 0
+  foreach line [split [l1398_read $path] "\n"] {
+    incr n
+    set t [l1398_code $line]
+    if {$t eq {}} continue
+    if {![regexp -- {(^|[^[:alnum:]_])column($|[^[:alnum:]_])} $t]} continue
+    if {[regexp -- {-(min)?width +\{?-?[0-9]} $t]} {
+      lappend bad "[file tail $path]:$n pins a treeview column in PIXELS: $t"
+    }
+  }
+  return $bad
+}
+set L1398_COLW [expr {[regexp {proc ase::ui::colw } [l1398_read $L1398_SRC]] ? 1 : 0}]
+check "L1398c SOURCE-GREP no treeview column in src/ase_window.tcl is pinned in pixels: every -width and every -minwidth comes through ase::ui::colw, so all five tables follow the font instead of breaking at the next tk scaling" \
+  [list [l1398_pixel_scan $L1398_SRC] $L1398_COLW] {{} 1}
+
+set LPIX(pinned)  [l1398_fixture pinned  "\$w.tv column name -width 140 -anchor w -stretch 1\n"]
+set LPIX(minpin)  [l1398_fixture minpin  "\$w.tv column name -minwidth 20\n"]
+set LPIX(derived) [l1398_fixture pderiv  "\$w.tv column \$c -width \[ase::ui::colw 14 \$h\] -minwidth \[ase::ui::colw 0 \$h\]\n"]
+set LPIX(button)  [l1398_fixture pbutton "button \$w.btns.close -text Close -width 8\n"]
+set LPIX(comment) [l1398_fixture pcomm   "# \$w.tv column name -width 140 was the shipped pin\n"]
+check "L1398d the pixel detector really detects: a pinned -width and a pinned -minwidth are caught, the colw-derived line is not, and neither a `-width 8` on a BUTTON nor the shipped pin quoted in a comment is mistaken for one" \
+  [list [llength [l1398_pixel_scan $LPIX(pinned)]] \
+        [llength [l1398_pixel_scan $LPIX(minpin)]] \
+        [llength [l1398_pixel_scan $LPIX(derived)]] \
+        [llength [l1398_pixel_scan $LPIX(button)]] \
+        [llength [l1398_pixel_scan $LPIX(comment)]]] \
+  {1 1 0 0 0}
+
+## L1398e THE SIZE KNOB REFUSES, IT DOES NOT CLAMP. `ase_font_size` ships as 0
+## = "follow TkDefaultFont"; the accepted band is 6..32 inclusive. An
+## out-of-band value falls back to the system size rather than being pulled to
+## the nearest legal one, because a clamp turns a typo into a silent new
+## setting the user never chose and can only discover by measuring glyphs. Same
+## contract as rdw::font_size (rdw.tcl:2313) and ciw_font (ciw.tcl:391).
+##
+## ⚠ THE DISCRIMINATING VALUES ARE 5 AND 40, AND NOTHING ELSE IN THE TABLE IS.
+## A clamp answers 6 and 32 where a refusal answers {}; BOTH answer {} for
+## `abc` and for the empty string, so the letters alone cannot tell the two
+## designs apart. 6 and 32 are in the table for the other half of the same
+## claim -- the band's own edges are ACCEPTED, so "refuses everything" is not
+## a way to pass this row.
+set L1398_KNOB_WAS [expr {[info exists ::ase_font_size] ? $::ase_font_size : {}}]
+set L1398_KNOB_HAD [info exists ::ase_font_size]
+set l1398_knob {}
+foreach v {14 6 32 5 40 33 -1 0 abc {} 10.5} {
+  set ::ase_font_size $v
+  lappend l1398_knob [ase::font_size]
+}
+unset ::ase_font_size
+lappend l1398_knob [ase::font_size]
+if {$L1398_KNOB_HAD} { set ::ase_font_size $L1398_KNOB_WAS }
+check "L1398e ase::font_size REFUSES an out-of-band size instead of clamping it -- 5 and 40 answer {} where a clamp would answer 6 and 32 -- while the band's own edges are accepted and an unset knob means `follow TkDefaultFont`" \
+  $l1398_knob {14 6 32 {} {} {} {} {} {} {} {} {}}
+check "L1398e ...and the knob ships DECLARED, at the documented default 0, so an xschemrc has something to override and `unset` is not the shipped state" \
+  [list $L1398_KNOB_HAD $L1398_KNOB_WAS] {1 0}
+
 # --- GUI legs (DISPLAY-guarded partial skip) ---------------------------------
 if {[info exists ::has_x] && [info commands winfo] ne {}} {
 
@@ -439,6 +754,213 @@ if {[info exists ::has_x] && [info commands winfo] ne {}} {
   check_true "W1 temperature entry white + AseEntryFont" [expr {
     [$top.tb.temp cget -background] eq {#ffffff} &&
     [$top.tb.temp cget -font] eq {AseEntryFont}}]
+
+  # --- W1f: THE FOUR TYPE ROLES, IN LOCKSTEP WITH TK'S OWN BASES (1398) -----
+  # The four rows above are the ones that were here through the whole life of
+  # the defect, and every one of them passed while ASE-L rendered in a family
+  # nothing else in the process used: `W1 named fonts exist` is satisfied by
+  # Arial-that-is-really-Nimbus, because a substituted font is a font that
+  # exists. What the user actually sees is whether this window is drawn in the
+  # same face as the RDW, the CIW, the Calculator and the schematic dialogs
+  # beside it -- and the only way to say that WITHOUT NAMING A FAMILY is to
+  # compare each role against the base it was copied from.
+  #
+  # ⚠ A ROW THAT NAMED `DejaVu` HERE WOULD BE THE ARIAL DEFECT, ONE MACHINE
+  # LATER. Everything below is a relation.
+  set W1F {AseEntryFont TkDefaultFont normal
+           AseBodyFont  TkDefaultFont normal
+           AseLabelFont TkDefaultFont bold
+           AseMonoFont  TkFixedFont   normal}
+  set w1f_bad {}
+  foreach {nm base wt} $W1F {
+    if {[lsearch -exact [font names] $nm] < 0} { lappend w1f_bad "$nm does not exist" ; continue }
+    foreach o {-family -size} {
+      set a [font configure $nm $o]
+      set b [font configure $base $o]
+      if {$a ne $b} { lappend w1f_bad "$nm $o = {$a} but $base $o = {$b}" }
+    }
+    if {[font configure $nm -weight] ne $wt} {
+      lappend w1f_bad "$nm -weight = [font configure $nm -weight], the role wants $wt"
+    }
+    if {[font configure $nm -slant] ne {roman}} {
+      lappend w1f_bad "$nm -slant = [font configure $nm -slant]"
+    }
+  }
+  check "W1f1 the four type roles copy TkDefaultFont/TkFixedFont EXACTLY -- same family, same size, differing only in the weight the role is for -- asserted as a relation against whatever this machine resolves, never as a family name" \
+    [list $w1f_bad [expr {[font configure TkDefaultFont -family] ne {}}] \
+          [expr {[font configure TkFixedFont -family] ne {}}]] {{} 1 1}
+  # ...and the RENDERED metric follows, not merely the spec. This is the term
+  # that would have caught `font actual`, which normalises a pixel-spelled base
+  # to points behind the user's back and then drifts the moment `tk scaling`
+  # moves (measured: 17 px then 24 against a base of 17 and 18).
+  check "W1f1b ...and it is the rendered metric that follows: each regular role measures the same linespace and the same `0` advance as its own base" \
+    [list [expr {[font metrics AseEntryFont -linespace] == [font metrics TkDefaultFont -linespace]}] \
+          [expr {[font metrics AseBodyFont  -linespace] == [font metrics TkDefaultFont -linespace]}] \
+          [expr {[font metrics AseMonoFont  -linespace] == [font metrics TkFixedFont   -linespace]}] \
+          [expr {[font measure AseEntryFont 0] == [font measure TkDefaultFont 0]}] \
+          [expr {[font measure AseMonoFont  0] == [font measure TkFixedFont   0]}]] {1 1 1 1 1}
+
+  # THE LADDER. It shipped as 10 pt bold headings over 13 pt regular data --
+  # headings THREE POINTS SMALLER than the rows they head. One size now,
+  # separated by weight.
+  check "W1f2 the ladder is not inverted: the heading font is not smaller than the data font, the two carry the SAME size, and weight is the only thing that separates them" \
+    [list [expr {[font metrics AseLabelFont -linespace] >= [font metrics AseEntryFont -linespace]}] \
+          [expr {[font configure AseLabelFont -size] eq [font configure AseEntryFont -size]}] \
+          [font configure AseLabelFont -weight] [font configure AseEntryFont -weight] \
+          [font configure AseBodyFont -weight] [font configure AseMonoFont -weight]] \
+    {1 1 bold normal normal normal}
+
+  # THE CENSUS. Before 1398, apply_theme put the BOLD font on 52 of this
+  # window's 53 fonted widgets -- the menubar, all nine status segments, all
+  # eight strip captions and every label -- so nothing in the window could be
+  # emphasised because everything already was. A name check cannot see that; a
+  # census can, and it is what catches a walk that regresses to painting one
+  # font everywhere.
+  set w1f_bold {} ; set w1f_body {} ; set w1f_ent {}
+  foreach w [concat [list $top] [descendants $top]] {
+    if {[catch {$w cget -font} ft]} continue
+    switch -- $ft {
+      AseLabelFont { lappend w1f_bold $w }
+      AseBodyFont  { lappend w1f_body $w }
+      AseEntryFont { lappend w1f_ent  $w }
+    }
+  }
+  set w1f_titles {}
+  foreach p {vars ana outs} {
+    if {[$top.body.$p cget -font] ne {AseLabelFont}} { lappend w1f_titles $top.body.$p }
+  }
+  check "W1f3 the bold font is spent on the three pane titles and on nothing else: it painted 52 of 53 fonted widgets before 1398, so the CENSUS -- bold rare, chrome common -- is the term a font-name check could never carry" \
+    [list [expr {[llength $w1f_bold] <= 4}] \
+          [expr {[llength $w1f_body] >= 4 * [llength $w1f_bold]}] \
+          $w1f_titles [expr {[llength $w1f_ent] >= 1}]] {1 1 {} 1}
+  check "W1f3b the menubar carries the CHROME font, not the heading font -- it was the only BOLD menubar in the process, and it is the strip the user compares directly against the schematic window's own" \
+    [list [$top.mb cget -font] [$top.body.vars cget -font]] {AseBodyFont AseLabelFont}
+  check "W1f3c the panes' rows are the DATA font and their headings the HEADING font, declared on the styles rather than on a widget -- which is why the census above cannot see the eleven column headings" \
+    [list [ttk::style configure Ase.Treeview -font] \
+          [ttk::style configure Ase.Treeview.Heading -font]] {AseEntryFont AseLabelFont}
+
+  # --- W1f4: A FOREGROUND WHEREVER THERE IS A BACKGROUND --------------------
+  # ase::ui::apply_theme wrote `-background` from the locked palette and NEVER
+  # a `-foreground`, so xschem's shipped `dark_gui_colorscheme 1` --
+  # `option add *foreground white startupFile`, src/xschem.tcl:19109 -- won
+  # every widget ASE-L painted: MEASURED live, 58 widgets at 1.119:1 (the whole
+  # action strip, the whole status bar, every menu and cascade) and the
+  # temperature entry at 1.000:1, white on its own #ffffff, literally invisible.
+  #
+  # D1398a at the foot of this file drives that option database FOR REAL. This
+  # row is the structural half, and it is written as a SENTINEL so that it
+  # names no colour whatever:
+  #
+  #   every colour option of every class the walk touches is pre-set to a value
+  #   ASE-L would never write (#ff00ff), the walk is run, and the rule asserted
+  #   is the one the source states -- IF a widget's -background was claimed,
+  #   THEN its -foreground was claimed too, and its caret, and its active
+  #   foreground whenever its active background was claimed.
+  #
+  # Written this way it covers two classes the session window has NO INSTANCE
+  # of -- Radiobutton (Choose Analyses' four type pills) and Listbox (Load
+  # State's three browsers), which are precisely the two arms 1398 ADDED --
+  # and it will cover the next class somebody adds without being edited.
+  proc w1f_claimed {w o sent} {
+    if {[catch {$w cget $o} v]} { return -1 }        ;# class has no such option
+    return [expr {$v eq $sent ? 0 : 1}]
+  }
+  set W1F_SENT #ff00ff
+  set W1F_OPTS {-foreground -activeforeground -insertbackground -selectcolor
+                -disabledforeground -selectbackground -selectforeground
+                -activebackground -background}
+  toplevel $top.zoo
+  foreach {cls path} {frame f labelframe lf label lb button bt checkbutton cb
+                      radiobutton rb entry en listbox lx text tx scrollbar sc} {
+    $cls $top.zoo.$path
+  }
+  menu $top.zoo.mn -tearoff 0
+  set w1f_zoowidgets [concat [list $top.zoo] [descendants $top.zoo]]
+  set w1f_pre 0
+  foreach w $w1f_zoowidgets {
+    foreach o $W1F_OPTS {
+      catch {$w configure $o $W1F_SENT}
+      if {[w1f_claimed $w $o $W1F_SENT] == 0} { incr w1f_pre }
+    }
+  }
+  ase::ui::apply_theme $top.zoo
+  set w1f_unowned {} ; set w1f_zoo {}
+  foreach w $w1f_zoowidgets {
+    if {[w1f_claimed $w -background $W1F_SENT] != 1} continue   ;# not claimed
+    lappend w1f_zoo [winfo class $w]
+    foreach o {-foreground -insertbackground} {
+      if {[w1f_claimed $w $o $W1F_SENT] == 0} {
+        lappend w1f_unowned "[winfo class $w] background claimed, ambient $o left in place"
+      }
+    }
+    if {[w1f_claimed $w -activebackground $W1F_SENT] == 1 &&
+        [w1f_claimed $w -activeforeground $W1F_SENT] == 0} {
+      lappend w1f_unowned "[winfo class $w] claimed -activebackground and left the ambient -activeforeground"
+    }
+  }
+  check "W1f4 apply_theme owns a FOREGROUND wherever it owns a background -- driven with every colour option pre-set to a sentinel the palette never contains, so this row names no colour, and it covers Radiobutton and Listbox, which the session window has no instance of" \
+    [list $w1f_unowned [lsort $w1f_zoo] [expr {$w1f_pre >= 40}]] \
+    [list {} {Button Checkbutton Entry Frame Label Labelframe Listbox Menu Radiobutton Scrollbar Text Toplevel} 1]
+  destroy $top.zoo
+
+  # --- W1f5: A LIVE TOOLTIP IS NOT OURS -------------------------------------
+  # ::balloon (src/xschem.tcl:14948-14958) builds `<parent>.balloon` as a CHILD
+  # toplevel, black with a lightyellow label, and ase::ui::populate ends in
+  # apply_theme on EVERY state mutation -- so a tooltip that happened to be on
+  # screen when a row changed was repainted to panel grey with its border gone,
+  # in place, while the user was reading it. The guard is one line at the head
+  # of the recursion; this is the row that keeps it there.
+  toplevel $top.balloon -background black
+  label $top.balloon.l -background lightyellow -foreground black -text tip
+  pack $top.balloon.l
+  ase::ui::apply_theme $top
+  check "W1f5 apply_theme steps over a LIVE tooltip: a `.balloon` child toplevel keeps ::balloon's own black ground, its lightyellow label and its own font through a full walk of the window it hangs under" \
+    [list [$top.balloon cget -background] [$top.balloon.l cget -background] \
+          [$top.balloon.l cget -foreground] \
+          [expr {[lsearch -exact {AseBodyFont AseLabelFont AseEntryFont AseMonoFont} \
+                   [$top.balloon.l cget -font]] < 0}]] \
+    {black lightyellow black 1}
+  destroy $top.balloon
+
+  # --- W1f6: THE COLUMN POLICY IS DERIVED, NOT PINNED -----------------------
+  # Every column shipped as `-width <pixel constant> -stretch 1` with no
+  # -minwidth at all, i.e. pixels against POINT font sizes. Two measurements
+  # say why that had to move with the fonts and not after them: at `tk scaling`
+  # 2.0 on the shipped code `Enable` needed 65 px in a 63 px column and `Save
+  # Options` 128 px in 90; and the `Save Options` heading is 89 px of ink in
+  # the SUBSTITUTED bold and 104 px in the DERIVED bold, so the font change
+  # alone would have made that heading clip worse than it already did.
+  #
+  # ⚠ EVERY TERM BELOW IS A RELATION AGAINST `font measure`. A pixel expectation
+  # here would be the same defect as a pixel constant in the source: it would
+  # pass on this display and fail on the user's, which is a different X server
+  # at a different scaling (three of them are live on this box).
+  proc w1f_colscan {tv} {
+    set bad {} ; set stretchy {}
+    foreach c [$tv cget -columns] {
+      set h   [$tv heading $c -text]
+      set ink [font measure AseLabelFont $h]
+      set wd  [$tv column $c -width]
+      set mn  [$tv column $c -minwidth]
+      if {$mn < $ink} { lappend bad "$tv/$c -minwidth $mn is under its own heading ink ($ink px of `$h`)" }
+      if {$mn != [ase::ui::colw 0 $h]} { lappend bad "$tv/$c -minwidth $mn is not the derived heading floor [ase::ui::colw 0 $h]" }
+      if {$wd < $mn}  { lappend bad "$tv/$c -width $wd is under its own -minwidth $mn" }
+      if {$wd < $ink} { lappend bad "$tv/$c heading `$h` CLIPS: $ink px of ink in a $wd px column" }
+      if {[$tv column $c -stretch]} { lappend stretchy $c }
+    }
+    return [list $bad $stretchy]
+  }
+  set w1f_colbad {} ; set w1f_stretch {} ; set w1f_ncols 0
+  foreach pane {vars ana outs} {
+    lassign [w1f_colscan $top.body.$pane.tv] b s
+    foreach x $b { lappend w1f_colbad $x }
+    lappend w1f_stretch $s
+    incr w1f_ncols [llength [$top.body.$pane.tv cget -columns]]
+  }
+  check "W1f6 every pane column's -minwidth is the derived floor of its own heading's ink in the heading font, its width is at least that, and no heading clips -- the RELATION against font measure, never a pixel" \
+    [list $w1f_colbad $w1f_ncols] {{} 11}
+  check "W1f6b exactly one column per pane stretches and it is the CONTENT column: ttk hands slack out in absolute pixels across every -stretch 1 column and clamps on the way down at -minwidth, but never gives the clamped pixels back on the way up, so an all-stretch table RATCHETS (measured on the shipped code: four drags took `#` from 32 px to 60 permanently and left `Save Options` clipped for the rest of the session)" \
+    $w1f_stretch {value args value}
 
   # W1m: menu tree v2 — the 9 cascades in order; Launch disabled; Tools LIVE
   # (Waveform Viewer wired to ase::ui::open_viewer; Calculator LIVE since
@@ -1276,6 +1798,166 @@ if {[info exists ::has_x] && [info commands winfo] ne {}} {
   check "W1s strip buttons in order" $slbls {OP,TR = --> X N&> > ! ~}
   check "W1s plot button normal (item 13: ~ live)" \
     [$top.strip.plot cget -state] normal
+
+  # ==========================================================================
+  # W1s1-W1s6 -- ISSUE 1391: EVERY STRIP BUTTON SAYS WHAT IT DOES, AND SAYS IT
+  #              IN THE MENU'S OWN WORDS
+  # ==========================================================================
+  # Eight glyphs, no words: `OP,TR = --> X N&> > ! ~`. FIVE of them have a
+  # menubar twin (the brief said three; `OP,TR` -> `Analyses > Choose…` is the
+  # fifth), so the tip is BUILT from the twin's label rather than typed --
+  # the 0661 drift (a printed `Outputs > Save All` beside a menu reading
+  # `Outputs > Save All… > Save device OP parameters (gm, gds, vth, ...)`,
+  # `string match` 0 against both) is exactly what a hand-typed tip rebuilds.
+  #
+  # ⚠ THE TIP IS READ BACK OFF THE LIVE WIDGET, never off the constant alone.
+  # `balloon` (xschem.tcl:14826) bakes the string into <Enter> at attach time,
+  # so the binding IS the shipped tip; each row below asserts
+  # [live-binding, constant] == [golden, golden]. That is the W1t discipline:
+  # a constant compared to a constant is a tautology and would pass against a
+  # window that arms no tip at all.
+  proc w_tip {w} {
+    if {[catch {winfo exists $w} e] || !$e} { return NO-WIDGET }
+    if {[catch {bind $w <Enter>} scr]} { return NO-BINDING }
+    if {[catch {lsearch -exact $scr balloon_show} i]} { return UNPARSEABLE }
+    if {$i < 0} { return NO-TIP }
+    if {[catch {lindex [lindex $scr [expr {$i + 2}]] 0} t]} { return UNPARSEABLE }
+    return $t
+  }
+
+  # W1s1: one row per button, in strip order. The `chk` column is the constant
+  # the builder used; the golden is the string the user reads.
+  foreach {sfx glyph cexpr golden} [list \
+      ana    {OP,TR} {ase::ui::menu_path_choose_analyses} {Analyses > Choose…} \
+      var    {=}     {ase::ui::lbl_add_variable}          {Add Variable} \
+      out    {-->}   {ase::ui::lbl_add_output}            {Add Output} \
+      del    {X}     {ase::ui::lbl_delete_selection}      {Delete Selection} \
+      netrun {N&>}   {ase::ui::menu_path_netlist_and_run} {Simulation > Netlist and Run} \
+      run    {>}     {ase::ui::menu_path_run}             {Simulation > Run} \
+      stop   {!}     {ase::ui::menu_path_stop}            {Simulation > Stop} \
+      plot   {~}     {ase::ui::menu_path_waveform_viewer} {Tools > Waveform Viewer}] {
+    check "W1s1 1391 strip `$glyph` ($sfx) tip is on the LIVE widget and is the\
+ shared constant" \
+      [list [w_tip $top.strip.$sfx] [w_cx $cexpr]] [list $golden $golden]
+  }
+
+  # W1s2: the gap guard. A button with no tip is a RED ROW, not a gap -- a
+  # ninth button packed on the strip without a `ase::ui::strip_tips` entry
+  # lands here and not in a later crew's blind spot.
+  set w1s_notip {}
+  foreach b [winfo children $top.strip] {
+    if {[w_tip $b] in {NO-TIP NO-BINDING NO-WIDGET UNPARSEABLE}} {
+      lappend w1s_notip [winfo name $b]
+    }
+  }
+  check "W1s2 1391 EVERY child of the action strip carries a tip" $w1s_notip {}
+  # ⚠ AND THE TABLE COVERS THE STRIP, BOTH WAYS. `strip_tips` naming a button
+  # that no longer exists is as wrong as a button the table forgot, and the
+  # loop in `open` would silently `catch` the first away.
+  set w1s_kids {}
+  foreach b [winfo children $top.strip] { lappend w1s_kids [winfo name $b] }
+  set w1s_keys {}
+  foreach {k v} [w_cx {ase::ui::strip_tips}] { lappend w1s_keys $k }
+  check "W1s2b 1391 strip_tips keys == the packed buttons, in strip order" \
+    [list $w1s_keys $w1s_kids] \
+    [list {ana var out del netrun run stop plot} \
+          {ana var out del netrun run stop plot}]
+
+  # W1s3: the temperature entry. It is the one widget in the window with no
+  # word of its own, so it gets a tip -- and arming one there COSTS something,
+  # because `balloon` does a plain `bind` on <FocusOut> and that slot already
+  # carries `ase::ui::temp_commit`. MEASURED on :99 before the change: arming
+  # the tip second replaced the commit outright. So the builder arms first and
+  # appends the commit, and this row asserts the composed script still holds
+  # BOTH halves. It reds if either the tip or the commit-on-focus-out is lost.
+  set w1s_fo {}
+  catch {set w1s_fo [bind $top.tb.temp <FocusOut>]}
+  check "W1s3 1391 temperature entry tip, and the FocusOut commit SURVIVED it" \
+    [list [w_tip $top.tb.temp] [w_cx {ase::ui::lbl_sim_temperature}] \
+          [expr {[string first {balloon_show} $w1s_fo] >= 0}] \
+          [expr {[string first {ase::ui::temp_commit} $w1s_fo] >= 0}]] \
+    [list {Simulation temperature} {Simulation temperature} 1 1]
+
+  # W1s4: the five menubar twins are BUILT from the constants. Same W1t shape
+  # as W1r/W1u above -- live `entrycget -label`, the constant, and the golden.
+  proc w_mlabel {m cmd} {
+    if {![winfo exists $m]} { return NO-MENU }
+    for {set i 0} {$i <= [$m index end]} {incr i} {
+      if {[$m type $i] eq {separator}} { continue }
+      if {[catch {$m entrycget $i -command} c]} { continue }
+      if {$c eq $cmd} { return [$m entrycget $i -label] }
+    }
+    return NO-ENTRY
+  }
+  proc w_mcascade {mb sub} {
+    for {set i 0} {$i <= [$mb index end]} {incr i} {
+      if {[$mb type $i] eq {separator}} { continue }
+      if {[catch {$mb entrycget $i -menu} m]} { continue }
+      if {$m eq $sub} { return [$mb entrycget $i -label] }
+    }
+    return NO-CASCADE
+  }
+  check "W1s4 1391 Analyses > Choose… is built from the constants the OP,TR tip\
+ reads" \
+    [list [w_mcascade $top.mb $top.mb.analyses] \
+          [w_mlabel $top.mb.analyses [list ase::ui::choose_analyses $key]] \
+          [w_cx {ase::ui::lbl_analyses}] [w_cx {ase::ui::lbl_choose}]] \
+    [list Analyses "Choose…" Analyses "Choose…"]
+  check "W1s4b 1391 the three Simulation run/stop entries are built from the\
+ constants the N&> / > / ! tips read" \
+    [list [w_mcascade $top.mb $top.mb.sim] \
+          [w_mlabel $top.mb.sim [list ase::ui::do_run $key]] \
+          [w_mlabel $top.mb.sim [list ase::ui::do_run_existing $key]] \
+          [w_mlabel $top.mb.sim [list ase::ui::do_stop $key]] \
+          [w_cx {ase::ui::lbl_simulation}] [w_cx {ase::ui::lbl_netlist_and_run}] \
+          [w_cx {ase::ui::lbl_run}] [w_cx {ase::ui::lbl_stop}]] \
+    [list Simulation {Netlist and Run} Run Stop \
+          Simulation {Netlist and Run} Run Stop]
+  check "W1s4c 1391 Tools > Waveform Viewer is built from the constants the ~\
+ tip reads" \
+    [list [w_mcascade $top.mb $top.mb.tools] \
+          [w_mlabel $top.mb.tools [list ase::ui::open_viewer $key]] \
+          [w_cx {ase::ui::lbl_tools}] [w_cx {ase::ui::lbl_waveform_viewer}]] \
+    [list Tools {Waveform Viewer} Tools {Waveform Viewer}]
+
+  # W1s5: THE STRING ISSUE 1389 PRINTS. Its refusal of a second launch names
+  # the way out, and the way out is the Stop entry the user can see. This row
+  # composes the expectation from the two LIVE widget labels, so a rename of
+  # either moves the refusal or reds here -- it cannot leave the refusal
+  # pointing at a menu path that is no longer on screen.
+  set w1s5_seg {}
+  foreach seg [split [w_cx {ase::ui::menu_path_stop}] >] {
+    lappend w1s5_seg [string trim $seg]
+  }
+  check "W1s5 1391/1389 menu_path_stop is exactly the two LIVE labels, in order" \
+    [list [llength $w1s5_seg] [lindex $w1s5_seg 0] [lindex $w1s5_seg 1]] \
+    [list 2 [w_mcascade $top.mb $top.mb.sim] \
+            [w_mlabel $top.mb.sim [list ase::ui::do_stop $key]]]
+
+  # W1s6: the two twinless dialogs. `=` and `-->` have no menu entry to share a
+  # string with, so they share it with the WINDOW the click produces instead --
+  # the tip names the title bar the user is about to read. Opened and torn down
+  # here the way W1u does with the Save All dialog.
+  set w1s6_var {}
+  set w1s6_out {}
+  catch {
+    set dw [ase::ui::add_variable_dialog $key]
+    update idletasks
+    set w1s6_var [wm title $dw]
+    destroy $dw
+  }
+  catch {
+    set dw [ase::ui::output_editor $key -1]
+    update idletasks
+    set w1s6_out [wm title $dw]
+    catch {ase::ui::output_editor_cancel $key}
+    catch {destroy $dw}
+  }
+  update idletasks
+  check "W1s6 1391 the `=` and `-->` tips are the LIVE dialog titles they open" \
+    [list $w1s6_var [w_cx {ase::ui::lbl_add_variable}] \
+          $w1s6_out [w_cx {ase::ui::lbl_add_output}]] \
+    [list {Add Variable} {Add Variable} {Add Output} {Add Output}]
 
   # W1c: per-pane context menus = exactly Add.../Edit.../Delete (entrycget,
   # never posted)
@@ -2591,7 +3273,17 @@ Values:
       set id7 [ase::session_getattr $key run_id]
       check_true "W7 long tran started" [string is integer -strict $id7]
       set got 0
-      for {set i 0} {$i < 50} {incr i} {
+      ## 30 s, NOT 5 s, AND THE BOUND IS A MEASUREMENT (issue 1377).
+      ## This row waited 50 x 100 ms. It passed on the developer's box for one
+      ## reason only: his ~/.xschem/ase_simulators registered an ngspice-46 build
+      ## that reaches stdout inside 5 s. MEASURED on the ngspice this suite runs
+      ## once it is isolated -- /usr/bin/ngspice 45.2 -- first output arrives at
+      ## iterations 97, 99, 101, 105, 106 over five runs: 9.7-10.6 s, twice the
+      ## old bound every time. So isolating the registry did not break W7, it
+      ## REVEALED that W7 only ever passed on one machine's simulator. 300 is 3x
+      ## the measured worst case; the loop still breaks on the first byte, so a
+      ## fast simulator pays nothing for the headroom.
+      for {set i 0} {$i < 300} {incr i} {
         update
         if {[info exists ::execute(data,$id7)] && [string length $::execute(data,$id7)] > 0} {
           set got 1; break
@@ -2669,9 +3361,542 @@ Values:
   puts "gui legs skipped (no DISPLAY)"
 }
 
+# ===========================================================================
+# R -- THE NETLIST-AND-RUN DOOR IS REACHABILITY, NOT CURRENCY (issue 0643)
+# ===========================================================================
+# The user, 2026-09-08: "I descend into x1 and again x1. Now, I click the N&>
+# (Netlist and Run button) in ASE-L to get: `ase: design is not the current
+# schematic; open it via Session > Design Window first`. Where does this inane
+# restriction come from? There is no such limitation in Cadence's ADE-L."
+#
+# `ase::ui::do_run` used to pre-check `[file normalize [xschem get schname]] ne
+# $dpath`. Standing inside the design's OWN hierarchy that is TRUE -- schname is
+# the leaf, not the testbench -- and the routing arm it fell into brought the
+# same descended window back, so the second test failed identically and the
+# button was unusable from any depth. The predicate is now
+# `[ase::stack_level $dpath] < 0`: is the design on THIS window's stack at all?
+#
+# ⚠ LAST BLOCK IN THE FILE ON PURPOSE. These rows load schematics into the main
+# window and open a second session; running them here means nothing above can be
+# perturbed by them, and they run in BOTH arms (they are outside the `has_x`
+# block), so both floors move together.
+#
+# ⚠ EVERY PRESS BELOW HAS `ase::run` AND `ase::ui::run_started` RENAMED OUT.
+# The subject is WHICH ARM do_run takes, not what a simulator does: stubbing the
+# pair makes each row deterministic, simulator-free and identical under --nogui
+# and under X. run_started in particular must go -- the real one opens a log
+# TOPLEVEL and attaches a trace to an execute id that was never launched.
+
+# spy on ase::echo. NOT w_aecho_spy: that helper is defined inside the GUI
+# block above and does not exist on the --nogui arm.
+proc r_echo_on {} {
+  set ::r_echo {}
+  if {[info commands ::r_saved_echo] eq {}} {
+    rename ::ase::echo ::r_saved_echo
+    proc ::ase::echo {msg {tag {}}} { lappend ::r_echo [list $tag $msg] ; return 1 }
+  }
+}
+proc r_echo_off {} {
+  if {[info commands ::r_saved_echo] ne {}} {
+    catch {rename ::ase::echo {}}
+    rename ::r_saved_echo ::ase::echo
+  }
+}
+# a COUNT, not a boolean: "the refusal is stated" and "stated ONCE" are
+# different claims, and a duplicated sentence is its own defect (the w_echoed_n
+# idiom above, and issue 1389's measured double-echo)
+proc r_echoed_n {pat} {
+  set n 0
+  foreach e $::r_echo { if {[string match -nocase $pat [lindex $e 1]]} { incr n } }
+  return $n
+}
+proc r_run_on {} {
+  set ::r_ran {} ; set ::r_started {} ; set ::r_ranx {}
+  rename ::ase::run ::r_saved_run
+  proc ::ase::run {state {callback {}}} {
+    lappend ::r_ran [list [xschem get schname] [xschem get sch_path]]
+    return 4242
+  }
+  rename ::ase::run_existing ::r_saved_runx
+  proc ::ase::run_existing {state {callback {}}} { lappend ::r_ranx 1 ; return 4243 }
+  rename ::ase::ui::run_started ::r_saved_started
+  proc ::ase::ui::run_started {key id} { lappend ::r_started [list $key $id] }
+}
+proc r_run_off {} {
+  catch {rename ::ase::run {}} ; rename ::r_saved_run ::ase::run
+  catch {rename ::ase::run_existing {}} ; rename ::r_saved_runx ::ase::run_existing
+  catch {rename ::ase::ui::run_started {}} ; rename ::r_saved_started ::ase::ui::run_started
+}
+# ase::ui::design_window is renamed out too, because the door's contract with it
+# is "called ONCE, with ifhidden" (issue 0616) and the rows have to tell "not
+# called at all" (the reachable arm) apart from "called and it did not help"
+# (the surviving refusal). $do is the body the stub runs: {} leaves the design
+# unreachable, an `xschem load` makes the routing arm succeed.
+proc r_dw_on {{do {}}} {
+  set ::r_dw {} ; set ::r_dw_do $do
+  rename ::ase::ui::design_window ::r_saved_dw
+  proc ::ase::ui::design_window {key {raise_mode always}} {
+    lappend ::r_dw $raise_mode
+    if {$::r_dw_do ne {}} { uplevel #0 $::r_dw_do }
+    return 1
+  }
+}
+proc r_dw_off {} {
+  catch {rename ::ase::ui::design_window {}}
+  rename ::r_saved_dw ::ase::ui::design_window
+}
+
+set r_top   [file normalize [file join $scratch aselib hier_top schematic hier_top.sch]]
+set r_leaf  [file normalize [file join $scratch aselib hier_leaf schematic hier_leaf.sch]]
+set r_else  [file normalize [file join $scratch aselib hier_else schematic hier_else.sch]]
+set r_win   [xschem get current_win_path]
+
+if {[catch {
+
+library_new_view aselib hier_top ngspice_state1 ngspice_state1
+set r_spath [xschem cellview_path aselib/hier_top ngspice_state1]
+if {$r_spath eq {}} { error "R fixture: hier_top state view did not resolve" }
+set rkey [ase::session_key aselib hier_top ngspice_state1]
+ase::session_open $rkey [file normalize $r_spath]
+set rst [ase::session_state $rkey]
+## rundir into the SCRATCH tree. ase::run_lock_key (R11) resolves the backend's
+## raw_file hook off this, and the default would point somewhere under the
+## user's own ~/.xschem -- read-only territory for this suite (CREW_BRIEF
+## section 5), even for a path that is only computed.
+dict set rst rundir [file normalize [file join $scratch hier_run]]
+ase::session_update $rkey $rst
+set r_dpath [ase::ui::design_path $rkey]
+
+# --- R1/R2: reproduce the reported shape, and prove the rows are not vacuous -
+xschem load $r_top
+xschem descend -fallback -inst x1
+xschem descend -fallback -inst x1
+check "R1 two levels down inside the design: sch_path .x1.x1., schname is the leaf" \
+  [list [xschem get sch_path] [xschem get currsch] [file normalize [xschem get schname]]] \
+  [list {.x1.x1.} 2 $r_leaf]
+check_true "R1 design_path resolves the session's design cellview" \
+  [expr {$r_dpath eq $r_top}]
+# THE ROW THAT KEEPS R4 HONEST: the shipped equality predicate is FALSE right
+# here, so a green R4 is the door changing behaviour and not the situation.
+check_true "R2 the OLD `schname ne dpath` predicate WOULD have refused at this exact spot" \
+  [expr {[file normalize [xschem get schname]] ne $r_dpath}]
+
+if {[info commands ase::stack_level] eq {}} {
+  puts "SKIPPED: R3-R14 (ase::stack_level absent -- item A of descend_run_batch\
+ not in this tree; the door cannot be exercised without its predicate)"
+} else {
+
+  check "R3 ase::stack_level finds the design at level 0 while standing at level 2" \
+    [ase::stack_level $r_dpath] 0
+
+  # --- R4-R6: the reported gesture. Descended two levels, N&> must RUN -------
+  r_echo_on ; r_run_on ; r_dw_on
+  catch {ase::ui::do_run $rkey} r4err
+  set r4_ran   [llength $::r_ran]
+  set r4_dw    $::r_dw
+  set r4_ref   [r_echoed_n {*not open in this window*}]
+  set r4_old   [r_echoed_n {*not the current schematic*}]
+  set r4_where [list [xschem get sch_path] [xschem get currsch]]
+  r_dw_off ; r_run_off ; r_echo_off
+  check "R4 ISSUE 0643 descended two levels, do_run reaches ase::run exactly once" \
+    $r4_ran 1
+  check "R4 ...and refuses nothing (neither the new sentence nor the old one)" \
+    [list $r4_ref $r4_old] {0 0}
+  check "R5 ...and does NOT move the user: still two levels down" \
+    $r4_where {.x1.x1. 2}
+  # the door routes only when the design is UNREACHABLE. Standing inside it is
+  # not a reason to withdraw+deiconify anything (issue 0616's cost).
+  check "R6 ...and does NOT route through Session > Design Window at all" $r4_dw {}
+
+  # --- R7-R9: the SURVIVING refusal, for a design that is genuinely nowhere --
+  # Stand somewhere real that is not the design, and stub design_window into a
+  # no-op so the routing arm cannot rescue it -- the only way to reach the
+  # refusal deterministically, since the real design_window always ends in an
+  # `xschem load` that would make the design reachable.
+  xschem load $r_else
+  r_echo_on ; r_run_on ; r_dw_on
+  catch {ase::ui::do_run $rkey} r7err
+  set r7_ran $::r_ran
+  set r7_dw  $::r_dw
+  set r7_new [r_echoed_n {*not open in this window*}]
+  set r7_old [r_echoed_n {*not the current schematic*}]
+  set r7_cell [r_echoed_n {*hier_top*}]
+  set r7_tag {}
+  foreach e $::r_echo { if {[string match -nocase {*not open in this window*} [lindex $e 1]]} { set r7_tag [lindex $e 0] } }
+  set r7_msgs $::r_echo
+  r_dw_off ; r_run_off ; r_echo_off
+  check "R7 a design that is nowhere on this window's stack is still refused" \
+    [list [llength $r7_ran] $r7_new] {0 1}
+  check "R7 ...after ONE routing attempt, and it is ifhidden (issue 0616)" $r7_dw {ifhidden}
+  # THE USER'S ACTUAL COMPLAINT WAS THE SENTENCE. It told them to do the thing
+  # they had already done; it must never be said again, in either arm.
+  check "R8 the words `is not the current schematic` are gone from this door" $r7_old 0
+  check "R9 the refusal names the design cell it could not reach" $r7_cell 1
+  check "R9 ...and is tagged error, not note (nothing is running; this is a failure)" \
+    $r7_tag error
+  if {$r7_new != 1} { puts "  R7 echoes were: $r7_msgs" }
+
+  # --- R10: the routing arm still WORKS -------------------------------------
+  # Same standing position, but design_window really brings the design up. The
+  # door must then run, on the second look, with no refusal -- this is the
+  # foreign-context path W6m presses for real under X.
+  r_echo_on ; r_run_on ; r_dw_on [list xschem load $r_top]
+  catch {ase::ui::do_run $rkey} r10err
+  set r10_ran [llength $::r_ran]
+  set r10_dw  $::r_dw
+  set r10_ref [r_echoed_n {*not open in this window*}]
+  r_dw_off ; r_run_off ; r_echo_off
+  check "R10 an unreachable design that Design Window CAN reach runs after one route" \
+    [list $r10_ran $r10_dw $r10_ref] {1 ifhidden 0}
+
+  # --- R11: 1389's run_busy is still the FIRST statement ---------------------
+  # A refused launch must not withdraw+deiconify anything on its way to saying
+  # no (issue 0616's cost) and must not re-netlist. Asserted with the REAL lock
+  # table, not a stubbed predicate, so the row also proves run_busy still reads
+  # the raw path it shares with ase::run_deck's gate.
+  set r_lk {}
+  catch {set r_lk [ase::run_lock_key [ase::session_state $rkey]]}
+  if {$r_lk eq {}} {
+    puts "SKIPPED: R11 (the ngspice raw_file hook did not resolve a lock key)"
+  } else {
+    xschem load $r_else
+    set ::execute(pipe,999901) r_fake_pipe
+    ase::run_lock_set $r_lk 999901
+    r_echo_on ; r_run_on ; r_dw_on
+    catch {ase::ui::do_run $rkey} r11err
+    set r11_ran [llength $::r_ran]
+    set r11_dw  $::r_dw
+    set r11_bsy [r_echoed_n {*already running*}]
+    set r11_ref [r_echoed_n {*not open in this window*}]
+    r_dw_off ; r_run_off ; r_echo_off
+    ase::run_lock_clear $r_lk
+    catch {unset ::execute(pipe,999901)}
+    check "R11 1389 a locked results file refuses FIRST: no run, no routing, no reachability sentence" \
+      [list $r11_ran $r11_dw $r11_ref] {0 {} 0}
+    check "R11 ...and the refusal that IS said is the busy one" $r11_bsy 1
+  }
+
+  # --- R12: do_run_existing is untouched by any of this ----------------------
+  # It never netlists (ase::run_existing, src/ase.tcl:6204 -- "needs no
+  # current-schematic guard because no netlisting happens"), so it must not have
+  # grown a stack test. Standing on a cell that is not the design and with the
+  # design nowhere, Simulation > Run still reaches ase::run_existing.
+  xschem load $r_else
+  r_echo_on ; r_run_on ; r_dw_on
+  catch {ase::ui::do_run_existing $rkey} r12err
+  set r12_x  [llength $::r_ranx]
+  set r12_dw $::r_dw
+  set r12_rf [r_echoed_n {*not open in this window*}]
+  r_dw_off ; r_run_off ; r_echo_off
+  check "R12 do_run_existing ignores the stack entirely: runs, never routes, never refuses" \
+    [list $r12_x $r12_dw $r12_rf] {1 {} 0}
+
+  # --- R13/R14: the REAL menu press, under X only ---------------------------
+  # Headless can prove the arms; only a real window can prove the gesture and
+  # the status segment the user reads afterwards.
+  if {[info exists ::has_x] && [info commands winfo] ne {}} {
+    check "R13 open_state on the hierarchical design -> 1" \
+      [ase::open_state aselib hier_top ngspice_state1] 1
+    update
+    set rtop [ase::ui::window_for $rkey]
+    if {$rtop eq {} || ![winfo exists $rtop]} {
+      puts "SKIPPED: R13/R14 (the hier_top session window did not build)"
+    } else {
+      ## ⚠ open_state leaves ANOTHER window current (MEASURED 2026-09-08:
+      ## current_win_path = .x1.drw on untitled.sch), so a descend from here
+      ## fails with "instance not found". Switch the context back by hand --
+      ## design_window would do it too, but it also loads and raises, which is
+      ## the very thing R13 must NOT have happened before the press.
+      catch {xschem new_schematic switch $r_win}
+      xschem load $r_top
+      xschem descend -fallback -inst x1
+      xschem descend -fallback -inst x1
+      ase::ui::set_status $rkey idle
+      set r13_pre [list [xschem get sch_path] \
+                        [expr {[file normalize [xschem get schname]] ne $r_dpath}]]
+      r_echo_on ; r_run_on
+      $rtop.mb.sim invoke {Netlist and Run}
+      update
+      set r13_ran [llength $::r_ran]
+      set r13_ref [r_echoed_n {*not open in this window*}]
+      set r13_old [r_echoed_n {*not the current schematic*}]
+      r_run_off ; r_echo_off
+      check "R13 the real Simulation > Netlist and Run, pressed two levels down, RUNS" \
+        [list $r13_pre $r13_ran $r13_ref $r13_old] [list {.x1.x1. 1} 1 0 0]
+      check "R13 ...and the status segment is not reddened" \
+        [expr {[$rtop.status.stat cget -text] eq {Status: Error}}] 0
+
+      # R14: the same real gesture with the design genuinely nowhere -- the
+      # refusal must still reach the status segment AND the new sentence.
+      xschem load $r_else
+      ase::ui::set_status $rkey idle
+      r_echo_on ; r_run_on ; r_dw_on
+      $rtop.mb.sim invoke {Netlist and Run}
+      update
+      set r14_ran [llength $::r_ran]
+      set r14_new [r_echoed_n {*not open in this window*}]
+      set r14_old [r_echoed_n {*not the current schematic*}]
+      r_dw_off ; r_run_off ; r_echo_off
+      check "R14 the real press with the design nowhere refuses, in the new words" \
+        [list $r14_ran $r14_new $r14_old] {0 1 0}
+      check "R14 ...and the status segment goes red" \
+        [list [$rtop.status.stat cget -background] [$rtop.status.stat cget -text]] \
+        {red {Status: Error}}
+      ase::ui::close $rkey
+      update
+    }
+  }
+}
+
+catch {ase::session_close $rkey}
+
+} r_bigerr]} {
+  puts "UNEXPECTED ERROR (R block): $r_bigerr"
+  incr fail
+}
+
 } bigerr]} {
   puts "UNEXPECTED ERROR: $bigerr"
   incr fail
+}
+
+
+# ===========================================================================
+# D1398 -- THE DARK SCHEME, THE SIZE KNOB, AND THE RATCHET
+# ===========================================================================
+# ⚠ LAST IN THE FILE ON PURPOSE, and for a reason that is not sequencing.
+# D1398a installs xschem's SHIPPED dark colour scheme into the PROCESS-GLOBAL
+# option database, which is additive and can never be removed -- only
+# overwritten. The block puts the light values back at its foot (measured: a
+# second `option add` at the same priority wins, and `option get . foreground
+# Foreground` reads `black` again afterwards), but a block that writes a
+# database every widget in the process draws from belongs where nothing
+# follows it. Anything appended after this must re-read that restore.
+#
+# Runs on the X arm only: the whole subject is what a widget RENDERS.
+
+if {[info exists ::has_x] && [info commands winfo] ne {}} {
+ if {[catch {
+
+  proc d1398_rgb {w c} {
+    if {[catch {winfo rgb $w $c} raw]} { return {} }
+    set o {}
+    foreach v $raw { lappend o [expr {int($v / 257.0 + 0.5)}] }
+    return $o
+  }
+  ## WCAG 2.1 relative luminance and contrast ratio, on the colours the widget
+  ## actually answers -- resolved through `winfo rgb`, so a named colour and a
+  ## hex literal are compared on the same footing.
+  proc d1398_lum {rgb} {
+    set o {}
+    foreach v $rgb {
+      set s [expr {$v / 255.0}]
+      lappend o [expr {$s <= 0.03928 ? $s / 12.92 : pow(($s + 0.055) / 1.055, 2.4)}]
+    }
+    lassign $o r g b
+    return [expr {0.2126 * $r + 0.7152 * $g + 0.0722 * $b}]
+  }
+  proc d1398_ratio {w fg bg} {
+    set a [d1398_rgb $w $fg] ; set b [d1398_rgb $w $bg]
+    if {[llength $a] != 3 || [llength $b] != 3} { return {} }
+    set l1 [d1398_lum $a] ; set l2 [d1398_lum $b]
+    if {$l2 > $l1} { set t $l1 ; set l1 $l2 ; set l2 $t }
+    return [expr {($l1 + 0.05) / ($l2 + 0.05)}]
+  }
+  ## Every widget under $w that answers BOTH a foreground and a background,
+  ## with the ones under 3.0:1 named. 3.0 is deliberately loose -- this row's
+  ## claim is legibility, not AA -- and it is far below anything the locked
+  ## palette produces (its worst live pair is the maroon pane title at 8.94:1)
+  ## while being far above the 1.119:1 and 1.000:1 the defect produced.
+  proc d1398_walk {w} {
+    set bad {} ; set n 0 ; set worst {}
+    foreach x [concat [list $w] [descendants $w]] {
+      if {[catch {$x cget -foreground} fg]} continue
+      if {[catch {$x cget -background} bg]} continue
+      if {$fg eq {} || $bg eq {}} continue
+      set r [d1398_ratio $w $fg $bg]
+      if {$r eq {}} continue
+      incr n
+      if {$worst eq {} || $r < [lindex $worst 0]} { set worst [list $r $x] }
+      if {$r < 3.0} { lappend bad "[winfo class $x] $x fg=$fg on bg=$bg = [format %.3f $r]:1" }
+    }
+    return [list $n $bad $worst]
+  }
+
+  # THE SHIPPED DARK OPTION DATABASE, verbatim from src/xschem.tcl:19109-19123,
+  # installed BEFORE the window below is built -- which is the only order that
+  # reproduces the defect, because the option database is consulted at widget
+  # CREATION. (The same reason `--tcl` cannot set dark_gui_colorscheme for this
+  # purpose and `--preinit` can: xschem.tcl has already written the database by
+  # the time --tcl runs.)
+  set D1398_DARK  {*foreground white *activeForeground white *insertBackground white
+                   *selectColor grey10 *background grey20 *activeBackground grey10}
+  set D1398_LIGHT {*foreground black *activeForeground black *insertBackground black
+                   *selectColor white *background grey80 *activeBackground #f8f8f8}
+  foreach {p v} $D1398_DARK { option add $p $v startupFile }
+  check "D1398 the shipped dark option database really is in force for the window built below -- the row that keeps the three after it from passing on a light process" \
+    [list [option get . foreground Foreground] [option get . insertBackground Background]] \
+    {white white}
+
+  # A SECOND VIEW OF THE SAME FIXTURE CELL, so nothing above is disturbed: the
+  # ngspice_state1 session has been closed by W8 and its file carries the
+  # mutations those legs made.
+  library_new_view aselib nfet_clean ngspice_state_dark ngspice_state_dark
+  set dpath [xschem cellview_path aselib/nfet_clean ngspice_state_dark]
+  set dkey  [ase::session_key aselib nfet_clean ngspice_state_dark]
+  if {$dpath eq {}} {
+    puts "SKIPPED: D1398a-f (the dark fixture view did not resolve)"
+  } else {
+    ase::session_open $dkey [file normalize $dpath]
+    set dst [ase::session_state $dkey]
+    dict set dst design {lib aselib cell nfet_clean view schematic}
+    dict set dst rundir [file join $scratch d1398_run]
+    dict set dst variables {{name Vgs value 1.8} {name VCCGAUSS value 2.0}}
+    dict set dst analyses {{type tran enabled 1 step 10n stop 200u}
+                           {type dc enabled 0 source V2 start 0 stop 1.8 step 0.01}}
+    dict set dst outputs {{name id expr -i(v1) save 1 plot 0}}
+    ase::session_update $dkey $dst
+    ase::session_save $dkey
+    ase::session_close $dkey
+    check "D1398 the dark fixture window opens" [ase::open_state aselib nfet_clean ngspice_state_dark] 1
+    update
+    set dtop [ase::ui::window_for $dkey]
+
+    # --- D1398a: DEFECT 3, PINNED ------------------------------------------
+    # MEASURED on the shipped code with this exact database: 58 widgets below
+    # 3.0:1 -- the whole action strip, all nine status segments, the menubar
+    # and every cascade at 1.119:1, and the temperature entry at 1.000:1,
+    # white on its own #ffffff. Owning the foreground is the whole of the fix,
+    # and it costs nothing on the light palette because fieldfg is #000000,
+    # which is what every classic widget already rendered.
+    lassign [d1398_walk $dtop] dn dbad dworst
+    check "D1398a THE SHIPPED DARK SCHEME IS LEGIBLE: not one widget of the session window renders its own foreground under 3.0:1 against its own background, where 58 of them did before 1398 and the temperature entry was white on white" \
+      [list $dbad [expr {$dn >= 40}]] {{} 1}
+    check_true "D1398a ...and the worst pair in the window is the maroon pane title, which is an accent and not an accident" \
+      [expr {[lindex $dworst 0] > 5.0}]
+    # the single widget the measurement called literally invisible
+    check "D1398b the temperature entry is not white-on-white: its text AND its caret are both legible against the field it sits in (measured at 1.000:1 before -- the dark scheme's *insertBackground put a white cursor in a white field, so even the caret was gone)" \
+      [list [expr {[d1398_ratio $dtop [$dtop.tb.temp cget -foreground] \
+                                      [$dtop.tb.temp cget -background]] > 4.5}] \
+            [expr {[d1398_ratio $dtop [$dtop.tb.temp cget -insertbackground] \
+                                      [$dtop.tb.temp cget -background]] > 4.5}]] {1 1}
+
+    # --- D1398c-e: THE KNOB REACHES A WINDOW ALREADY ON SCREEN --------------
+    # The old ase::theme guarded each `font create` with an lsearch, so a size
+    # knob would have been DEAD ON ARRIVAL: the guard meant a size change could
+    # never reach a window that was already open. ase::_mkfont RECONFIGURES,
+    # and this is the row that says so -- one ase::theme call, no widget walk,
+    # and an Entry that has been on screen since before the knob was touched
+    # gets taller.
+    set d_base [font configure TkDefaultFont -size]
+    set d_ls0  [font metrics AseEntryFont -linespace]
+    set d_rh0  [ttk::style configure Ase.Treeview -rowheight]
+    set d_rq0  [winfo reqheight $dtop.tb.temp]
+    set ::ase_font_size 16
+    ase::theme
+    update
+    check "D1398c a valid ase_font_size reaches a window ALREADY ON SCREEN: one ase::theme call rescales all four roles, the live temperature entry and the derived treeview rowheight, with no widget walk at all" \
+      [list [ase::font_size] [font configure AseEntryFont -size] \
+            [font configure AseLabelFont -size] [font configure AseMonoFont -size] \
+            [expr {[font metrics AseEntryFont -linespace] > $d_ls0}] \
+            [expr {[winfo reqheight $dtop.tb.temp] > $d_rq0}] \
+            [expr {[ttk::style configure Ase.Treeview -rowheight] > $d_rh0}]] \
+      {16 16 16 16 1 1 1}
+    set ::ase_font_size 5
+    ase::theme
+    update
+    check "D1398d an out-of-band size is REFUSED ON THE LIVE WINDOW, not clamped: the fonts fall back to the system size rather than to the band's edge, so a typo cannot become a setting the user never chose" \
+      [list [ase::font_size] [font configure AseEntryFont -size] \
+            [font configure AseMonoFont -size]] \
+      [list {} $d_base [font configure TkFixedFont -size]]
+    set ::ase_font_size 0
+    ase::theme
+    update
+    check "D1398e ...and 0 PUTS IT BACK, to the pixel: the rdw hole recorded at rdw.tcl:2569 -- a version that could impose a size but never restore one -- does not exist here, because the size is written on every call" \
+      [list [font configure AseEntryFont -size] [font metrics AseEntryFont -linespace] \
+            [winfo reqheight $dtop.tb.temp] \
+            [ttk::style configure Ase.Treeview -rowheight]] \
+      [list $d_base $d_ls0 $d_rq0 $d_rh0]
+
+    # --- D1398f: THE SHARED LIST DIALOG OBEYS THE SAME POLICY ---------------
+    # Setup > Model Files is the fourth of the five treeview sites and the one
+    # a live row can reach for free. L1398c covers the fifth and sixth.
+    ase::ui::model_files_dialog $dkey
+    update
+    if {![winfo exists $dtop.models.tv]} {
+      puts "SKIPPED: D1398f (the Model Files dialog did not open)"
+    } else {
+      lassign [w1f_colscan $dtop.models.tv] dcb dcs
+      check "D1398f the shared list dialog's columns follow the same derived policy as the panes -- heading floor for -minwidth, one stretchy column, no clipped heading" \
+        [list $dcb [llength $dcs] [llength [$dtop.models.tv cget -columns]]] {{} 1 2}
+      destroy $dtop.models
+      update
+    }
+
+    # --- D1398g: THE RATCHET ------------------------------------------------
+    # ttk distributes slack in ABSOLUTE PIXELS across every -stretch 1 column
+    # and clamps on the way down at -minwidth, but never returns the clamped
+    # pixels on the way up. MEASURED on the shipped code (all eleven columns
+    # stretchy, no minwidth): four drag cycles moved `#` from 32 px to 60
+    # permanently, bled `Type` 63 -> 59, took `Arguments` 262 -> 238 and left
+    # `Save Options` at 87 px against an 89 px heading -- i.e. after ONE drag
+    # that heading clipped for the rest of the session.
+    #
+    # SELF-SKIPS rather than fails when the window manager will not honour the
+    # resize: a row that cannot move the window has measured nothing, and a
+    # blind pass would be worse than no row (test_ase_window's own W4 carries
+    # the same discipline for the same reason).
+    proc d1398_fixedcols {top} {
+      set o {}
+      foreach pane {vars ana outs} {
+        set tv $top.body.$pane.tv
+        foreach c [$tv cget -columns] {
+          if {![$tv column $c -stretch]} { lappend o $pane/$c [$tv column $c -width] }
+        }
+      }
+      return $o
+    }
+    set d_geom [wm geometry $dtop]
+    set d_cols0 [d1398_fixedcols $dtop]
+    set d_moved 0
+    set d_drift {}
+    for {set i 0} {$i < 4} {incr i} {
+      wm geometry $dtop 560x360 ; update ; after 120 ; update
+      set d_small [winfo width $dtop]
+      wm geometry $dtop 900x600 ; update ; after 120 ; update
+      set d_big [winfo width $dtop]
+      if {$d_big > $d_small + 100} { set d_moved 1 }
+      set d_now [d1398_fixedcols $dtop]
+      if {$d_now ne $d_cols0} { lappend d_drift "cycle $i: {$d_now} was {$d_cols0}" }
+    }
+    catch {wm geometry $dtop $d_geom} ; update
+    if {!$d_moved} {
+      puts "SKIPPED: D1398g (this window manager never resized the toplevel; a ratchet cannot be measured without a drag)"
+    } else {
+      check "D1398g NOTHING RATCHETS: four full 560x360 <-> 900x600 cycles leave every FIXED column byte-identical, so the slack lands on the one content column per table and a drag can no longer cost `Save Options` its heading for the session" \
+        [list $d_drift $d_moved [expr {[llength $d_cols0] / 2}]] {{} 1 8}
+    }
+
+    ase::ui::close $dkey
+    catch {ase::session_close $dkey}
+    update
+  }
+
+  # PUT THE PROCESS BACK. `option add` is additive and never removed, so the
+  # only restore available is to write the LIGHT values -- the arm that
+  # actually ran at startup, src/xschem.tcl:19091-19102 -- back over the dark
+  # ones at the same priority.
+  foreach {p v} $D1398_LIGHT { option add $p $v startupFile }
+  check "D1398 the process is put back: the light option database this suite started under is in force again for anything created after this block" \
+    [list [option get . foreground Foreground] [option get . insertBackground Background]] \
+    {black black}
+
+ } d_bigerr]} {
+  puts "UNEXPECTED ERROR (D1398 block): $d_bigerr"
+  incr fail
+ }
+} else {
+  puts "D1398 dark/knob/ratchet legs skipped (no DISPLAY)"
 }
 
 # --- verdict -----------------------------------------------------------------

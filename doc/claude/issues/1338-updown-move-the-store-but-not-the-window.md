@@ -187,3 +187,56 @@ change, as their own comments require: `RW_FLOOR` 116 → 124, `KX_FLOOR` 51 →
 **A green suite is not an eyeball.** R2 is a row moving under the user's eyes and
 a shade of grey landing on it; a `look` debt is on the ledger. Suites green,
 please look.
+
+---
+
+## The open half, closed 2026-09-07: Delete and Add reach the blocks too
+
+R2 made the window follow **Up and Down**. It did not make it follow **Delete
+and Add**, and the user found the gap:
+
+> **Delete is not affecting the current display. Only future items sent to the
+> RDW are conforming to the new list.**
+
+They were exactly right, and the reason was `rdw::_reslot_block`: it is a
+**strict permutation** — "same rows, same slots" — over the rows the run
+published and the list declares. It can re-order a block and it can never add or
+remove a row from one. R2 only ever needed the permutation, so the permutation
+was all there was; a Delete has nothing to permute.
+
+**Ruling, from the user, put to them with its cost stated: REBUILD THEM.** After
+an accepted Delete or Add, every block whose device belongs to the edited class
+is re-dumped from the loaded raw, through `rdw::_make_block` — the seam's ONE
+builder, so a rebuilt block and a fresh dump are identical by construction (row
+**NW9** golds the split: the builder carries the amendment, the door reaches the
+builder, and the door renders no answer of its own). The narrowing footnote and
+the column widths come out as a fresh dump would have them, which is why a
+re-render rather than a row-removal: `rdw::format_answer` discards undeclared
+rows at dump time, so a block holds pre-rendered text and no filter applied
+later could restore what was never stored.
+
+**The stated cost, which the user accepted:** a block stops being a frozen
+record of the run, and an older dump changes under its reader.
+
+**Blocks that cannot be rebuilt are left alone and COUNTED.** No stamp, another
+schematic, a devpath that no longer resolves — and, the one that matters:
+
+> ⚠ **A REBUILD MUST NEVER TRADE REAL NUMBERS FOR A REFUSAL.** With no simulator
+> backend, no reader hook, or no raw loaded, `rdw::_make_block` legitimately
+> answers a well-formed **refusal block** carrying no parameter rows. That is
+> the correct answer to a *dump* and a catastrophic answer to a *rebuild*: the
+> first cut installed it, so a Delete pressed with no raw loaded wiped every
+> number off a block that had them and replaced it with a sentence. MEASURED —
+> rows RE10 and RE11 answered `{}` where parameters were expected. A feature
+> whose whole promise is "the pane follows the store" had started deleting the
+> pane. The guard is a **count**: a rebuild that would take a block from some
+> parameter rows to none is refused and the block is counted as stuck. Row
+> **RE12** is the fence; `rdw::_stuck_note` says it on screen.
+
+Row **RE10**'s "the row SET is untouched" leg is still true, and now says why:
+that fixture has no raw, so nothing there can be rebuilt and the permutation is
+what runs. `$RE10_RB` golds `0 rebuilt` so the accident is a contract.
+
+Row **KD1** of the keys suite drives the whole thing through the real UI and
+golds both directions: after the press, the block on screen has lost the deleted
+row and kept the others.

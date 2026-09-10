@@ -56,6 +56,16 @@ source [file join $here scratch.tcl]
 source [file join $here ase_design_window.tcl]  ;# ase_bind_design_window (issue 0698)
 set scratch [test_scratch ase_final_gf180]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## G9/G10 start a real simulator. MEASURED before the fix: green under the
+## developer's HOME, but under a registry naming a program that is not there the
+## whole file ABORTED at `UNEXPECTED ERROR: ase: REFUSED - There is no file at
+## ...` with G9 and G10 never reached -- 30 checks reported instead of 34, and a
+## reader who counts sees "1 FAILED" for a suite that measured nothing.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 set cellroot  [file join $repo gf180mcuD xschem_libs gf180mcu_tests test_nfet_final]
 set statefile [file join $cellroot ngspice_state1 test_nfet_final.state]
 set schfile   [file join $cellroot schematic test_nfet_final.sch]

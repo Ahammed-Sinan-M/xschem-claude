@@ -40,7 +40,33 @@ namespace eval ase {
   # `cosim` follows it for the same reason — it is deck/simulation config the
   # state owns (spec section E, E4). It is POLICY ONLY: it never lists the
   # digital artifacts, which are DERIVED from the netlist at run time.
-  variable schema_keys {version simulator design rundir temperature models
+  #
+  # `sim_entry` SITS BESIDE `simulator` AND IS NOT THE SAME THING. `simulator`
+  # is the BACKEND — `ngspice`, the name of the hook set that renders and reads
+  # this deck. `sim_entry` is WHICH REGISTERED PROGRAM this session runs that
+  # backend with, and it is here because of the user's ruling of 2026-09-08:
+  # registering a simulator is environment and reaches disk at once, but
+  # *whether* a registered one "gets assigned as 'the one to use' is an option
+  # that is part of the ASE-L state. If changed, that results in dirtiness."
+  # Being a schema key is the whole implementation of that — ase::session_dirty
+  # already compares serialized states, so the dirty mark, the explicit save and
+  # the prompt on quit come for free. Three values, one decoder
+  # (ase::sim_choice_decode), shared with ase::sim_default:
+  #
+  #     {} / absent      this state makes no choice; ase::sim_default runs
+  #     none             DELIBERATELY the program on the PATH (issue 0932)
+  #     {name <entry>}   that registry entry
+  #
+  # The two-word entry form exists so that no registry name has to be reserved:
+  # an entry a user really called `none` is spelled `{name none}`. A reader that
+  # meets a bare one-word value which is not `none` takes it as an entry name,
+  # because a hand-edited state file is forgiving.
+  #
+  # ⚠ IT IS IN `omit_if_empty` BELOW AND ITS DEFAULT IS `{}`, FOR THE REASON
+  # THAT LIST STATES. Anything else writes a `sim_entry` line into all 104
+  # committed .state files and reddens the five load->save byte-identity rows.
+  variable schema_keys {version simulator sim_entry design rundir temperature
+                        models
                         variables analyses outputs save_all_v save_all_i
                         save_op_params
                         options includes pre_commands cosim viewer}
@@ -73,7 +99,15 @@ namespace eval ase {
   # `{}`. A state a user deliberately unticked is byte-identical to one that
   # never heard of the key, so it flips ON with the rest. Ticking it off again
   # now writes `save_op_params 0` and sticks.
-  variable omit_if_empty {cosim save_op_params}
+  #
+  # `sim_entry` (the 2026-09-08 ruling, see the schema_keys comment above) is
+  # the FOURTH member and joins for the identical reason, with the identical
+  # consequence if it is ever taken out: it defaults to `{}` and `{}` means "no
+  # choice of my own", so every state written before the key existed serializes
+  # exactly as it did before and the five rows stay green. Note the asymmetry
+  # this buys and that the encoding is built around — `{}` is NOT "use the PATH
+  # program"; that is `none`, which is a real choice and IS written out.
+  variable omit_if_empty {cosim save_op_params sim_entry}
   # simulator name -> hooks dict: the five REQUIRED hooks
   # {render_deck run_cmd log_file result_probe raw_file}, plus the OPTIONAL
   # `capabilities` (issue 0948).
@@ -108,6 +142,16 @@ namespace eval ase {
   # Counter behind the per-measurement scratch directory name (issue 0951).
   # Two probes in ONE process must not be handed the same place either.
   variable cap_seq 0
+  # WHY THERE WAS NOWHERE TO WORK, the last time there was nowhere (issue
+  # 0960). Written by ase::cap_workdir at the moment it finds out and read one
+  # line later by ase::sim_capabilities_at, which puts it in the answer -- so
+  # the one place that KNOWS which of the THREE shapes it hit is the only place
+  # that works it out. Empty until something goes wrong.
+  variable cap_noplace [dict create]
+  # The places the user has already been told about, so the sentence is said
+  # once for a place and not again on every Run (issue 0960's acceptance).
+  # Cleared by ase::sim_caps_clear along with every measured answer.
+  variable cap_noplace_said [dict create]
   # most recent completed run: {results <dict> exitcode <n> log <path> }
   variable last_run [dict create]
   # session registry (item 03): key ("lib/cell/view") -> entry dict
@@ -268,23 +312,84 @@ proc ase::state_get {state key {dflt {}}} {
 # Expand Tcl variable references in a path coming from a state file (model
 # files store the portable form `$::SKYWATER_MODELS/sky130.lib.spice` — the
 # workarea rc sets the variable; a literal absolute path would break other
-# checkouts). Variables-ONLY: no command execution from state files
-# (-nocommands) and backslashes are kept verbatim for Windows paths
-# (-nobackslashes). Substitutes at global level so unqualified names resolve
-# like the rc wrote them. Clean error when a referenced variable is unset.
-# WARNING, pre-existing and NOT closed here (casemode batch item 6 found it while
-# fixing the same defect in its own field expansion): `-nocommands` does NOT stop
-# a command substitution that sits inside the ARRAY INDEX of a variable
-# reference. MEASURED on 8.6.14 --
+# checkouts). The same contract carries the `.include` paths, the `pre_` command
+# text, and — since the registry became the only route from a configured
+# simulator to a run — the SIMULATOR's own location out of ase::sim_register.
+# Resolved at global level so unqualified names mean what the rc wrote, and a
+# referenced variable that is unset is a clean error.
+#
+# VARIABLES ONLY, AND THAT IS NOW ENFORCED BY A PARSER INSTEAD OF BY A FLAG
+# (issue 1239). This proc used to say `subst -nocommands -nobackslashes`, and
+# ⚠ `-nocommands` IS NOT A SANDBOX. MEASURED on Tcl 8.6.14 --
 #   set ::RAN 0 ; subst -nocommands -nobackslashes {$A([set ::RAN 1])/x}
-# leaves ::RAN at 1. So a model path of the form `$env([exec ...])/models` in a
-# STATE FILE runs that command when the path is expanded. `::sim_profile_expand_vars`
-# (src/xschem.tcl) is the variables-only expander written for the profile fields
-# and is what this should use; it is left alone here because model paths are not
-# item 6's to change and every consumer of this proc is another item's. Recorded
-# in doc/claude/specs/simulator_profiles.md section 5.
+# leaves ::RAN at 1: Tcl still evaluates a `[...]` sitting inside the ARRAY
+# INDEX of a variable reference, because the index is parsed as a script word
+# before the (suppressed) command-substitution pass ever applies. Driven end to
+# end on this tree — an `exe` of `$env([exec touch .../PWNED])/ngspice` created
+# the file during a pure STALENESS query.
+#
+# ⚠ THE ROUTE THIS CLOSES IS THE DATA ONE, AND SAYING "INCLUDING sim_load_conf
+# AT STARTUP" OVERSTATED IT. `ase::sim_load_conf` does
+# `uplevel #0 [list source $path]` on `$USER_CONF_DIR/ase_simulators`: a
+# hand-written hostile conf is a Tcl SCRIPT with unrestricted execution at
+# global level long before any expander sees a string, and this change buys
+# nothing against it. What is actually closed is:
+#   * a `.state` file, which is DATA — ase::state_load parses a flat Tcl list
+#     and merges a dict, sourcing nothing — whose `models` file, `includes`
+#     file and `pre_commands` cmd reach here when the deck is composed. Opening
+#     someone else's testbench ran what their state file said;
+#   * the LOCATION field of `Setup > Simulators…`, which FOUR procs expand
+#     under a `catch` merely to RENDER status — ase::casemode_status,
+#     ase::casemode_report, ase::sim_caps_have_path and
+#     ase::sim_capabilities_path. Text that has only been typed, never run, was
+#     executed. (This list named three and omitted ase::casemode_report until
+#     the close-out round. ⚠ AND THE COUNT BESIDE IT WAS WRONG TWICE OVER: it
+#     said "five callers", prefixed "measured, not recited", and was neither.
+#     `grep -n expand_path src/ase.tcl` finds EIGHT call sites, and it found
+#     eight at HEAD too: the four render-only procs above, ase::sim_register,
+#     and THREE in ase::render_deck — the `.include` card, the `.lib` card and
+#     `pre_commands` — which are exactly the deck-time route this same comment
+#     names two bullets up. Re-measured 2026-09-07.)
+# What sim_load_conf does contribute is REACH, not privilege: it replays the
+# saved `ase::sim_register` lines at startup, so a location recorded earlier is
+# re-expanded with nobody present — which is why the thing on that path has to
+# be a parser and not an evaluator.
+#
+# ::sim_expand_vars (src/xschem.tcl) is the expander that is not an evaluator:
+# `$name`, `${name}` and `$name(index)`, literal index characters only, and an
+# index carrying `[`, `$` or a backslash REFUSED rather than resolved. It keeps
+# both properties `-nobackslashes` was here for — a backslash is verbatim, so
+# Windows paths survive, and a `$` that Tcl itself leaves literal (`$/x`, `$$V`,
+# a trailing `$`) is a literal `$` here too.
+#
+# ⚠ AND IT RAISES WHERE TCL WOULD HAVE RAISED, WHICH IS THE SECOND HALF OF 1239
+# AND WAS NOT IN THE FIRST PASS. A differential fuzz over 54,240 strings found
+# 4,186 of them in ONE family running the OPPOSITE way from the refusal above:
+# `$(V)/x`, `${}/x`, an unterminated brace form, `$::/x`, `$V::/x`, `$V(/x` —
+# every one an ERROR under
+# `subst -nocommands`, every one coming back from the new parser SILENTLY, as a
+# literal, with the dollar still in the path (or, for `$V::`, half-expanded).
+# A model path that failed loudly at load became a filename with a `$` in it,
+# which fails later, somewhere else, with a worse message. ::sim_expand_vars now
+# refuses at both seams — a `$` it declined that Tcl would have read, and a name
+# it stopped short of that Tcl would have continued. Re-measured after the fix:
+# 200,000 random bracket-free strings, ZERO shapes where the old expander raised
+# and the new one returns a value. Rows: CS157w..CS157ab.
+#
+# ⚠ A REFUSED INDEX IS AN ERROR, ON PURPOSE, AND THAT WAS SURVEYED BEFORE IT
+# LANDED. Every one of the 104 committed `.state` files was expanded through
+# both forms: 22 distinct strings, none refused, none expanding differently —
+# including the mixed-signal `pre_commands` whose ngspice auto_bridge cards
+# carry LITERAL `[ %s ]`. Brackets outside an index are ordinary text, which is
+# why the refusal is scoped to the index and not to the character; "refuse any
+# bracket" would have passed every row in the suite and broken those benches.
+# The callers for which a bad location is a fact about the user's disk rather
+# than a defect — registration and the two capability peeks — already catch this
+# and fall back to the literal (issues 0938 and 0945); the model, include and
+# pre_command callers raise, exactly as they already did for an unset variable.
+# Rows: tests/headless/test_sim_casemode_registry.tcl CS157n..CS157ab.
 proc ase::expand_path {p} {
-  if {[catch {uplevel #0 [list subst -nocommands -nobackslashes $p]} out]} {
+  if {[catch {::sim_expand_vars $p} out]} {
     return -code error "ase: cannot expand model path '$p': $out"
   }
   return $out
@@ -398,6 +503,7 @@ proc ase::state_default {} {
   return [dict create \
     version   1 \
     simulator ngspice \
+    sim_entry {} \
     design    {} \
     rundir    {} \
     temperature 27 \
@@ -637,11 +743,65 @@ namespace eval ase {
   # order entries were registered in is the order the user sees them.
   variable simulators [dict create]
   # the entry name in force, or empty for "no choice made -- use PATH".
+  #
+  # ⚠ A CACHE, NOT THE STORE OF RECORD, AS OF THE USER'S RULING OF 2026-09-08.
+  # Their words: registering a simulator "is something that can make it to disk
+  # right away as soon as done", but *whether* the newly registered one "gets
+  # assigned as 'the one to use' is an option that is part of the ASE-L state.
+  # If changed, that results in dirtiness."
+  #
+  # So the two halves of this section are DIFFERENT KINDS OF THING and are
+  # stored in different places:
+  #
+  #   the REGISTRY  -- which programs exist, and where -- is ENVIRONMENT. It is
+  #                    a fact about this machine, it belongs to no test bench,
+  #                    and it persists the moment it changes (ase::sim_touch).
+  #   the CHOICE    -- which registered entry a session runs -- is ASE-L STATE.
+  #                    It travels with the test bench in the `sim_entry` schema
+  #                    key, it dirties the session when it changes, and it
+  #                    reaches disk only when the user saves.
+  #
+  # `sim_use` is what is in force RIGHT NOW, i.e. a cache of the active
+  # session's choice, refreshed by ase::sim_apply_choice at every run. Every
+  # ase::sim_status caller keeps reading it and none of them changed.
   variable sim_use {}
+  # THE INSTALLATION DEFAULT: what a session that expresses no choice of its
+  # own runs. It is ENVIRONMENT, like the registry beside it, and it is what
+  # ase::sim_write_body puts in the saved list -- never `sim_use`, which would
+  # be a session's choice leaking into a file that belongs to the machine.
+  #
+  # Set from the three places that speak for the environment and from nowhere
+  # else: the `ase::sim_select` line in the saved list (origin `conf`), the rc
+  # seed (origin `rc`), and the first registration of all (see
+  # ase::sim_register). A `session` gesture never touches it.
+  #
+  # Stored in the SAME three-value encoding as the `sim_entry` state key --
+  # {} / none / {name <entry>} -- so one decoder (ase::sim_choice_decode)
+  # serves both and neither side has to know how the other spells "the program
+  # on the PATH".
+  variable sim_default {}
   # which layer is currently registering, stamped into every entry's `origin`
   # field. Only the seed block and ase::sim_load_conf ever change it, and both
   # restore it, so an ordinary call is always `session`.
   variable sim_origin session
+  # MAY A MUTATION REACH THE DISK AT ALL? A TEST SEAM, AND THE ONLY ONE.
+  # Nothing in the product ever clears this; it is 1 for every user, always.
+  #
+  # WHY IT HAD TO EXIST. Registration now persists at the moment it happens,
+  # and its target is $::USER_CONF_DIR/ase_simulators -- the developer's own
+  # ~/.xschem/ase_simulators when nothing redirects it. Eleven headless suites
+  # register stub simulators (`/bin/sh`, two-line shell scripts, deliberately
+  # broken files), and four of them redirect nothing, so on the day this became
+  # a write those four would have replaced the user's real list with stubs on
+  # every run. tests/headless/scratch.tcl's `test_sim_registry_isolate` clears
+  # this, which is the same promise that helper already makes in words:
+  # "NOTHING HERE TOUCHES A FILE, AND THAT IS THE POINT."
+  #
+  # It is deliberately NOT an ordinary preference. A user who does not want
+  # their list saved has a way to say so already -- do not register anything --
+  # and a silent "changes are not being kept" mode is exactly the failure this
+  # whole section was written to stop.
+  variable sim_autosave 1
   # EVERY sentence ase::sim_say has said since the last clear, in the order it
   # said them, so a dialog can show the user the very words the CIW got
   # instead of composing a second version of them (issue 0937;
@@ -657,6 +817,63 @@ namespace eval ase {
   # assume -- that this holds "the last sentence" -- is exactly what the
   # defect was made of.
   variable sim_said {}
+}
+
+# --- HOW A CHOICE IS WRITTEN DOWN -------------------------------------------
+# ONE ENCODING, ONE DECODER, TWO STORES. `ase::sim_default` (the installation
+# default) and the `sim_entry` schema key (one session's own choice) hold the
+# same three values, so a reader never has to know which of the two it is
+# looking at:
+#
+#   {} or absent    no choice is recorded here -- ask the layer below
+#   none            DELIBERATELY the program on the PATH (issue 0932)
+#   {name <entry>}  that registry entry
+#
+# WHY `{}` CANNOT ALSO MEAN "THE PATH PROGRAM", which is the obvious-looking
+# saving. The 104 committed `.state` files force the new key's default to be
+# `{}` and force it into `ase::omit_if_empty` (the rule is written out at the
+# top of this file), so `{}` is what every state that predates the key says --
+# i.e. "I have no opinion". Issue 0932 established that handing control back to
+# the PATH is a real choice a user makes and must survive a restart, so it
+# needs a spelling of its own, and `none` is it.
+#
+# WHY THE ENTRY FORM IS TWO WORDS. So that no registry name has to be reserved.
+# An entry a user genuinely called `none` is spelled `{name none}` and reads
+# back as itself.
+#
+# THE DECODER IS FORGIVING ON PURPOSE. A saved state is a plain text file a
+# user may edit, and the natural thing to type is the entry's bare name. A
+# one-word value that is not `none` therefore decodes as that entry.
+proc ase::sim_choice_decode {v} {
+  if {[catch {llength $v} n]} { return [list unset {}] }
+  if {$n == 0} { return [list unset {}] }
+  if {$n == 1} {
+    if {[lindex $v 0] eq {none}} { return [list path {}] }
+    return [list entry [lindex $v 0]]
+  }
+  if {$n == 2 && [lindex $v 0] eq {name}} {
+    set nm [lindex $v 1]
+    if {$nm eq {}} { return [list unset {}] }
+    return [list entry $nm]
+  }
+  ## Anything else is a value this encoding has no meaning for. Answering
+  ## `unset` makes it fall through to the layer below rather than naming an
+  ## entry nobody registered, which is the failure a hand-edited file is most
+  ## likely to produce.
+  return [list unset {}]
+}
+
+# The stored form for a decoded kind. `entry` needs a name; anything else
+# ignores it.
+proc ase::sim_choice_encode {kind {name {}}} {
+  switch -- $kind {
+    path  { return none }
+    entry {
+      if {$name eq {}} { return {} }
+      return [list name $name]
+    }
+  }
+  return {}
 }
 
 # THE MINT. Every user-facing sentence about a simulator entry is written
@@ -800,6 +1017,14 @@ proc ase::sim_why {kind name path {extra {}}} {
     nowrite {
       return "Your simulator list could not be saved to $path, so the simulators you added will be gone when xschem closes. Check that the folder exists and that you can write to it. The system said: $extra"
     }
+    conf_isdir {
+      set what $path
+      if {$extra ne {} && $extra ne $path} { append what " (which is really $extra)" }
+      return "Your simulator list could not be saved to $what, because it is a folder, not a settings file. Nothing was put inside it, and the list you already had is untouched."
+    }
+    conf_linkloop {
+      return "Your simulator list could not be saved to $path, because it is a chain of symbolic links more than 16 deep, which is what a loop looks like from here. The list you already had is untouched."
+    }
     badconf {
       return "Your saved simulator list in $path could not be read, so no simulators were restored from it. Fix or delete that file. The system said: $extra"
     }
@@ -832,6 +1057,63 @@ proc ase::sim_why {kind name path {extra {}}} {
     }
     cap_no_answer {
       return "$path, which is the program the simulator you picked will start, was given a tiny test circuit to try and had still not finished with it after $extra seconds, so there was no way to find out what it can do. It may simply be slow to start. Your run is going ahead anyway, and this will be tried again the next time you press Run."
+    }
+    cap_noplace {
+      ## ISSUE 0960 -- THE STATE THAT SAID NOTHING AT ALL. Measured, both
+      ## shapes, three presses each: caps={known 0 unmeasured noplace},
+      ## kind='', said={}. The FOLDER is at fault, so the folder or the file
+      ## is what the sentence names; accusing the user's program here is issue
+      ## 0949's category error, and it is what the silence was the price of.
+      ##
+      ## EVERY ARM PUTS `$path` FIRST INSIDE `$what`, and that is not a style
+      ## choice: the sentence is composed from two source strings, and row N6
+      ## of tests/headless/test_ase_simcaps_0948.tcl takes it apart at its own
+      ## sentence endings and then at the substituted path. A `$what` that
+      ## opened with words would leave a fragment spanning the join that no
+      ## source line can ever match.
+      switch -- $extra {
+        occupied {
+          set what "$path is a file, and a folder of that name is where a test result has to go. Delete or rename that file"
+        }
+        notdir {
+          ## THERE IS NO FOLDER. Kept apart from `readonly` because the fix is
+          ## a different one: no permission change can help, the setting itself
+          ## is pointing at a file. Reached through ::netlist_dir naming an
+          ## existing regular file -- see ase::cap_noplace_at. Row N17.
+          set what "$path is a file, not a folder, and a folder is where the simulation has to work. Point your simulation folder at a directory"
+        }
+        readonly {
+          ## THE FOLDER WILL NOT TAKE A NEW ENTRY, and ase::cap_noplace_at
+          ## found that out by TRYING to make one. The old words were "nothing
+          ## can be written into it. Make it writable, or choose another one",
+          ## which is exact for a mount that came up `ro` and misleading for
+          ## the commonest shape on a developer's box: mode 0600, where the
+          ## write bit IS set and the missing SEARCH bit is what refuses the
+          ## create. `chmod u+w` on such a folder changes nothing. Rows N14
+          ## and N15 of tests/headless/test_ase_simcaps_0948.tcl.
+          set what "$path is your simulation folder, and nothing new can be made in it. Give it write and search permission, or pick another folder"
+        }
+        default {
+          ## THE CATCH-ALL. It is reached only after ase::cap_noplace_at has
+          ## MADE a new entry in the simulation folder and removed it again,
+          ## which is why this sentence may assert that the folder can be
+          ## written into: that clause is a measurement, not an inference.
+          ##
+          ## ⚠ IT WAS AN INFERENCE ONCE AND THE SENTENCE WAS FALSE. The test
+          ## above read `file writable`, which on a DIRECTORY is POSIX
+          ## access(W_OK) and ignores the search bit, so mode 0600 and mode
+          ## 0200 folders -- every create refused -- arrived here and were
+          ## told their folder could be written into and offered a
+          ## `.ase_probe` to delete that did not exist. Rows N14 and N15.
+          ##
+          ## The shapes that legitimately land here, all driven live on the
+          ## built binary: a dangling .ase_probe symbolic link, a .ase_probe
+          ## directory with no write permission, and 64 name collisions.
+          ## Rows N9-N11.
+          set what "$path is where a test result has to go, and it could not be made or used. Your simulation folder itself can be written into, so delete $path or make it writable"
+        }
+      }
+      return "Nothing could be found out about the program that will run your simulation, because $what. Until then nothing will warn you about what that program cannot do, including a build that keeps only the last analysis of a run."
     }
     casemode_measuring {
       return "Trying $path now, to find out which spellings of a net name it can hand back."
@@ -1150,6 +1432,56 @@ proc ase::sim_notify_fire {} {
   return {}
 }
 
+# THE REGISTRY REACHES DISK AT THE MUTATION, NOT AT THE GESTURE (the user's
+# ruling of 2026-09-08: registering a simulator "is something that can make it
+# to disk right away as soon as done").
+#
+# WHAT IT REPLACES, AND WHY THE OLD PLACEMENT WAS A DEFECT. The only caller of
+# ase::sim_write_conf used to be the Simulators dialog, which called it after
+# every gesture of its own. So the dialog persisted and the OTHER door did not:
+# a user who typed `ase::sim_register ...` into the Command window -- which is
+# how this user's own `ngspice-ver50` entry was made, recorded at
+# src/ase_window.tcl:288 -- got an entry that worked all session and was gone
+# at the next start, while src/xschem.tcl's own help text promised them "the
+# saved list is ~/.xschem/ase_simulators and it comes back at the next start".
+# Putting the write on the mutation means every door persists, including the
+# ones nobody has written yet.
+#
+# ⚠ GATED ON `sim_origin eq session`, AND WITHOUT THAT GATE THIS EATS ITS OWN
+# TAIL. ase::sim_load_conf SOURCES the saved list, so every line in it is a
+# real ase::sim_register call: an ungated write would have the reader rewriting
+# the file it is halfway through reading, once per line, with a registry that
+# is only partly built. The same holds for the rc seed. Both layers already
+# stamp `sim_origin`, and both already restore it.
+#
+# THE FAILURE IS NOT SWALLOWED, AND IT IS NOT SAID TWICE EITHER.
+# ase::sim_write_conf already says its own failure through ase::sim_say -- it
+# has three of them (nowrite, conf_isdir, conf_linkloop) and returns 0 rather
+# than raising. So this adds a sentence ONLY on the path where that promise is
+# broken, i.e. an unexpected raise, where nothing has been said at all.
+# Row S8 of tests/headless/test_ase_simreg_0931.tcl counts the sentences a
+# failing registration says and pins the count at exactly one.
+proc ase::sim_touch {} {
+  variable sim_origin
+  variable sim_autosave
+  if {!$sim_autosave} { return 0 }
+  if {$sim_origin ne {session}} { return 0 }
+  set path [ase::sim_conf_file]
+  ## NO CONFIGURATION DIRECTORY AT ALL IS NOT A FAILURE TO REPORT. There is no
+  ## user file for this installation, so there is nothing to keep the list in
+  ## and nothing the user could do about it -- the same rule ase::sim_load_conf
+  ## follows for a first run with no saved list, which row E11 exists to pin.
+  ## Measured without this line: every registration said "Your simulator list
+  ## could not be saved to , so the simulators you added will be gone", a
+  ## sentence with a hole in it, about a save nobody asked for.
+  if {$path eq {}} { return 0 }
+  if {[catch {ase::sim_write_conf} rc]} {
+    ase::sim_say nowrite {} $path $rc error
+    return 0
+  }
+  return $rc
+}
+
 # Register simulator `name` at `path`. Options: -args <extra argv list>,
 # -backend <backend name, or empty for any>.
 #
@@ -1164,6 +1496,7 @@ proc ase::sim_notify_fire {} {
 proc ase::sim_register {name path args} {
   variable simulators
   variable sim_use
+  variable sim_default
   variable sim_origin
   set eargs {}
   set backend {}
@@ -1278,7 +1611,19 @@ proc ase::sim_register {name path args} {
   # registering one simulator would do nothing visible at all and the user
   # would have to make a second, separate gesture to mean the obvious thing.
   # A later registration never steals the choice away from it.
+  #
+  # AND IT BECOMES THE INSTALLATION DEFAULT, for the same reason and by the
+  # same rule: the first simulator on an empty list is not one bench's opinion,
+  # it is what this installation runs until somebody says otherwise. `sim_use`
+  # and `sim_default` are seeded independently -- a session may already have a
+  # choice of its own while the default is still unset, and vice versa -- and
+  # neither seed ever steals from a value that is already there.
+  #
+  # ⚠ NO SESSION STATE IS TOUCHED HERE. Registering is not choosing: it must
+  # not write the `sim_entry` key of whatever session happens to be open, or a
+  # registration would dirty a bench the user was not editing.
   if {$sim_use eq {}} { set sim_use $name }
+  if {$sim_default eq {}} { set sim_default [ase::sim_choice_encode entry $name] }
   # ADDING OR EDITING AN ENTRY MEANS LOOK AT THE PROGRAM AGAIN (issue 0950).
   # What a reader would otherwise assume is that the file stamp already covers
   # every reason an answer could be stale. It does not: a wrong answer taken in
@@ -1298,6 +1643,11 @@ proc ase::sim_register {name path args} {
   ## OTHER door onto the registry -- the Command window one, which the dialog's
   ## own refresh cannot see.
   ase::sim_notify_fire
+  ## AND IT IS ON DISK BEFORE THIS PROC RETURNS. Last, after the entry has
+  # landed and after everything this gesture had to say, so a failure to save
+  # is the LAST thing the user reads and the file that gets written is the
+  # registry they can see.
+  ase::sim_touch
   return [expr {$kind eq {} ? 1 : 0}]
 }
 
@@ -1323,6 +1673,7 @@ proc ase::sim_register {name path args} {
 proc ase::sim_unregister {name} {
   variable simulators
   variable sim_use
+  variable sim_default
   if {![dict exists $simulators $name]} {
     return -code error "ase: [ase::sim_why noentry $name {} [dict keys $simulators]]"
   }
@@ -1331,6 +1682,22 @@ proc ase::sim_unregister {name} {
   # afterwards there is no way left to ask whether this entry was the one
   # being used.
   set wasuse [expr {$sim_use eq $name}]
+  # And the same question asked of the INSTALLATION DEFAULT, which is a
+  # different question with a different answer: a session can be running entry
+  # B while the default is still entry A, so removing A leaves `sim_use`
+  # untouched and must still not leave the default naming something that is
+  # gone. Recorded before the removal for the same reason as `wasuse`.
+  #
+  # ⚠ THE KIND IS COMPARED AGAINST A QUOTED WORD, NOT A BRACED ONE. Row CS166
+  # of tests/headless/test_sim_casemode_registry.tcl hunts for Tk in this
+  # section by looking for a widget command in COMMAND POSITION, and `entry` is
+  # both a Tk widget command and the name of a kind here -- so `eq {entry}`
+  # reads to that detector as a call to the Tk entry widget and reddens the row
+  # for a proc that has never touched Tk. Measured. Its own header warns that
+  # the fix a reader then reaches for is to weaken the detector.
+  set defchoice [ase::sim_choice_decode $sim_default]
+  set wasdefault [expr {[lindex $defchoice 0] eq "entry"
+                        && [lindex $defchoice 1] eq $name}]
   dict unset simulators $name
   if {$wasuse} {
     set sim_use {}
@@ -1348,6 +1715,18 @@ proc ase::sim_unregister {name} {
       ase::sim_say removed_now_other $name {} $sim_use note
     }
   }
+  # THE DEFAULT FOLLOWS THE SAME RULE AND SAYS NOTHING EXTRA. Same two arms as
+  # the choice above -- empty when the answer is a guess, the sole survivor
+  # when it is not -- because the rule is about what can be known, not about
+  # which variable is asking. No sentence of its own: the user removed an
+  # entry, they were already told what will start now, and a second sentence
+  # about an installation default they have never seen named would be noise.
+  if {$wasdefault} {
+    set sim_default {}
+    if {[dict size $simulators] == 1} {
+      set sim_default [ase::sim_choice_encode entry [lindex [dict keys $simulators] 0]]
+    }
+  }
   if {[dict get $e origin] eq {rc}} {
     ase::sim_say rc_removed $name {} {} note
   }
@@ -1356,6 +1735,9 @@ proc ase::sim_unregister {name} {
   # the old one must not be served about the new one.
   ase::sim_caps_clear
   ase::sim_notify_fire
+  ## Removing an entry is a mutation the user made on purpose, so it persists
+  # at once, exactly like adding one. Last, for ase::sim_register's reason.
+  ase::sim_touch
   # NOT the sentence. Every caller here tests this as a boolean, and row E13
   # pins it at 1 for a removal that also had two things to say.
   return 1
@@ -1396,16 +1778,136 @@ proc ase::sim_entry {name} {
 
 # Put one registered simulator in force. An empty name clears the choice,
 # which puts the program on the PATH back in charge.
+#
+# ⚠ IT WRITES NOTHING TO DISK, AND THAT IS THE USER'S RULING, NOT AN OVERSIGHT.
+# 2026-09-08, verbatim: *whether* a registered simulator "gets assigned as 'the
+# one to use' is an option that is part of the ASE-L state. If changed, that
+# results in dirtiness. User must explicitly save and, if user initiates an
+# Xschem shutdown, then she must get a warning and a prompt to save." A choice
+# that saved itself here would be exactly the thing that ruling forbids: it
+# would reach disk with no save gesture, from a window the user may be about to
+# abandon, and it would overwrite the installation default with one bench's
+# opinion. Registration persists immediately (ase::sim_touch); the choice waits.
+#
+# WHICH LAYER IS TALKING DECIDES WHAT THIS CALL MEANS (decision D3). The signal
+# already exists and is already maintained -- `ase::sim_origin` is `session`
+# for an ordinary call, `conf` while ase::sim_load_conf sources the saved list,
+# and `rc` while the seed block runs:
+#
+#   origin session   a CHOICE. Sets `sim_use` alone. The state key is the store
+#                    of record for it and the caller owns writing it there.
+#   origin conf/rc   a DEFAULT. Sets `sim_use` -- there is nothing else in
+#                    force yet at startup -- AND `sim_default`, which is how
+#                    the saved file's `ase::sim_select` line reaches the new
+#                    variable at NO COST TO THE FILE FORMAT. `ase::sim_select
+#                    {}` from those layers means issue 0932's "deliberately the
+#                    program on the PATH", so it is recorded as `none` and not
+#                    as "no opinion", or the choice 0932 exists to preserve
+#                    would be thrown away on the first restart.
 proc ase::sim_select {name} {
   variable simulators
   variable sim_use
-  if {$name eq {}} { set sim_use {} ; ase::sim_notify_fire ; return {} }
+  variable sim_default
+  variable sim_origin
+  set fromenv [expr {$sim_origin ne {session}}]
+  if {$name eq {}} {
+    set sim_use {}
+    if {$fromenv} { set sim_default [ase::sim_choice_encode path] }
+    ase::sim_notify_fire
+    return {}
+  }
   if {![dict exists $simulators $name]} {
     return -code error "ase: [ase::sim_why noentry $name {} [dict keys $simulators]]"
   }
   set sim_use $name
+  if {$fromenv} { set sim_default [ase::sim_choice_encode entry $name] }
   ase::sim_notify_fire
   return $name
+}
+
+# The installation default, decoded: a two-element {kind value} list, kind one
+# of unset / path / entry. What a session with no choice of its own runs.
+proc ase::sim_default_choice {} {
+  variable sim_default
+  return [ase::sim_choice_decode $sim_default]
+}
+
+# --- the state's own choice, read and written for callers -------------------
+# ONE STATE'S CHOICE, DECODED. Two accessors so that nothing outside this file
+# ever hand-spells the `sim_entry` key's three values: a dialog that wrote
+# `dict set st sim_entry $name` would work for every entry except one called
+# `none`, and would then be wrong in the one place a user would never think to
+# look.
+proc ase::sim_choice_of {state} {
+  return [ase::sim_choice_decode [ase::state_get $state sim_entry {}]]
+}
+
+# The same state with the choice set: a NEW dict, the argument untouched.
+# `unset` clears the key back to "no choice of my own", which is what makes a
+# session fall through to ase::sim_default again.
+proc ase::sim_choice_set {state kind {name {}}} {
+  return [dict replace $state sim_entry [ase::sim_choice_encode $kind $name]]
+}
+
+# PUT THE RUNNING SESSION'S CHOICE IN FORCE, and answer what was put there as
+# a decoded {kind value}.
+#
+# WHY THE RUN IS WHERE THIS HAPPENS. `ase::sim_use` is process-global and every
+# resolver reads it, so with two ASE-L windows open on two benches there is one
+# answer for two questions. The run is the moment the question stops being
+# rhetorical: whichever session is being RUN decides which program starts, so
+# the window the user clicked in wins the thing that actually executes. (The
+# bar or dialog in the other window may still name the other choice for a
+# moment; per-window registries are a separate feature and were not asked for.
+# Recorded in doc/claude/ase_simchoice_batch/DECISIONS.md as D5.)
+#
+# THE FALL-THROUGH IS THE POINT: a state that says nothing runs
+# ase::sim_default, the installation default, which is what every one of the
+# 104 committed .state files says and what a fresh bench says.
+#
+# ⚠ IT NEVER RAISES. It is called from inside a run that is about to start, and
+# a resolver that threw here would turn a stale entry name into a stack trace
+# instead of a sentence -- the failure mode this whole section exists not to
+# have. A choice naming an entry that is no longer registered leaves `sim_use`
+# exactly as it was (so the run goes ahead on whatever is in force) and says
+# the ONE sentence that already exists for this, ase::sim_why's `noentry`,
+# which names the entry and lists what there is to choose from.
+proc ase::sim_apply_choice {state} {
+  variable simulators
+  variable sim_use
+  variable sim_default
+  set choice [ase::sim_choice_of $state]
+  if {[lindex $choice 0] eq {unset}} {
+    set choice [ase::sim_choice_decode $sim_default]
+  }
+  switch -- [lindex $choice 0] {
+    path {
+      set sim_use {}
+      return $choice
+    }
+    entry {
+      set nm [lindex $choice 1]
+      if {![dict exists $simulators $nm]} {
+        ase::sim_say noentry $nm {} [dict keys $simulators] error
+        return [ase::sim_in_force_choice]
+      }
+      set sim_use $nm
+      return $choice
+    }
+  }
+  ## Neither the state nor the default has an opinion: whatever is in force
+  ## stays in force, which for a fresh process is the PATH program.
+  return [ase::sim_in_force_choice]
+}
+
+# What is in force RIGHT NOW, in the same decoded shape everything else here
+# speaks. `path` rather than `unset` for an empty `sim_use`, because empty
+# genuinely means "the program on the PATH is what will start" -- this is the
+# one place where there is no layer left to fall through to.
+proc ase::sim_in_force_choice {} {
+  variable sim_use
+  if {$sim_use eq {}} { return [list path {}] }
+  return [list entry $sim_use]
 }
 
 # The name in force, or empty.
@@ -1415,12 +1917,27 @@ proc ase::sim_selected {} {
 }
 
 # Forget every registered simulator and every choice.
+#
+# ⚠ IT DOES NOT CALL ase::sim_touch, AND THAT IS A RULE, NOT AN OMISSION:
+# A MUTATION THAT EXPRESSES A USER'S CHOICE PERSISTS; A TEARDOWN DOES NOT.
+# Registering and removing an entry are things a user did on purpose and they
+# reach disk at once. This is neither -- it is "put the section back to the
+# state it had before anything was registered", and its callers are test
+# resets and scripts. An autosave here is the one way an
+# autosave-at-the-mutation design can DESTROY data: a suite's `a_reset`, or a
+# stray line in somebody's script, would blank the user's real saved list.
+#
+# So what this clears is MEMORY ONLY. The file keeps every entry it had, and
+# the next start reads them all back -- which is the difference between
+# forgetting and deleting.
 proc ase::sim_clear {} {
   variable simulators
   variable sim_use
+  variable sim_default
   variable sim_said
   set simulators [dict create]
   set sim_use {}
+  set sim_default {}
   # THE RECORD OF WHAT WAS SAID GOES TOO (issue 0941). This puts the section
   # back to the state it had before anything was registered, and sentences
   # already said were about entries that no longer exist. It mattered only
@@ -1442,9 +1959,16 @@ proc ase::sim_clear {} {
 #             cannot be honoured
 #   exe       argv0, exactly as it will be handed to `execute`
 #   args      the extra arguments that go before the deck
-#   resolved  the absolute file this names, or auto_execok's answer when the
-#             PATH is what is in charge. This is the field a caller asking
-#             "is a simulator available" wants.
+#   resolved  the absolute file a registered entry names, or auto_execok's
+#             answer when the PATH is what is in charge. This is the field a
+#             caller asking "is a simulator available" wants. ⚠ IT IS NOT
+#             ALWAYS ABSOLUTE: only the registry arm normalizes. auto_execok
+#             answers a RELATIVE `./ngspice` when $PATH carries an empty
+#             element -- a leading, doubled or trailing `:` -- or a literal
+#             `.`, and the program is in the current directory. Every consumer
+#             that changes folder before using it has to resolve it first;
+#             ase::cap_run does, and issue 0961 is what it cost when it did
+#             not.
 #   source    `registry` when a registered entry answered, `path` when the
 #             program on the PATH did
 #   entry     the registered name that answered, or empty
@@ -1710,7 +2234,12 @@ proc ase::cap_key {resolved eargs} { return [list $resolved $eargs] }
 # same one-second file-time hole is recorded at src/op_annot.tcl:843-847.
 proc ase::sim_caps_clear {} {
   variable sim_caps
+  variable cap_noplace_said
   set sim_caps [dict create]
+  # THE NOTICE ABOUT A PLACE IS FORGOTTEN WITH THE MEASUREMENTS (issue 0960).
+  # This is the lever for a user who knows something changed, and a folder
+  # they have just fixed -- or just broken -- is exactly such a change.
+  set cap_noplace_said [dict create]
   return {}
 }
 
@@ -1746,6 +2275,8 @@ proc ase::sim_caps_clear {} {
 # user's program, which is issue 0949's category error wearing other clothes.
 proc ase::cap_workdir {} {
   variable cap_seq
+  variable cap_noplace
+  set cap_noplace [dict create]
   set tries 0
   set base [set_netlist_dir 0]
   # set_netlist_dir answers empty when the simulation folder could not be made
@@ -1753,8 +2284,10 @@ proc ase::cap_workdir {} {
   # and the user has a larger problem than tidiness at that point.
   if {$base eq {}} { set base [pwd] }
   set parent [file normalize [file join $base .ase_probe]]
-  if {[catch {file mkdir $parent}]} { return {} }
-  if {![file isdirectory $parent]} { return {} }
+  if {[catch {file mkdir $parent}] || ![file isdirectory $parent]} {
+    set cap_noplace [ase::cap_noplace_at $parent]
+    return {}
+  }
   while {$tries < 64} {
     incr tries
     incr cap_seq
@@ -1778,7 +2311,213 @@ proc ase::cap_workdir {} {
     }
     return $d
   }
+  set cap_noplace [ase::cap_noplace_at $parent]
   return {}
+}
+
+# WHAT WAS IN THE WAY, worked out where it was found out and nowhere else
+# (issue 0960). ase::cap_workdir answering empty used to be the whole of what
+# anybody downstream knew, and the THREE shapes a user actually meets need
+# different sentences and different fixes. All three are ordinary, all three
+# have been driven live through ase::sim_capabilities + ase::cap_report on the
+# built binary, and all three have rows:
+#
+#   occupied  something that is not a folder is sitting at the name the probe
+#             needs. THE USER HAS DONE NOTHING WRONG -- a leftover from a
+#             crashed run, a .ase_probe that was a directory yesterday -- and
+#             deleting one file fixes it, so the sentence has to name it.
+#   readonly  the simulation folder WILL NOT TAKE A NEW ENTRY, measured by
+#             trying to make one: a shared project area, a mount that came up
+#             `ro`, and -- the shape `file writable` cannot see -- a folder
+#             with the write bit and no SEARCH bit, mode 0600 or 0200.
+#             The name of this arm is older than that last shape and is kept
+#             so the answer's `noplace_why` value does not move under a
+#             reader; what it MEANS is the sentence above it.
+#   other     the folder took a new entry a moment ago and the probe place
+#             still could not be made or used. NOT A LEFTOVER CATEGORY: a
+#             DANGLING SYMBOLIC LINK
+#             at .ase_probe lands here, because `file exists` follows the link
+#             and answers 0 so the `occupied` test cannot see it, and so does
+#             a .ase_probe DIRECTORY WITH NO WRITE PERMISSION, where all 64
+#             attempts to make a place inside it fail. 64 name collisions in a
+#             row land here too. It shipped with no row on it at all, which is
+#             how it could have regressed to this issue's original defect --
+#             silence -- with the suite green.
+#
+# ⚠ THE FOLDER TEST RUNS FIRST, AND ONE SHAPE IN FOUR IS WHY. Only a folder
+# that refuses a new entry AND has something sitting at that name can answer
+# both tests, and there the file is NOT the one to name: deleting it needs
+# write permission on the folder holding it, so "delete or rename that file"
+# is a fix the user cannot carry out. Say the folder's sentence; the other
+# shape reports itself on the next Run, once the folder takes entries again.
+# Every other shape answers one test or neither, so the order cannot show -- a
+# sabotage pass that swapped these two reddened NOTHING until row N8 of
+# tests/headless/test_ase_simcaps_0948.tcl was written for exactly this shape.
+#
+# ⚠ WHAT THIS ORDER DOES NOT LICENCE. It says the catch-all is reached only
+# after the folder HAS TAKEN a new entry, and that is worth something only
+# because the first test now TRIES. While it inferred creatability from
+# `file writable` the same order licensed nothing at all, and the catch-all's
+# sentence -- which asserts the folder can be written into -- was false on
+# every mode-0600 and mode-0200 folder. Rows N14 and N15.
+#
+# ⚠ NOTHING HERE IS A FACT ABOUT THE PROGRAM. Every arm names a folder or a
+# file, and issue 0949's category error is the reason: a place the probe
+# cannot use says nothing whatever about the simulator the user registered.
+proc ase::cap_noplace_at {parent} {
+  set folder [file dirname $parent]
+  ## NOT A FOLDER AT ALL, AND IT IS REACHABLE -- measured, not guarded against
+  ## on principle. `set_netlist_dir` (src/xschem.tcl) creates the directory
+  ## only `if {![file exist $netlist_dir]}`, so a `::netlist_dir` that already
+  ## exists AS A REGULAR FILE is handed back verbatim and arrives here. Without
+  ## this arm the read-only arm answers, and the user is told a regular file
+  ## "is your simulation folder" and asked to give it search permission -- the
+  ## "names the wrong object and gives advice that cannot help" defect that the
+  ## whole of issue 0960 exists to remove, shipped inside 0960's own fix. Row
+  ## N17 of tests/headless/test_ase_simcaps_0948.tcl drives it end to end.
+  if {![file isdirectory $folder]} {
+    return [dict create noplace_why notdir noplace_at $folder]
+  }
+  ## TESTED BY TRYING, NEVER BY `file writable` -- see ase::cap_dir_takes_entry
+  ## for the two modes that made the difference visible.
+  if {![ase::cap_dir_takes_entry $folder]} {
+    return [dict create noplace_why readonly noplace_at $folder]
+  }
+  if {[file exists $parent] && ![file isdirectory $parent]} {
+    return [dict create noplace_why occupied noplace_at $parent]
+  }
+  ## THE PROBE PLACE, NOT THE FOLDER. The folder took a new entry a moment ago
+  ## -- the test above MADE one and removed it -- so it is not the thing the
+  ## user can act on; `<folder>/.ase_probe` is. Every shape this arm meets is
+  ## about that path: a dangling symbolic link `file exists` cannot see, a
+  ## directory that exists and cannot be written into, and 64 name collisions
+  ## inside it.
+  return [dict create noplace_why other noplace_at $parent]
+}
+
+# WILL THIS FOLDER TAKE A NEW ENTRY? Answered by MAKING one and removing it,
+# and by nothing else.
+#
+# ⚠ `file writable` ON A DIRECTORY IS THE WRONG TEST, AND INFERRING FROM IT
+# WAS A REGRESSION THIS PROC EXISTS TO UNDO (issue 0960, close-out round). It
+# is POSIX access(W_OK): it answers about the WRITE bit and says not one word
+# about the SEARCH (x) bit, and a create needs both. So a simulation folder at
+# mode 0600 -- what `chmod -R 600 project/` leaves behind, the reflex after a
+# leaked secret -- ANSWERS `file writable` 1 AND REFUSES EVERY CREATE.
+# Measured on this box, in one tclsh, both modes:
+#
+#   mode 0600 : file writable = 1 | mkdir "permission denied" | touch the same
+#   mode 0200 : file writable = 1 | mkdir "permission denied" | touch the same
+#
+# Both fell past the read-only arm into the catch-all, which then told the
+# user their simulation folder could be written into and offered them a
+# `.ase_probe` to delete that does not exist. Rows N14 and N15 of
+# tests/headless/test_ase_simcaps_0948.tcl.
+#
+# NOTHING IS LEFT BEHIND, and row N16 is the guard: the entry is a dot-name
+# with the process number in it, and it is removed in this proc.
+#
+# ⚠ THE COST IS PER RUN, NOT PER SENTENCE, AND AN EARLIER VERSION OF THIS
+# PARAGRAPH SAID OTHERWISE. It claimed the trial "is only ever made on a path
+# where the probe has ALREADY failed -- so its whole cost falls on a run that
+# is about to say something to the user anyway". The first half is true; the
+# second is false from the second Run onward, because ase::cap_noplace_once
+# deliberately silences repeats. Measured, three presses of one broken folder:
+# said=1 trials=1, said=0 trials=1, said=0 trials=1. So a session with a broken
+# simulation folder makes and removes one entry in it per Run, silently, for the
+# rest of the session. That is judged acceptable -- one mkdir and one rmdir of a
+# dot-name against a run that is already about to launch a simulator -- but it
+# is a cost, and it is written here rather than argued away. On the folder arm
+# the trial fails instead, which is up to four refused mkdirs and no rmdir.
+#
+# A NAME SOMETHING IS ALREADY SITTING AT IS SKIPPED, NOT DELETED. `file mkdir`
+# succeeds silently on a directory that already exists, and a delete after
+# that would remove somebody else's -- which is issue 0951's mistake in
+# miniature. Four tries, then the honest answer is no.
+#
+# TWO LIMITS, BOTH UNMEASURED AND BOTH SAID OUT LOUD RATHER THAN ASSUMED AWAY:
+#   * a $dir that is not a directory at all answers 0. That USED to fall
+#     through to the folder's sentence, which called a regular file "your
+#     simulation folder" and asked for search permission on it. An earlier
+#     version of this comment called the shape unreachable, reasoning that
+#     ase::cap_workdir's base is set_netlist_dir 0 "which creates the folder".
+#     IT IS REACHABLE: set_netlist_dir creates it only when it does not exist,
+#     so a ::netlist_dir naming an existing regular file comes back verbatim.
+#     ase::cap_noplace_at now answers `notdir` before asking this proc at all,
+#     and row N17 drives it through the real seam.
+#   * the delete is a `catch`, so a measurement that succeeded is never turned
+#     into an error by a failing tidy-up. A delete that fails therefore leaves
+#     the trial entry behind and still answers 1. Row N16 measures the ordinary
+#     path; that one is not measured.
+proc ase::cap_dir_takes_entry {dir} {
+  if {![file isdirectory $dir]} { return 0 }
+  set n 0
+  while {$n < 4} {
+    incr n
+    set t [file join $dir .ase_probe_try_[pid]_[clock clicks]_$n]
+    if {[file exists $t]} { continue }
+    if {[catch {file mkdir $t}]} { continue }
+    if {![file isdirectory $t]} { continue }
+    catch {file delete -force -- $t}
+    return 1
+  }
+  return 0
+}
+
+# IS THIS THE FIRST TIME THE USER IS BEING TOLD ABOUT THIS PLACE? Answers 1
+# once per place and 0 for ever after, and marks the place as told in the same
+# breath, so no caller can ask without recording.
+#
+# ONCE PER PLACE, NOT ONCE PER RUN, AND NOT ONCE PER SESSION. Nothing about
+# the state clears itself -- a folder that cannot be written into stays that
+# way until the user does something -- so a sentence on every Run is a
+# sentence on every Run for the rest of the session, which is the nag issue
+# 0960 says not to write. Keyed on the place AND the reason rather than on the
+# session, because a user who changes simulation folder, or fixes one shape and
+# meets another, is meeting a different fact and has not been told it yet.
+#
+# ⚠ READ "ONCE PER PLACE" AS "ONCE PER PLACE PER REGISTRY GENERATION", because
+# that is what it measures out at. ase::sim_caps_clear empties this dict (see
+# its own comment: forgetting the notice with the measurements is deliberate),
+# and it is called on every registry edit that CHANGES an entry --
+# ase::sim_register and ase::sim_unregister, which `grep -n sim_caps_clear
+# src/ase.tcl` shows are its only two call sites.
+#
+# ⚠ ase::sim_clear DOES NOT CALL IT, and an earlier version of this paragraph
+# said it did. Measured three ways on 2026-09-07: the source (ase::sim_clear
+# has no such call), the built binary in one process (ask 1, ask 0,
+# sim_register -> ask 1, then ase::sim_clear -> ask 0, NOT cleared), and this
+# batch's own isolate helper (tests/headless/scratch.tcl), which calls the two
+# separately and would not need to if the claim were true. It costs nothing
+# today because ase::sim_clear has NO production caller -- it is a test lever --
+# so the only readers that can see the divergence are suites, and the helper
+# already handles it. Left as it is rather than "fixed" into a behaviour change
+# with no user on the other end of it.
+#
+# So a user who registers three simulators in one
+# sitting, on an unusable folder, hears the sentence three times. MEASURED
+# 2026-09-07 on the built binary, one process, one `occupied` place:
+# ask -> 1, ask -> 0, ase::sim_register -> ask -> 1, ask -> 0,
+# ase::sim_register -> ask -> 1. That is the lever working as designed, not a
+# leak, but "once per place" on its own over-promises and a reader should not
+# be surprised by the repeat.
+#
+# ⚠ THE KEY CARRIES WHAT WAS WRONG AS WELL AS WHERE, AND THE PLACE ALONE WAS
+# ISSUE 0960's OWN DEFECT SURVIVING INSIDE ITS FIX. Two arms can answer with
+# one path -- `readonly` and the catch-all both used to answer with the
+# folder, and `occupied` and the catch-all both answer with the probe place --
+# so a key that is only the place fuses two different facts into one. Measured
+# live on the built binary, one process, no registry edit and no
+# ase::sim_caps_clear: a read-only folder said its sentence, the user made the
+# folder writable, met the catch-all, and got rv={} said={}. That is the
+# silence this issue was filed about, reached through its own fix. Rows N12
+# and N13 of tests/headless/test_ase_simcaps_0948.tcl.
+proc ase::cap_noplace_once {at {why {}}} {
+  variable cap_noplace_said
+  set k [list $at $why]
+  if {[dict exists $cap_noplace_said $k]} { return 0 }
+  dict set cap_noplace_said $k 1
+  return 1
 }
 
 # Give back a place ase::cap_workdir handed out. Never raises, and is called on
@@ -2007,8 +2746,43 @@ proc ase::cap_plot {plots want} {
 #
 # A PROGRAM NAMED BY A RELATIVE LOCATION IS RESOLVED BEFORE THE MOVE, or the
 # user who registered their simulator as ./build/ngspice would stop being able
-# to run it. A bare name with no folder in it is left alone: that is a PATH
-# lookup, which the move cannot affect.
+# to run it. What is left alone is a name with NO SEPARATOR IN IT AT ALL --
+# `ngspice` -- because that one is a PATH lookup, which the move cannot affect.
+#
+# ⚠ THE TEST IS THE SEPARATOR, NOT THE DIRNAME (issue 0961). This carve-out
+# used to be spelled `[file dirname $prog] ne {.}`, which READS as "has a
+# folder in it" and is not: [file dirname ./ng] is ALSO {.}. So `./ng` was
+# left relative and then looked for inside the probe's own folder, where it
+# does not exist -- while `bin/ng`, the same program named differently, ran.
+# Measured before the fix, same session, same folder: `./fast` came back rc=1
+# "failed to run command './fast': No such file or directory" against
+# `bin/fast` rc=0. Nor is `./ng` a PATH lookup that the carve-out could be
+# excused for: Tcl treats ANY name carrying a separator as a path.
+#
+# ⚠ AND A RELATIVE NAME GETS HERE BY AN ORDINARY ROUTE, NOT ONLY FROM A DIRECT
+# CALLER. The first write-up of 0961 said this branch was reachable only by
+# calling ase::cap_run directly, which nothing in the tree does; that was
+# WRONG. Registration does normalize, so nothing added in Setup > Simulators
+# reaches it -- but with NOTHING IN FORCE (nothing registered, or the choice
+# deliberately cleared) ase::sim_status takes its PATH arm and puts
+# `[lindex [auto_execok $backend] 0]` in `resolved`, and ase::sim_capabilities
+# hands that straight to the probe. auto_execok answers a RELATIVE `./ngspice`
+# whenever $PATH carries an EMPTY element -- a leading, doubled or trailing
+# `:` -- or a literal `.`, and the program is in the current directory; all
+# four spellings measured on tcl 8.6.17. Driven live on this tree with the old
+# predicate put back, that gesture answered `known 1 usable 0 appendwrite 0
+# blanket_op_save 0 hier_op_names 0` with the program STARTED ZERO TIMES: a
+# verdict about a simulator nobody ran, which is issue 0929's symptom arriving
+# through the PATH door. Row K5e of tests/headless/test_ase_simcaps_0948.tcl
+# is that route.
+#
+# THE BACKSLASH COUNTS ONLY ON WINDOWS, where it is a separator; on Unix it is
+# an ordinary character in a file name and a name built from it is still bare
+# and still a PATH lookup. That platform test was defended in a write-up and
+# guarded by nothing -- deleting it reddened no row -- so it now has two:
+# K5h drives a Unix program whose NAME carries a backslash and must still be
+# found on the PATH, and K5i STRUCTURAL requires the one backslash test to sit
+# under the platform gate, which K5h cannot see being deleted outright.
 #
 # STDIN IS REDIRECTED AWAY, AND THAT IS NOT A DETAIL. A program handed a deck
 # it does not understand may drop into its own interactive prompt and sit
@@ -2026,7 +2800,11 @@ proc ase::cap_plot {plots want} {
 proc ase::cap_run {exe exeargs workdir secs} {
   set nul [expr {$::tcl_platform(platform) eq {windows} ? {NUL} : {/dev/null}}]
   set prog $exe
-  if {[file pathtype $prog] eq {relative} && [file dirname $prog] ne {.}} {
+  set sepd [expr {[string first / $prog] >= 0}]
+  if {!$sepd && $::tcl_platform(platform) eq {windows}} {
+    set sepd [expr {[string first \\ $prog] >= 0}]
+  }
+  if {[file pathtype $prog] eq {relative} && $sepd} {
     set prog [file normalize $prog]
   }
   set cap [ase::cap_timeout_cmd]
@@ -2097,12 +2875,25 @@ proc ase::sim_capabilities {backend} {
 # refused" is a fact about the IN-FORCE choice and has no meaning for a caller
 # that already knows which file it is asking about.
 #
-# ⚠ THE PATH MUST NEVER COME FROM auto_execok ON THIS ROUTE. That is the whole
-# of issue 0935: a refused resolution still carries a `resolved` naming the
+# ⚠ WHAT MUST NEVER BE MEASURED IS A **REFUSED** RESOLUTION'S `resolved`. That
+# is the whole of issue 0935: a refusal still carries a `resolved` naming the
 # file a WRONG choice would have started, and measuring it would attribute the
-# answer to a simulator the user is not running. Every caller of this proc
-# hands it a path the user themselves named -- a registered entry's own
-# `path`, or what they typed in the Program field.
+# answer to a simulator the user is not running. Guard 1, in the wrapper
+# above, is what stops that, and it is the only thing that does.
+#
+# ⚠ THE PATH DOES COME FROM auto_execok WHENEVER
+# nothing is in force -- nothing registered, or the choice deliberately
+# cleared. An earlier revision of this note claimed the opposite, that no
+# caller could arrive here with anything but a location the user had typed or
+# registered, and it was FALSE: on that arm ase::sim_status puts
+# `[lindex [auto_execok $backend] 0]` in `resolved`, and ase::sim_capabilities
+# hands it straight here. Which is RIGHT -- there, auto_execok's answer is the
+# file that will really start, and that is exactly what 0935 wants measured.
+# What it also means is that the name reaching ase::cap_run can be RELATIVE:
+# auto_execok answers `./ngspice` when $PATH carries an empty element or a
+# literal `.` and the program is in the current directory. That is issue 0961,
+# and it is why 0961 was never latent. See ase::cap_run's own header, and row
+# K5e of tests/headless/test_ase_simcaps_0948.tcl.
 proc ase::sim_capabilities_at {backend resolved eargs} {
   variable sim_caps
   variable backends
@@ -2125,7 +2916,16 @@ proc ase::sim_capabilities_at {backend resolved eargs} {
   # build be reported as producing no results at all, and -- before the rule
   # below -- that accusation was then remembered for the whole session.
   set wd [ase::cap_workdir]
-  if {$wd eq {}} { return [dict create known 0 unmeasured noplace] }
+  if {$wd eq {}} {
+    # AND WHICH PLACE, AND WHAT WAS WRONG WITH IT (issue 0960). Silence here
+    # switched every capability warning off for the rest of the session with
+    # nothing said -- the one about a build that keeps only the last analysis
+    # included, which is the one that costs the user their results. The answer
+    # carries the diagnosis so ase::cap_report can say it without working out
+    # a second time what only ase::cap_workdir was in a position to know.
+    variable cap_noplace
+    return [dict merge [dict create known 0 unmeasured noplace] $cap_noplace]
+  }
   # THE PLACE IS GIVEN BACK ON EVERY PATH, INCLUDING THE ONE WHERE THE PROBE
   # BLEW UP -- and the failure is then RE-RAISED, so a defect in a probe stays
   # as loud as it was. Tidying up must not swallow it.
@@ -2516,6 +3316,19 @@ proc ase::cap_report {backend nwrites} {
       ase::sim_say cap_no_answer $backend $path [dict get $c secs]
       return cap_no_answer
     }
+    # A PLACE THE PROBE COULD NOT USE GETS ITS OWN SENTENCE TOO (issue 0960),
+    # and it is the folder's name in it, never the program's: the fault is the
+    # folder's. Silence here is what switched the whole feature off for the
+    # rest of the session, without a word, for a user whose only mistake was a
+    # leftover file. Said ONCE for the place -- see ase::cap_noplace_once.
+    if {[dict exists $c unmeasured] && [dict get $c unmeasured] eq {noplace}} {
+      set at {} ; set why {}
+      if {[dict exists $c noplace_at]}  { set at  [dict get $c noplace_at] }
+      if {[dict exists $c noplace_why]} { set why [dict get $c noplace_why] }
+      if {![ase::cap_noplace_once $at $why]} { return {} }
+      ase::sim_say cap_noplace {} $at $why
+      return cap_noplace
+    }
     return {}
   }
   if {[dict exists $c usable] && [dict get $c usable] == 0} {
@@ -2536,6 +3349,103 @@ proc ase::sim_conf_file {} {
   return [file join $::USER_CONF_DIR ase_simulators]
 }
 
+# WHERE A SAVE ACTUALLY LANDS, RESOLVED ONCE (issue 1286). Lifted in shape
+# from op_param_lists::_resolve_target / _target_why, which is itself a copy of
+# the writer below -- so the copy and the original say the same thing about
+# the same two holes rather than drifting one more time.
+#
+# ⚠ NEITHER `file rename -force` NOR `open` COMPLAINS ABOUT ANY OF THIS, and
+# `file normalize` does NOT resolve a path's final component, so it cannot do
+# the job either. Measured on this writer before this proc existed:
+#   the path is a DIRECTORY -> rc 1, ZERO reports, the new list lands at
+#                              <dir>/<name>.new INSIDE the directory, a name no
+#                              reader looks at, and the user's Save line names
+#                              a path it did not write;
+#   the path is a SYMLINK   -> rc 1, ZERO reports, the LINK is REPLACED by a
+#                              regular file and the real file is left as it
+#                              was. Symlinking a shared list into a dotfiles
+#                              repo is the obvious use of a file whose whole
+#                              point is that it is a plain script you can keep.
+# There is nothing to check afterwards, so the guard has to be a PRECONDITION.
+#
+# ⚠ AND IT HAS TO RUN FIRST. A symlink to a DIRECTORY answers `file
+# isdirectory` 1, so the chain must be resolved BEFORE the directory guard; a
+# DANGLING symlink answers exists=0 / isfile=0 / isdirectory=0 while `file
+# link` still succeeds, so resolution must also precede the permission capture
+# and the temp name.
+#
+# ⚠ THE RELATIVE-TARGET CORRECTION. Issue 1276's own recommended one-liner,
+# `file normalize [file link $path]`, resolves a relative target against the
+# CURRENT WORKING DIRECTORY: for a link at <d>/sub/link -> real it answers
+# <d>/real, not <d>/sub/real, so a fix built on it writes the user's list into
+# whatever directory xschem was started from. Join against the LINK's own
+# directory. A relative target is the natural spelling of the shared case
+# (`ln -s ../dotfiles/ase_simulators ~/.xschem/ase_simulators`).
+#
+# Answers the file the write should land on, or empty for a chain deeper than
+# 16 links, which is what a loop looks like from here.
+proc ase::sim_conf_target {path} {
+  set p $path
+  ## ONE PASS PER LINK, PLUS ONE MORE to see that the last thing is not a link
+  ## at all. A loop of exactly 16 passes refuses a chain of exactly 16, which
+  ## the sentence beside it calls "more than 16" -- measured: 15 saved, 16 was
+  ## refused. The bound and the sentence have to name the same number.
+  for {set i 0} {$i <= 16} {incr i} {
+    if {[catch {file link $p} tgt]} { return $p }
+    if {$tgt eq {}} { return $p }
+    ## ⚠ THE TILDE. `file join` and `file normalize` EXPAND a leading tilde;
+    ## THE KERNEL DOES NOT. A stored target of `~/notes` is a link into a
+    ## folder NAMED `~` beside the link -- readlink says `~/notes` and, with no
+    ## such folder there, the link reads as DANGLING. Without the `./` this
+    ## resolver answered a path in the user's HOME and the writer OVERWROTE AN
+    ## UNRELATED FILE THERE while reporting success, which is the very symptom
+    ## issues 1276 and 1286 exist about, arriving through their own fix.
+    ## Measured in tclsh: [file join /a/b {~/x}] -> `~/x`, normalized ->
+    ## `/home/<you>/x`; with the `./` -> `/a/b/~/x`, kernel-identical. The
+    ## other shapes are untouched: `sub/y` -> /a/b/sub/y, `/abs/z` -> /abs/z
+    ## (an absolute target still wins), `../up` -> /a/up.
+    if {[string index $tgt 0] eq "~"} { set tgt ./$tgt }
+    ## ⚠ A MEASURED RESIDUAL THAT NO ROW PINS. `file normalize` collapses `..`
+    ## LEXICALLY across a component that DOES NOT EXIST; the kernel does not.
+    ## Measured here (tclsh 8.6.17): with `sub` a link to <d>/elsewhere,
+    ## [file normalize <base>/./sub/../x] answers <d>/x -- the same as
+    ## `readlink -f`, so an EXISTING component, directory or link, is resolved
+    ## first and there is no divergence at all. With no `~` beside the link,
+    ## [file normalize <base>/./~/../x] answers <base>/x while the kernel
+    ## refuses <base>/~/../x with ENOENT. Left as it is, on purpose: in that
+    ## state the link is BROKEN, this writer writes through broken links by
+    ## design (rows R11d / W7b), and <base>/x is exactly the path the kernel
+    ## names once the missing component is created as an ordinary directory
+    ## (measured). What is NOT covered, and no row says anything about it: the
+    ## missing component later appearing as a link to somewhere else.
+    ## ⚠ AND `file normalize` RAISES on a `~user` no password entry matches
+    ## (measured: `user "nosuchuser_xschem" doesn't exist`), out of a proc
+    ## whose caller's doc comment promises it never raises. A path that cannot
+    ## even be named is not a path this may write, so it is refused.
+    ## ⚠ NO ROW REACHES THIS CATCH and none can: after the `./` above a tilde
+    ## can only reach `file normalize` from the CALLER's own path, and `file
+    ## link` raises on that first and returns above. It is insurance, not a
+    ## covered arm -- do not read the suite as proving it.
+    if {[catch {file normalize [file join [file dirname $p] $tgt]} p]} { return {} }
+  }
+  return {}
+}
+
+# THE TARGET'S OWN PRECONDITIONS, NAMED ONCE, in the same shape as
+# ase::sim_check: the `kind` that names what is wrong, or empty when the
+# resolved target may be written. One place to disable, so a reviewer can flip
+# it and watch the suite say which promise broke.
+#
+# THE EMPTY PATH IS NOT A LINK LOOP. `ase::sim_conf_file` answers empty when
+# there is no USER_CONF_DIR at all; that path falls through to the writer's own
+# reporting exactly as it did before, rather than being described to the user
+# as a chain of symbolic links.
+proc ase::sim_conf_target_why {path target} {
+  if {$path ne {} && $target eq {}} { return conf_linkloop }
+  if {[file isdirectory $target]}   { return conf_isdir }
+  return {}
+}
+
 # Save the simulator list so it survives a restart. Returns 1 on success, 0
 # with a report on failure; never raises.
 #
@@ -2549,6 +3459,18 @@ proc ase::sim_write_conf {{path {}}} {
   variable simulators
   variable sim_use
   if {$path eq {}} { set path [ase::sim_conf_file] }
+  # WHERE THE SAVE LANDS IS DECIDED FIRST, BEFORE THE TEMP NAME AND BEFORE THE
+  # PERMISSION CAPTURE (issue 1286) -- see ase::sim_conf_target for why the
+  # order is the subject and not a detail. The temp is then built beside the
+  # REAL file rather than beside the link, which is also what keeps the move
+  # atomic when the link crosses a filesystem.
+  set target [ase::sim_conf_target $path]
+  set why [ase::sim_conf_target_why $path $target]
+  if {$why ne {}} {
+    ase::sim_say $why {} $path $target error
+    return 0
+  }
+  set path $target
   # WRITTEN BESIDE THE REAL FILE AND MOVED OVER IT, NEVER STRAIGHT INTO IT
   # (issue 0937). `open <path> w` TRUNCATES before a single line is written,
   # so a failure anywhere after that -- a full disk, a close that reports the
@@ -2561,7 +3483,34 @@ proc ase::sim_write_conf {{path {}}} {
   set tmp $path.new
   set mode {}
   if {[file exists $path]} { catch {set mode [file attributes $path -permissions]} }
-  if {[catch {open $tmp w} fp]} {
+  # THE TEMP IS PART OF THE TARGET (issue 1378), AND THE RESOLVER ABOVE ONLY
+  # GUARDS `$path`. The temp name is deterministic, `open <tmp> w` FOLLOWS a
+  # symbolic link and `file rename` does NOT, so a stale `<conf>.new` left
+  # behind as a link wrote the list THROUGH the link into an unrelated file and
+  # then moved the LINK ITSELF onto the user's list. Measured on this writer
+  # before this pair of lines: rc 1, zero reports, the list is now a `link`, and
+  # the bystander lost its own content and gained the simulator list -- the same
+  # family as the two holes the resolver closes, one step further down.
+  #
+  # ⚠ `file delete` HERE, NEVER `file delete -force`. The temp name is also the
+  # one rows R11/R11l use as a DIRECTORY on purpose, and a directory a user put
+  # there is not this writer's to remove: `file delete -force` deletes a whole
+  # tree and a plain `file delete` still removes an EMPTY directory (both
+  # measured, tclsh 8.6.17). `file type` is the probe rather than `file exists`
+  # because a DANGLING link answers exists=0 and type=link.
+  #
+  # ⚠ THE UNLINK/CREATE WINDOW IS REAL AND ORDERING DOES NOT CLOSE IT. What
+  # closes it is CREAT|EXCL, which POSIX requires to fail on an existing path
+  # INCLUDING a symbolic link, dangling or not -- measured here: `open <link>
+  # {WRONLY CREAT EXCL} 0666` raises `file already exists` over a link to a real
+  # file, over a dangling link and over a directory, and leaves the link's
+  # target untouched, while `open <path> w` over a dangling link CREATES the
+  # target. Anything planted in the window therefore makes the create FAIL and
+  # the user is told, instead of the write being followed somewhere else.
+  # The explicit 0666 is what Tcl's `w` already used: both land at 00644 under
+  # this shell's umask 0022 (measured), so R12's permissions row does not move.
+  if {![catch {file type $tmp} tkind] && $tkind ne {directory}} { catch {file delete $tmp} }
+  if {[catch {open $tmp {WRONLY CREAT EXCL} 0666} fp]} {
     ase::sim_say nowrite {} $path $fp error
     return 0
   }
@@ -2588,7 +3537,7 @@ proc ase::sim_write_conf {{path {}}} {
 # failure here costs nothing that was already saved.
 proc ase::sim_write_body {fp} {
   variable simulators
-  variable sim_use
+  variable sim_default
   puts $fp "# xschem ASE-L simulator list -- written by xschem, issue 0931."
   puts $fp "# Read once at startup. Edit by hand if you like: it is a plain"
   puts $fp "# Tcl script of ase::sim_register lines."
@@ -2628,11 +3577,32 @@ proc ase::sim_write_body {fp} {
   # Same reason the selection line is skipped when what is in force came from
   # an rc: this file must not mention rc entries at all, or reading it back
   # in a session where the rc no longer declares that name would fail.
-  if {$sim_use eq {}} {
-    puts $fp [list ase::sim_select {}]
-  } elseif {[dict exists $simulators $sim_use] \
-      && [dict get $simulators $sim_use origin] ne {rc}} {
-    puts $fp [list ase::sim_select $sim_use]
+  #
+  # ⚠ WHAT THIS LINE RECORDS CHANGED ON 2026-09-08, AND THE PARAGRAPHS ABOVE
+  # ARE STILL TRUE OF IT. It used to write `sim_use` -- what is in force right
+  # now -- which is one session's CHOICE, and the user ruled that a choice is
+  # ASE-L state that dirties a session and waits for an explicit save. Writing
+  # it here sent it to disk with no save gesture at all, and worse, sent one
+  # bench's opinion into a file that describes the whole installation. It now
+  # writes `sim_default`, THE INSTALLATION DEFAULT: what a session with no
+  # choice of its own runs. Everything 0932 established survives the move --
+  # "none of mine, use the PATH program" is still written down, still as
+  # `ase::sim_select {}`, still because its absence would read back as the
+  # first entry -- because the default is now the thing that carries it, and
+  # ase::sim_select records it there whenever the layer talking is the file
+  # itself or an rc.
+  set defchoice [ase::sim_choice_decode $sim_default]
+  switch -- [lindex $defchoice 0] {
+    path {
+      puts $fp [list ase::sim_select {}]
+    }
+    entry {
+      set defname [lindex $defchoice 1]
+      if {[dict exists $simulators $defname] \
+          && [dict get $simulators $defname origin] ne {rc}} {
+        puts $fp [list ase::sim_select $defname]
+      }
+    }
   }
   close $fp
   return 1
@@ -5079,19 +6049,100 @@ proc ase::op_report_missing {state meta exitcode} {
 #
 # A dump that covers them is SILENCE, deliberately: a run that worked must not
 # be told it failed, which is the defect issue 0975 was closed on.
+#
+# ⚠ THE COMPARISON FOLDS CASE, AND THAT IS ISSUE 1390. Its two sides are
+# spelled by different authorities and only one of them keeps case:
+# `op_annot::devpath` lowercases EVERY path out (op_annot::_lower, ~:584, and
+# its comment says why), while the dump's block headers carry whatever the RUN
+# wrote. The user's own ngspice-ver50 is registered `-casemode preserve`, so
+# `show all` writes `M.x1.x23.XM2.Msky130_fd_pr__pfet_01v8`, and the exact-case
+# compare this proc shipped with matched NOTHING. Measured 2026-09-08, one
+# device, same everything but the spelling:
+#
+#     lowercase dump -> verdict = (silence)
+#     preserve  dump -> verdict = op_dump_partial
+#
+# So under `preserve` the check could never pass, and it printed "only 0 of the
+# 78 devices your schematic asks about are in it" as a red #! line on the
+# user's 14:07 bench run, whose annotation was perfect.
+#
+# ⚠ THE NUMBERS WERE NEVER IN DOUBT, which is what makes this a diagnostic that
+# lies rather than a defect in the data. Measured the same day: merge a
+# `preserve`-cased dump, then ask for it in the schematic's lowercase spelling
+# -- `1.37276e-12`, resolved by rung 2 of save.c's one lookup ladder
+# (raw_lookup_name, ~:4175: exact spelling first, then the case-folded alias).
+#
+# RULING -- IT FOLDS UNCONDITIONALLY AND DOES NOT CONSULT THE RUN'S CASE MODE.
+# `distinguish` is the one mode where a fold is not free (raw_case_mode_parse,
+# save.c:2731, maps `preserve` to 0 and ONLY `distinguish` to 1), so this is
+# stated rather than assumed. Four reasons, in the order that decided it:
+#
+#   1. ONE SIDE CARRIES NO CASE AT ALL. `devs` is lowercase by construction, so
+#      there is no case-sensitive comparison here to be right or wrong about:
+#      an exact compare under `distinguish` is false on every device, which is
+#      today's defect unmoved rather than `distinguish` honoured.
+#   2. THE RUN'S REQUESTED MODE IS THE WRONG GATE, and gating on it would be a
+#      NEW false alarm one mode over. What suppresses the C fold rung is
+#      Raw.case_sensitive (raw_fold_index, save.c:4161), a property of the
+#      READ -- not of the mode the simulator was asked for. A `-casemode
+#      distinguish` run writes a mixed-case dump into a database that still
+#      folds, so its rows annotate exactly as `preserve`'s do.
+#   3. Raw.case_sensitive IS the honest gate and cannot be asked from here.
+#      This proc runs from ase::run_done, before this run's raw is attached,
+#      and the database that happens to be loaded describes ANOTHER run --
+#      steering by it is what netlist_case_mode's comment (save.c:3516)
+#      forbids in as many words. Nor is it reachable in practice: `grep -n
+#      'raw read .*-case\|raw case 1' src/*.tcl` still finds no caller
+#      (wave_viewer.tcl:3108's standing note, re-measured 2026-09-08 --
+#      `xschem raw case` answers 0 after the ordinary read), so the fold rung
+#      is live on every road a user can click and folding predicts the lookup
+#      that will actually run. Measured both ways on this tree: with
+#      case_sensitive 0 the lowercase query answers `1.37276e-12`; forced to 1
+#      it goes blank with the column still present.
+#   4. DIRECTION OF THE ERROR. This proc emits a WARNING, so folding can only
+#      make it quieter, and the only thing it quietens is a database a script
+#      deliberately made case-sensitive -- where op_annot's own blank rows are
+#      the evidence anyway. Not folding costs a red line on EVERY good run.
+#
+# ⚠ TWO DUMP NAMES DIFFERING ONLY IN CASE DECLINE, and that is save.c's policy
+# rather than a second one. raw_build_fold_table (~:4111) stores -1 for exactly
+# this and the fuzzy rung then refuses rather than guess (DECISIONS.md D2);
+# this table poisons the folded key and the device counts as missing. Two
+# BYTE-IDENTICAL headers are not a collision there and cannot arise here at
+# all -- op_annot::opdump_devices de-duplicates its own headers.
+#
+# The ladder keeps the C one's shape and stays O(names + devs): the exact
+# spelling first, so an all-lowercase dump answers on rung 1 and is byte for
+# byte what it always was, then the folded alias.
 proc ase::op_report_missing_dump {sim path raw devs} {
   set dump [::op_annot::opdump_path $raw]
   if {![file isfile $dump] || [file size $dump] == 0} {
     ase::sim_say op_dump_missing $sim $path $dump error
     return op_dump_missing
   }
-  set have [dict create]
   set names {}
   if {[catch {set names [::op_annot::opdump_devices $dump]}]} { set names {} }
-  foreach d $names { dict set have "@$d" 1 }
+  set have [dict create]
+  set fold [dict create]
+  foreach d $names {
+    set nm "@$d"
+    dict set have $nm 1
+    set k [string tolower $nm]
+    ## {} is the D2 poison marker and can never collide with a real name: a
+    ## block header is non-empty by opdump_devices' own regexp, so the shortest
+    ## entry this loop can store is `@x`.
+    if {[dict exists $fold $k] && [dict get $fold $k] ne $nm} {
+      dict set fold $k {}
+    } else {
+      dict set fold $k $nm
+    }
+  }
   set miss {}
   foreach d $devs {
-    if {![dict exists $have $d]} { lappend miss $d }
+    if {[dict exists $have $d]} { continue }
+    set k [string tolower $d]
+    if {[dict exists $fold $k] && [dict get $fold $k] ne {}} { continue }
+    lappend miss $d
   }
   if {![llength $miss]} { return {} }
   ase::sim_say op_dump_partial $sim $path \
@@ -5280,16 +6331,469 @@ proc ase::op_cards_capture {state netlistpath} {
   return $block
 }
 
+# --- The hierarchy round trip (issue 1393, closes issue 0643) ----------------
+#
+# THE USER'S COMPLAINT, 2026-09-08: "I descend into x1 and again x1. Now, I
+# click the N&> (Netlist and Run button) in ASE-L to get: `ase: design is not
+# the current schematic; open it via Session > Design Window first`. Where does
+# this inane restriction come from? There is no such limitation in Cadence's
+# Analog Design Environment (ADE-L), which we want be better than."
+#
+# ⚠ THE GUARD WAS NOT ARBITRARY, WHICH IS WHY IT IS REPLACED AND NOT DELETED.
+# global_spice_netlist() netlists xctx->sch[xctx->currsch] -- the level you are
+# STANDING ON (src/spice_netlist.c:359-373), not the top of the stack. Measured
+# on sky130_tests_ase/tb_bandgap: level 0 gives 14862 bytes and 8 .subckt;
+# `descend x1, x1` gives bandgap_opamp's 4685 bytes. Delete the guard without
+# replacing it and `Netlist and Run` two levels down silently simulates the
+# op-amp alone -- no sources, no testbench, and a results file that looks
+# perfectly healthy. The guard is a SYMPTOM. The fix is to make the design
+# current for the duration of the netlist and then put the user back.
+#
+# IT COSTS 34 ms, AND THE SAME TRIP IS ALREADY BEING MADE TWICE ON EVERY PRESS
+# OF THAT BUTTON. Measured on tb_bandgap at two levels: sch_path back to
+# `.x1.x1.`, every descend returning 1 with an empty descend_error, zoom/origin
+# identical to 15 significant figures, and the netlist byte-identical (cmp) to
+# one taken at the top before descending -- against 66 ms for `xschem netlist`
+# itself (the C netlister loads every sub-block and restores) and 177 ms for
+# op_annot::save_cards' walk behind the OP save cards, both of which this same
+# button already pays. global_spice_netlist also already calls unselect_all, so
+# the selection churn is paid too. That is the "no added cost" answer to the
+# user's second sentence, "We want to solve the user's problem without adding
+# cost."
+#
+# WHY NOT A HIDDEN SCRATCH WINDOW -- the user's own suggestion, and it is the
+# right long-term shape: create_new_window() needs has_x and ends in
+# `wm deiconify` + `raise` + `focus -force` (src/xinit.c:2137-2152), so the
+# scratch window APPEARS on screen and takes the keyboard, which is the one
+# thing this tree is told never to do; and a second window reads from DISK, so
+# an unsaved top-level edit would silently not be simulated. The ascend /
+# re-descend is MORE correct, because it netlists the live in-memory document.
+# doc/claude/descend_run_batch/DECISIONS.md U3 keeps the idea for the later pass
+# that adds a windowless context in C.
+
+# The instance names entered to reach the current level, top-first; {} at the
+# top. `.x1.x1.` -> {x1 x1}, so element $l is the instance that leads OUT of
+# level $l, into level $l+1.
+#
+# ⚠ THIS IS A COPY OF cadence::hier_instnames (utils/cadence_nav.tcl:45), NOT A
+# CALL, and the duplication is deliberate. src/ase.tcl is INSTALLED and is
+# sourced by stock xschem; utils/cadence_nav.tcl is neither -- it is a profile
+# helper a user opts into. Calling across would make an installed feature depend
+# on a file that may not be there. That is the same rule src/rdw.tcl:4360-4366
+# already wrote for cadence::one_instance_selected. Do not "de-duplicate" it.
+# (The user pointed at Alt-E / Alt-X as the prior art: cadence::return_to_top
+# at :313 and cadence::descend_to_last at :365 are this same round trip with a
+# cross-window chain on top. Prior art, not an implementation to import.)
+#
+# The catch is not decoration: this is read on the error path of
+# ase::with_design_current, where the one thing that must not happen is a second
+# raise on top of the first.
+proc ase::hier_instnames {} {
+  set names {}
+  if {[catch {xschem get sch_path} p]} { return {} }
+  foreach c [split $p .] {
+    if {$c ne {}} { lappend names $c }
+  }
+  return $names
+}
+
+# The level of THIS window's hierarchy stack whose schematic is `npath`, or -1.
+#
+# NEVER RAISES. It is the predicate two doors ask before deciding what to SAY
+# (ase::netlist below, and ase::ui::do_run in src/ase_window.tcl), and a raise
+# out of a predicate would turn "the design is somewhere else" into a bare Tcl
+# error on a button press.
+#
+# ⚠ SHALLOWEST FIRST, and the direction is a decision, not an accident
+# (doc/claude/descend_run_batch/DECISIONS.md D2). A cell that appears twice on
+# one stack is a recursive hierarchy; ASE-L's design is the deck's TOP, so the
+# shallowest occurrence is the one to netlist. ase::session_for_current (:9263)
+# scans the other way, DEEPEST first, on purpose -- it answers a different
+# question, "which session owns the nearest level". Do NOT unify the two loops:
+# one definition serving two different questions is not a shared invariant, it
+# is a bug waiting for a recursive hierarchy.
+#
+# `npath` is expected already normalized; the normalize here is idempotent and
+# is what lets a caller pass whatever it happens to hold.
+proc ase::stack_level {npath} {
+  if {[string trim $npath] eq {}} { return -1 }
+  if {[catch {file normalize $npath} npath]} { return -1 }
+  if {[catch {xschem get currsch} lvl]} { return -1 }
+  if {![string is integer -strict $lvl] || $lvl < 0} { return -1 }
+  for {set l 0} {$l <= $lvl} {incr l} {
+    if {[catch {xschem get schname $l} p]} { continue }
+    if {$p eq {}} { continue }
+    if {[catch {file normalize $p} p]} { continue }
+    if {$p eq $npath} { return $l }
+  }
+  return -1
+}
+
+# Ascend to level `target` with go_back, and NO FURTHER. 1 = arrived, 0 = a
+# go_back refused to move -- and on 0 the caller is NOT where it thinks it is,
+# which is why every consumer re-reads currsch instead of counting steps.
+#
+# `go_back 2`, never `go_back 1`. `what & 1` is CONFIRM, and confirm on a
+# modified level pops ask_save (actions.c:6452-6462); this runs from a button
+# press, so a modal there would stop the netlist dead behind a dialog the user
+# never asked for. `what & 2` suppresses the window-title reset, which would
+# otherwise flick the title through every ancestor on the way up.
+#
+# The guards are op_annot::_unwind's (src/op_annot.tcl:3395) for its reason:
+# this runs on an unattended path, so a go_back that refuses to move must break
+# the loop rather than spin it forever. CADMAXHIER is 40 (src/xschem.h:212), so
+# 64 is a ceiling no real stack reaches.
+proc ase::hier_ascend_to {target} {
+  set guard 0
+  while {1} {
+    if {[catch {xschem get currsch} c]} { return 0 }
+    if {![string is integer -strict $c]} { return 0 }
+    if {$c <= $target} { return 1 }
+    if {[catch {xschem go_back 2}]} { return 0 }
+    if {[catch {xschem get currsch} c2]} { return 0 }
+    if {![string is integer -strict $c2] || $c2 >= $c} { return 0 }
+    if {[incr guard] > 64} { return 0 }
+  }
+}
+
+# WHERE THE USER WAS LEFT, in one sentence, minted once so the three failure
+# arms of ase::hier_redescend cannot describe one accident three different ways.
+proc ase::hier_stranded_msg {inst why} {
+  set where {}
+  catch {set where [file tail [xschem get schname]]}
+  set lev {?}
+  catch {set lev [xschem get currsch]}
+  set msg "ase: could not put you back where you were: descend into '$inst'\
+ failed"
+  if {[string trim $why] ne {}} { append msg " ($why)" }
+  append msg ". You are now in $where at hierarchy level $lev."
+  return $msg
+}
+
+# Re-descend to level `target` by replaying `names` (ase::hier_instnames' list,
+# taken BEFORE the ascent). 1 on arrival; raises, NAMING WHERE THE USER WAS
+# LEFT, on any failed step. Silence here strands a person part-way down their
+# own hierarchy with no idea why the sheet changed.
+#
+# ⚠ IT RE-READS currsch EVERY TIME INSTEAD OF COUNTING ITS OWN STEPS. The
+# ascent can stop short (the dispatcher's semaphore, a go_back that refused),
+# and a re-descend that assumed it started from `lev` would then walk PAST the
+# entry level into a hierarchy the user never opened. `names` is indexed BY
+# LEVEL, so element $c is always the instance that leads out of level $c,
+# whatever $c turns out to be.
+#
+# `-fallback` IS NOT OPTIONAL (issue 0979). Without it, a copy whose bound
+# `schematic=<file>` is missing puts the person one level down on a BLANK page
+# -- currsch already incremented, no offer, and no way back but Pop schematic
+# (scheduler.c:3339-3348). Here that blank page would be somewhere in the
+# middle of the path they were standing on when they pressed a button.
+proc ase::hier_redescend {names target} {
+  set guard 0
+  while {1} {
+    if {[catch {xschem get currsch} c] || ![string is integer -strict $c]} {
+      return -code error "ase: lost track of the hierarchy while returning"
+    }
+    if {$c >= $target} { return 1 }
+    set n [lindex $names $c]
+    if {$n eq {}} {
+      return -code error "ase: cannot return to level $target: no instance name\
+ was recorded for level $c"
+    }
+    ## `descend -inst` RAISES on an unknown name (scheduler.c:3374) and RETURNS
+    ## 0 on a refusal (issue 0251), and the two are different accidents: the
+    ## first means the sheet no longer holds the instance we came through, the
+    ## second means the descend was declined and `descend_error` says why.
+    if {[catch {xschem descend -fallback -inst $n} ok]} {
+      return -code error [ase::hier_stranded_msg $n $ok]
+    }
+    if {$ok != 1} {
+      set why {}
+      catch {set why [xschem get descend_error]}
+      return -code error [ase::hier_stranded_msg $n $why]
+    }
+    if {[catch {xschem get currsch} c2] || ![string is integer -strict $c2] \
+        || $c2 <= $c} {
+      return -code error [ase::hier_stranded_msg $n {the level did not change}]
+    }
+    if {[incr guard] > 64} {
+      return -code error [ase::hier_stranded_msg $n {too many levels}]
+    }
+  }
+}
+
+# THE ONE SENTENCE FOR "the design is not on this window's stack" (batch
+# decision D6, raised by crew B). The HEAD is one fact and must have one
+# spelling; the TAIL is chosen by the caller, because the two doors reach this
+# refusal from genuinely different places:
+#
+#   ase::netlist        a CIW or script caller that has NOT tried the Design
+#                       Window route, so "open it via Session > Design Window
+#                       first" is a true remedy there;
+#   ase::ui::do_run     reached only AFTER ase::ui::design_window has already
+#                       run and failed, so that same tail would tell the person
+#                       to repeat a step that just silently did not work.
+#
+# Two situations, two truthful remedies -- that is not one fact spelled twice.
+# The head IS one fact, and two files spelling it independently is exactly the
+# drift this tree has measured before (`Outputs > Save All` vs
+# `Outputs > Save All...`, issue 0661). `design` is whatever names the cell to
+# the reader: `lib/cell` from a state, a file tail from a path.
+proc ase::design_unreachable_msg {design {remedy {}}} {
+  set msg "ase: design $design is not open in this window"
+  if {[string trim $remedy] ne {}} { append msg "; $remedy" }
+  return $msg
+}
+
+# Evaluate `script` with `dpath` as the current schematic, then put the user
+# back exactly where they were. `script` is a fully-formed command list and is
+# evaluated with `uplevel #0` -- no caller-frame ambiguity, because the two
+# doors that use this pass a [list ...] built from their own locals. Returns
+# the script's value.
+#
+# ⚠ THE SAFETY GATE IS THE HALF THAT IS NOT OBVIOUS, and it is the same one
+# op_annot paid for. go_back is NOT read-only: it calls load_backup_as()
+# whenever a <cell>~.sch sits beside the cell (actions.c:6505), and
+# load_backup_as ends in set_modify(1) (save.c:6197). MEASURED on
+# sky130_tests_ase/bandgap_opamp with such a `~` beside it. ⚠ THAT `~` IS NOT
+# SHIPPED, whatever the older copies of this note say: `*~.sch` is gitignored
+# (.gitignore:75) and `git ls-files | grep '~.sch'` has always been EMPTY, so a
+# fresh clone has none. It was present in the measuring tree because somebody
+# had an unsaved edit there. That is issue 0634, and its fix (80f53d42) makes
+# test_op_annot's W19a PLANT its own `~` rather than rely on one being there:
+#
+#   descend x1 ; go_back  ->  modified 0 -> 1   (autosave_backup 1)
+#   descend x1 ; go_back  ->  modified 0 -> 0   (autosave_backup 0)
+#
+# and with a `~` whose content differs, a clean 73-instance buffer came back as
+# a 72-instance one. With autosave_backup OFF and a genuinely modified buffer,
+# descend + go_back silently REVERTS the unsaved edit (issue 0626).
+#
+# THE THREE ROWS (doc/claude/descend_run_batch/PLAN.md A3):
+#
+#   entry buffer | autosave_backup | what the trip does
+#   -------------+-----------------+-----------------------------------------
+#   clean        | either          | park the flag at 0 for the trip, so the
+#                |                 | ascent is a plain reload and no ancestor
+#                |                 | comes back flagged modified
+#   modified     | on              | do NOT park -- the `~` is where the edits
+#                |                 | live -- and restore the entry buffer with
+#                |                 | `xschem load_backup` after the last descend
+#   modified     | off             | REFUSE, having moved nothing (issue 0626)
+proc ase::with_design_current {dpath script} {
+  if {[catch {file normalize $dpath} dpath]} {
+    return -code error "ase: design path is not usable: $dpath"
+  }
+  set lev [ase::stack_level $dpath]
+  if {$lev < 0} {
+    ## The same minted head as the two doors (D6), with no tail: this raise is
+    ## the belt-and-braces one -- a caller that skipped the ase::stack_level
+    ## check -- and it has no idea which remedy is true for that caller.
+    return -code error [ase::design_unreachable_msg [file tail $dpath]]
+  }
+  if {[catch {xschem get currsch} cur] || ![string is integer -strict $cur]} {
+    return -code error "ase: cannot read the hierarchy level of this window"
+  }
+  ## THE DESIGN ALREADY IS CURRENT. No park, no walk, no `~` handling, and no
+  ## chance of a round trip failing for a caller that never needed one -- which
+  ## is also what keeps the shipped behaviour of every undescended press
+  ## byte-for-byte what it was.
+  if {$lev == $cur} { return [uplevel #0 $script] }
+
+  ## --- THE SAFETY GATE, and it runs BEFORE anything moves -----------------
+  set mod 0
+  catch {xschem get modified} mod
+  if {![string is integer -strict $mod]} { set mod 0 }
+  set ab 1
+  if {[info exists ::autosave_backup]} { set ab $::autosave_backup }
+  if {![string is integer -strict $ab]} { set ab 1 }
+
+  ## ROW 3 -- modified + autosave OFF: REFUSE (issue 0626). With the flag off
+  ## there is no `~` to come back to: write_backup() is a no-op
+  ## (actions.c:206-208), so BOTH go_back's load_backup_as and the explicit
+  ## restore below would find nothing and the trip would silently revert the
+  ## edit. A refusal, not a warning: nothing in Netlist-and-Run is worth an
+  ## unsaved edit. The sentence names the cell AND both remedies, because a
+  ## refusal the reader cannot act on is just a wall.
+  if {$mod && !$ab} {
+    set cellname {}
+    catch {set cellname [file tail [xschem get schname]]}
+    return -code error "ase: '$cellname' has UNSAVED edits and autosave backup\
+ is off. Netlisting the design from here has to leave this level and come\
+ back, and with no autosave backup that round trip silently REVERTS unsaved\
+ edits (issue 0626). Save this cell, or turn Options > Autosave backup on, and\
+ press it again."
+  }
+
+  ## ROW 2 -- modified + autosave ON: CARRY the edits, and do NOT park.
+  ## Parking the flag at 0 makes load_backup_as return early (save.c:6186),
+  ## which would disable go_back's restore of the ancestors AND the explicit
+  ## `xschem load_backup` this trip needs on the way home. So the park is for
+  ## the CLEAN case only -- exactly the rule op_annot::_park_backup states at
+  ## src/op_annot.tcl:3105-3108, reached from the other side.
+  ##
+  ## ⚠ THE EXPLICIT RESTORE IS THIS BATCH'S OWN, AND op_annot HAS NO EQUIVALENT.
+  ## op_annot's walk descends BELOW its entry level and comes back, so
+  ## go_back's load_backup_as restores its entry buffer for it. THIS trip POPS
+  ## the entry level and returns by `descend`, and descend_schematic() uses
+  ## plain load_schematic() -- NOT load_backup_as(). So a modified entry
+  ## buffer's edits are dropped from the buffer on the way back down (the `~`
+  ## survives on disk; the screen does not) unless `xschem load_backup`
+  ## (scheduler.c:7948, returns 1/0) puts them back. Refusing here instead
+  ## would have been simpler and would have left a user with one unsaved tweak
+  ## two levels down unable to press Run at all (DECISIONS.md D4).
+  set carry [expr {$mod ? 1 : 0}]
+  set entrysch {}
+  catch {set entrysch [xschem get schname]}
+
+  ## ⚠ THE READ-ONLY FLAG IS PART OF THE ENTRY STATE, AND MEASURING IT IS WHAT
+  ## FOUND THAT OUT. src/cadence_style_rc:564 sets `descend_readonly 1`, so in
+  ## the Cadence-style setup this user runs, EVERY descended level is a
+  ## read-only browse buffer (actions.c:6410-6412) -- which also means
+  ## set_modify(1) is suppressed there (actions.c ro_suppress, issue 0035) and
+  ## `xschem get modified` reads 0 however much you type. Rows 2 and 3 of the
+  ## table above are therefore only reachable after a Ctrl-2 / View > Toggle
+  ## Read Only, and once the person HAS done that, the trip must give the flag
+  ## back: the final `descend` re-applies descend_readonly, and MEASURED without
+  ## this snapshot the carried edits came back (1 instance, correct) while
+  ## `modified` came back 0, because load_backup_as' set_modify(1) landed on a
+  ## buffer the re-descend had just made read-only again. A restored buffer that
+  ## no longer reports itself modified is a close-without-prompt away from
+  ## losing the edit a second time. Restored BEFORE the load_backup below, in
+  ## that order, for exactly that reason. (PLAN.md A3/A4 do not mention it.)
+  set ro 0
+  catch {set ro [xschem get readonly]}
+  if {![string is integer -strict $ro]} { set ro 0 }
+
+  ## ROW 1 -- clean: park the flag at 0 for the trip. Restored unconditionally
+  ## below, INCLUDING the "it was never set" case, which is why the snapshot
+  ## carries a had/val pair and not just a value.
+  set park {}
+  if {!$carry} {
+    set had 0
+    set val {}
+    if {[info exists ::autosave_backup]} { set had 1 ; set val $::autosave_backup }
+    set ::autosave_backup 0
+    set park [list $had $val]
+  }
+
+  ## THE PATH HOME, READ BEFORE THE FIRST go_back. After the ascent sch_path no
+  ## longer remembers where we came from, and there is nothing else that does.
+  set names [ase::hier_instnames]
+
+  ## no_draw FOR THE TRIP. Without it every level on the way up and every level
+  ## on the way back repaints -- on the user's two-level bench that is four full
+  ## draws nobody asked for, in the middle of a button press. Restored below and
+  ## then the final view is painted EXPLICITLY: draw() returns immediately while
+  ## no_draw is set (draw.c:10537), so the last `descend` paints only if no_draw
+  ## is already 0, and relying on it would leave the canvas showing whatever was
+  ## last drawn. `xschem get drawcount` (scheduler.c:4487) is the seam the suite
+  ## measures this with.
+  set nd 0
+  catch {set nd [xschem get no_draw]}
+  if {![string is integer -strict $nd]} { set nd 0 }
+  catch {xschem set no_draw 1}
+
+  set rc [catch {
+    if {![ase::hier_ascend_to $lev]} {
+      error "ase: could not leave this level to reach the design (a `go_back`\
+ refused to move)"
+    }
+    uplevel #0 $script
+  } res opts]
+
+  ## --- THE UNCONDITIONAL RESTORE (PLAN A4 / issue 0432, op_annot I6) ------
+  ## Every line individually catch-wrapped so one failure cannot skip the rest:
+  ## a straight-line reset is simply not REACHED when the script raises, which
+  ## is issue 0431. The unwind runs FIRST, while the park is still in force --
+  ## giving `autosave_backup` back before the walk is over would put the
+  ## go_back-loads-the-backup behaviour back exactly where there are still
+  ## levels to move through (issue 0495).
+  ##
+  ## Bounded by the ENTRY currsch, never by 0 (op_annot I6): this trip's job is
+  ## to put the user back where THEY were, not at the top.
+  set back [catch {ase::hier_redescend $names $cur} berr]
+  catch {xschem set readonly $ro}
+  if {!$back && $carry && $entrysch ne {}} {
+    ## The edits, back into the buffer -- but only once we are demonstrably
+    ## home. A load_backup against the wrong level would pour one cell's
+    ## unsaved edits into a different cell's buffer.
+    set home 0
+    catch {set home [expr {[xschem get currsch] == $cur}]}
+    if {$home} { catch {xschem load_backup $entrysch 0} }
+  }
+  if {[llength $park]} {
+    if {[lindex $park 0]} {
+      catch {set ::autosave_backup [lindex $park 1]}
+    } else {
+      catch {unset ::autosave_backup}
+    }
+  }
+  catch {xschem set no_draw $nd}
+  if {!$nd} { catch {xschem redraw} }
+
+  ## WHICH ERROR THE CALLER SEES WHEN BOTH HALVES FAILED. The script's, with
+  ## -options, so the original message and its stack survive -- it is what the
+  ## caller asked for and the only one it can act on. The stranding is NOT
+  ## swallowed: it goes out on the notice channel, because a person left two
+  ## levels away from where they were standing has to be told, whatever else
+  ## broke. (PLAN.md left this precedence open; recorded in the item A receipt.)
+  if {$rc} {
+    if {$back} { catch {ase::echo $berr error} }
+    return -options $opts $res
+  }
+  if {$back} { return -code error $berr }
+  return $res
+}
+
 # --- Netlist ----------------------------------------------------------------
+
+# THE WORK, split out from the dispatch below so the two are separable (PLAN A6).
+# Its ONE precondition is that the design is the current schematic; every arm of
+# ase::netlist is a different way of establishing that, and none of them may
+# reach past this proc into the netlister.
+#
+# ⚠ ase::op_cards_capture STAYS INSIDE THIS BODY. Its whole precondition is the
+# same one -- the entry-relative card basis is rooted at the CURRENT level
+# (issue 0436) -- so it has to run while the design is current, which is now
+# also true inside ase::with_design_current's round trip. It runs AFTER the
+# artifact is written, so the oracle's own forced netlist settings
+# (op_annot.tcl:1294-1362) cannot perturb the deck the user is about to
+# simulate, and it never raises (op_cards_capture catches everything), so an
+# annotation extra can never break Netlist-and-Run.
+proc ase::netlist_in_place {state cell} {
+  set rd [ase::rundir $state]
+  set nl [file join $rd $cell.spice]
+  file delete -force -- $nl   ;# a stale artifact must not mask a failed netlist
+  xschem netlist -noalert $nl
+  if {![file isfile $nl]} {
+    return -code error "ase: netlist not produced: $nl"
+  }
+  catch {ase::op_cards_capture $state $nl}
+  return $nl
+}
 
 # Netlist the state's design cellview -> <rundir>/<cell>.spice; returns the
 # netlist path. The artifact stays a clean circuit netlist (deck additions
-# never touch it). Context guard (never clobber an open GUI window):
+# never touch it). Context dispatch (never clobber an open GUI window):
 #   (a) the design already IS the current schematic -> netlist in place;
 #   (b) headless (no has_x) -> xschem load, then netlist;
-#   (c) GUI with another schematic current -> clean error (item 03's Design
-#       Window flow guarantees (a)); reloading to "restore" would destroy
-#       unsaved edits, so no save/restore trickery.
+#   (c) the design is OPEN, on this window's own hierarchy stack, and the user
+#       is standing somewhere inside it -> ase::with_design_current, which
+#       ascends to the design, netlists, and puts them back (issue 0643);
+#   (d) the design really is nowhere on this stack -> clean error. Reloading to
+#       "restore" would destroy unsaved edits, so no save/restore trickery.
+#
+# ⚠ (b) STILL COMES BEFORE (c), and that ordering is deliberate. Headless there
+# is no window to clobber and no user to put back, and the self-load arm is the
+# one tests/headless/ase_design_window.tcl deliberately keeps exercised -- an
+# unconditional round trip would silently retire it. The round trip is what a
+# person standing in a GUI window needs; `xschem load` is what a script needs.
+#
+# ⚠ (d)'s SENTENCE IS NOT THE SHIPPED ONE, and the rewording is the point of
+# issue 0643. The shipped text told the user to "open it via Session > Design
+# Window first" -- the exact thing they had already done -- because the guard
+# could not tell "the design is elsewhere" from "the design is open and you are
+# standing inside it". It now fires only for the first case (DECISIONS.md D5).
 proc ase::netlist {state} {
   set design [ase::state_get $state design]
   if {$design eq {}} {
@@ -5309,33 +6813,216 @@ proc ase::netlist {state} {
     return -code error "ase: cannot resolve design $lib/$cell view '$view'"
   }
   set path [file normalize $path]
-  if {[file normalize [xschem get schname]] ne $path} {
-    if {![info exists ::has_x]} {
-      xschem load $path
-    } else {
-      return -code error "ase: design $lib/$cell is not the current schematic;\
- open its design window first (Session > Design Window)"
-    }
+  if {[file normalize [xschem get schname]] eq $path} {
+    return [ase::netlist_in_place $state $cell]                        ;# (a)
   }
-  set rd [ase::rundir $state]
-  set nl [file join $rd $cell.spice]
-  file delete -force -- $nl   ;# a stale artifact must not mask a failed netlist
-  xschem netlist -noalert $nl
-  if {![file isfile $nl]} {
-    return -code error "ase: netlist not produced: $nl"
+  if {![info exists ::has_x]} {
+    xschem load $path
+    return [ase::netlist_in_place $state $cell]                        ;# (b)
   }
-  ## THE OP-CARD CAPTURE, HERE AND ONLY HERE (plan step S4 / issue 0617).
-  ## AFTER the artifact is written, so the oracle's own forced netlist settings
-  ## (op_annot.tcl:1294-1362) cannot perturb the deck the user is about to
-  ## simulate; and inside the guard above, which is what proves the design IS
-  ## the current schematic — the precondition the entry-relative card basis
-  ## needs. Never raises (op_cards_capture catches everything), so an
-  ## annotation extra can never break Netlist-and-Run.
-  catch {ase::op_cards_capture $state $nl}
-  return $nl
+  if {[ase::stack_level $path] >= 0} {
+    return [ase::with_design_current $path \
+              [list ase::netlist_in_place $state $cell]]               ;# (c)
+  }
+  return -code error [ase::design_unreachable_msg $lib/$cell \
+    "open it via Session > Design Window first"]
 }
 
 # --- Run --------------------------------------------------------------------
+
+# --- 1389: ONE RUN AT A TIME, PER RESULTS FILE -------------------------------
+# The user's words, 2026-09-08: "update ASE-L to not be able to launch new sim
+# while one is already running (issue refusal text in CIW, which will be raised
+# (but not focused!))".
+#
+# WHAT IT COST, MEASURED ON THEIR OWN BENCH THAT MORNING. `Netlist and Run` was
+# pressed twice: /tmp/Xschem.log.1 carries two `xschem netlist` lines and two
+# `This run is starting the simulator...` lines BEFORE either `simulation
+# finished`. Because the deck says `set appendwrite` (issue 0929), run 2
+# APPENDED its Operating Point plot to the raw run 1 had not finished writing,
+# and the pre-run `file delete` below only protects SEQUENTIAL runs -- run 2
+# deleted a file run 1 had not written yet. The result was a raw with two
+# datasets, `xschem raw points` = 2, and op_annot::opdump_autofill correctly
+# refusing to merge -- 423 vectors and every annotated row blank, against 8248
+# vectors and 212 devices from the identical deck with one dataset.
+#
+# ⚠ THE KEY IS THE RAW PATH, not the session key and not the button. The
+# resource that must not have two writers is the RESULTS FILE. A key on the
+# widget catches a double-click and misses both of the other two shapes of the
+# same hazard: two ASE-L sessions open on one cell, and `Netlist and Run`
+# racing `Run`. The resolver is the backend's own `raw_file` hook -- the same
+# one ase::run_deck deletes through at :6014 -- so the lock and the deletion
+# can never disagree about which file this run owns.
+#
+# ⚠ A STALE LOCK SELF-HEALS, and that is not a nicety. `::execute(pipe,$id)`
+# is unset by execute_fileevent at EOF (src/xschem.tcl:317), so its absence
+# means the run is over HOWEVER it ended -- finished, killed by
+# `Simulation > Stop`, or died with ase::run_done never firing. Without this
+# arm a single crashed completion would brick Run for the rest of the session,
+# which is a worse defect than the one being fixed.
+namespace eval ase {
+  # raw path -> the execute id that is writing it. Never more than one entry
+  # per file, by construction: the only writer is ase::run_deck, after a
+  # successful launch.
+  variable runlocks [dict create]
+}
+
+# The lock key for a run of `state`: the absolute results-file path, or {} when
+# it cannot be worked out (no simulator, a backend whose raw_file hook raises,
+# a state with no design cell). {} is NOT a lock -- a launch that cannot say
+# which file it will write cannot be refused for writing one, and every such
+# state fails a few lines later for a better-named reason.
+proc ase::run_lock_key {state} {
+  set sim [ase::state_get $state simulator]
+  if {$sim eq {}} { return {} }
+  if {[catch {[ase::backend_hook $sim raw_file] $state} raw]} { return {} }
+  if {[string trim $raw] eq {}} { return {} }
+  return [file normalize $raw]
+}
+
+# THE PREDICATE. The execute id still writing `key`, or {} for "nothing in
+# flight" -- and a lock whose process is gone is DROPPED here rather than
+# merely reported false, so the table cannot accumulate the dead.
+proc ase::run_in_flight {key} {
+  variable runlocks
+  if {$key eq {} || ![dict exists $runlocks $key]} { return {} }
+  set id [dict get $runlocks $key]
+  if {[info exists ::execute(pipe,$id)]} { return $id }
+  dict unset runlocks $key
+  return {}
+}
+
+# Claim `key` for run `id`. Called ONLY after `execute` returned a real id: a
+# launch that did not launch must not leave a lock behind.
+proc ase::run_lock_set {key id} {
+  variable runlocks
+  if {$key eq {}} { return {} }
+  dict set runlocks $key $id
+  return $key
+}
+
+# Release `key`. Returns 1 if there was something to release. Idempotent, and
+# {} is a no-op, so ase::run_done's three-argument shape (no metadata --
+# tests/headless/test_ase_cosim.tcl calls it that way at six sites) clears
+# nothing rather than raising.
+proc ase::run_lock_clear {key} {
+  variable runlocks
+  if {$key eq {} || ![dict exists $runlocks $key]} { return 0 }
+  dict unset runlocks $key
+  return 1
+}
+
+# WHAT A REFUSED SECOND LAUNCH SAYS, minted once so the two consumers of the
+# predicate (ase::run_deck's gate and the two ASE-L doors) cannot say two
+# different things about one refusal.
+#
+# ⚠ THE WAY OUT IS READ, NEVER RETYPED. `ase::ui::menu_path_stop` is issue
+# 1391's mint (src/ase_window.tcl) and the Simulation menu is BUILT from it, so
+# renaming the entry moves this sentence with it. A literal `Simulation > Stop`
+# here would be the drift that mint exists to prevent -- measured once already
+# in this tree as `Outputs > Save All` vs `Outputs > Save All...` (issue 0661).
+# Guarded rather than given a fallback string, because a fallback IS the second
+# literal; a tree without the constant loses the remedy clause, not the notice.
+proc ase::run_busy_msg {key} {
+  set msg "ase: a simulation is already running for [file tail $key]"
+  if {[llength [info commands ::ase::ui::menu_path_stop]]} {
+    append msg "; stop it first ([::ase::ui::menu_path_stop])"
+  }
+  return $msg
+}
+
+# Bring the CIW to the front WITHOUT taking the keyboard, if this X server lets
+# us. Returns 1 if it was asked to rise.
+#
+# ⚠ THE OBVIOUS HELPER IS THE WRONG ONE, AND THIS WAS MEASURED THREE WAYS. The
+# plan for 1389 said to use `raise_toplevel` (src/xschem.tcl:7635) because its
+# sibling `raise_activate_toplevel` adds `xschem activate_window`, which IS the
+# focus. But raise_toplevel's mapped arm is `wm withdraw` + `wm deiconify`, and
+# a RE-MAP is an activation in its own right. Measured 2026-09-08 with a real
+# `.ciw` and a second toplevel holding the keyboard:
+#
+#   server                          plain `raise`      raise_toplevel
+#   :99 Xvfb + openbox 3.6.1        rises, NO focus    rises, TAKES focus
+#   :0  Xwayland (WSLg)             NO-OP              rises, TAKES focus
+#   the user's own screen           NO-OP              rises, TAKES focus
+#     (172.20.160.1:0, Windows X
+#      server, _NET_SUPPORTING_WM_CHECK
+#      not found -- no EWMH WM)
+#
+# So neither helper alone is right: raise_toplevel takes the keyboard the user
+# put their emphasis on ("raised (but not focused!)"), and the plain raise that
+# honours it is the measured no-op of issue 0054 (src/ciw.tcl:417) on two of
+# the three servers here.
+#
+# THE ORDER IS THEREFORE: plain raise, VERIFY it actually moved, and re-map only
+# when it did not. On a real window manager the user gets exactly what they
+# asked for. Where the server ignores a raise the CIW still comes forward and
+# the keyboard goes with it -- a platform limit, not a policy choice, and the
+# right way round because a refusal nobody sees is not a refusal.
+#
+# ⚠ AND NOT A FOCUS RESTORE ON THE FALLBACK PATH. `focus -force` back onto the
+# saved widget was tried, immediately and again at 250 ms: on :0 the compositor
+# re-focuses the freshly mapped window after both, so the line never helps and
+# can only yank the keyboard somewhere the user has since moved on from. A
+# `wm attributes -topmost` pulse was tried too -- it works on openbox and is
+# the same no-op on :0, and it drops the pane back down when cleared.
+#
+# ⚠ THE VERIFY COMPARES AGAINST THE TOPLEVEL THAT HOLDS THE KEYBOARD, not
+# against `wm stackorder`'s top. At refusal time that is the ASE-L window, i.e.
+# exactly the thing the CIW has to get in front of, and a transient dialog
+# legitimately above everything must not push us onto the focus-stealing arm.
+#
+# ⚠ EXISTENCE, NOT VISIBILITY, IS THE GUARD. A closed CIW is WITHDRAWN, not
+# destroyed (`wm protocol .ciw WM_DELETE_WINDOW {wm withdraw .ciw}`,
+# ciw.tcl:435), so xschem::notify_ciw_visible answers 0 for a pane that is
+# perfectly alive. Using that as the gate would drop the refusal into a widget
+# nobody can see -- the one case where the raise is the whole point. An
+# unmapped pane cannot be raised into view at all, so it takes the re-map arm
+# directly; `raise_toplevel`'s not-mapped branch deiconifies, which re-shows it.
+#
+# Everything is caught: a notice may never break the caller it is reporting to
+# (ase::echo's own rule, issue 0666), and this one is reporting a refusal.
+proc ase::run_ciw_raise {} {
+  if {![llength [info commands winfo]]} { return 0 }        ;# --nogui: no Tk
+  if {[catch {winfo exists .ciw} e] || !$e} { return 0 }     ;# --nolog: never created
+  ## who has the keyboard now -- the window the CIW must get in front of
+  set keeptop {}
+  if {![catch {focus} kw] && $kw ne {} && [winfo exists $kw]} {
+    set keeptop [winfo toplevel $kw]
+  }
+  set mapped 0
+  catch {set mapped [winfo ismapped .ciw]}
+  if {$mapped} {
+    catch {raise .ciw}
+    ## nothing to get in front of, or we are already it: the plain raise is all
+    ## this refusal is entitled to ask for.
+    if {$keeptop eq {} || $keeptop eq {.ciw}} { return 1 }
+    set above 0
+    catch {set above [wm stackorder .ciw isabove $keeptop]}
+    if {$above} { return 1 }
+  }
+  ## issue 0054's no-op, or a withdrawn pane. Re-map, and pay the focus.
+  if {![llength [info commands ::raise_toplevel]]} { return 0 }
+  if {[catch {::raise_toplevel .ciw}]} { return 0 }
+  return 1
+}
+
+# Say the refusal and put it in front of the user. Returns the message, so a
+# caller can raise with the very words the CIW got.
+#
+# ⚠ `note`, NOT `error`. Refusing is not the same as reporting a failure:
+# nothing has gone wrong, an earlier run is healthy and still writing, and an
+# `error` tag would paint the CIW red about a session that is fine. `note` is
+# ciw.tcl:452's own tag for "a result the user must NOTICE without it being an
+# error". The severity is user-visible copy the user has not ruled on -- see
+# doc/claude/issues/1389-*.md and the rule debt recorded with it.
+proc ase::run_refuse {key} {
+  set msg [ase::run_busy_msg $key]
+  catch {::ase::echo $msg note}
+  ase::run_ciw_raise
+  return $msg
+}
+
 
 # Netlist + run: regenerate the circuit netlist artifact, then hand off to
 # ase::run_deck (the shared post-netlist body). Every hook is resolved up
@@ -5394,6 +7081,50 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   set run_cmd     [ase::backend_hook $sim run_cmd]
   set log_file    [ase::backend_hook $sim log_file]
   ase::backend_hook $sim result_probe
+
+  ## 1389: IS SOMETHING ALREADY WRITING THIS RUN'S RESULTS FILE? This is the
+  ## authority, so every door is covered by one gate -- the two ASE-L buttons,
+  ## ase::run, ase::run_existing, a CIW paste and any script.
+  ##
+  ## ⚠ AT THE TOP, AND NOT "JUST BEFORE `eval execute`" AS THE PLAN ASKED FOR.
+  ## Between that line and this one run_deck DELETES THE RAW (:6014 below),
+  ## rewrites the deck and rewrites the log header. A refusal taken down there
+  ## would therefore destroy the live run's results file on its way out -- issue
+  ## 0929's symptom, manufactured by the fix written for it -- and would leave
+  ## the running simulator's deck rewritten underneath it. ase::run_precheck's
+  ## own header states the same rule for the same reason: everything above the
+  ## first `open` only READS, so a refusal from here leaves nothing behind.
+  ##
+  ## The refusal SAYS ITS PIECE FIRST (ase::run_refuse reaches the CIW and
+  ## raises that pane without focusing it), then raises with the very words the
+  ## user was shown, so a script caller's error text and the CIW line are one
+  ## string and not two.
+  set rawlock [ase::run_lock_key $state]
+  if {[ase::run_in_flight $rawlock] ne {}} {
+    return -code error [ase::run_refuse $rawlock]
+  }
+
+  ## THE SESSION BEING RUN DECIDES WHICH PROGRAM STARTS (the 2026-09-08
+  ## ruling). `sim_entry` is this state's own choice and `ase::sim_use` is a
+  ## process-global cache of it, so with two ASE-L windows open the cache can
+  ## be holding the OTHER bench's answer at the moment Run is pressed. One line
+  ## puts the running session's choice in force first.
+  ##
+  ## ⚠ IT SITS HERE, ABOVE EVERYTHING THAT RESOLVES A SIMULATOR AND BELOW THE
+  ## ONE GATE THAT REFUSES WITHOUT LOOKING AT ONE. Below the in-flight refusal,
+  ## because a run that is not going to happen must not change which program is
+  ## in force. Above ase::run_precheck, ase::op_tier_arm, ase::cap_report,
+  ## $run_cmd and ase::run_using_report, every one of which asks
+  ## ase::sim_status -- so all five answer about the same program, and the
+  ## sentence the user reads names the build that actually ran.
+  ##
+  ## ⚠ AND IT IS HERE RATHER THAN IN ase::run, BECAUSE run_deck IS REACHABLE
+  ## WITHOUT IT: ase::run_existing (ADE-L's "Run", which never re-netlists) and
+  ## any script or CIW paste come straight here. This is the one body all three
+  ## doors share. ase::run's own netlisting step resolves no simulator, so it
+  ## needs no second call and must not have one -- two calls would say the
+  ## stale-entry sentence twice for one gesture.
+  ase::sim_apply_choice $state
 
   # casemode batch item 8 (B4): the pre-run gate, FIRST, before any artefact is
   # read, deleted, rebuilt or written. A refusal raises from here, so nothing
@@ -5639,10 +7370,15 @@ proc ase::run_deck {state netlistfile {callback {}}} {
   ## that parameter for the metadata and two callbacks disagreeing about what
   ## argument four means is the defect neither branch would have caught alone.
   ## ase::run_log_header renders it; empty writes nothing.
+  ## `rawlock` (1389) rides here for one reason: ase::run_done must clear the
+  ## EXACT string this proc locked, not resolve the raw path a second time. The
+  ## two resolves would be taken at different instants over a state the session
+  ## may have edited in between (a changed rundir is one click), and the run
+  ## that leaked its lock would be the one whose settings moved.
   set meta [dict create cell $cell simulator $sim cmd $cmd dir $rd \
                         deck $deckpath started [clock seconds] \
                         opblock $opblock casenote $casenote optier $optier \
-                        using $using t0 [clock milliseconds]]
+                        using $using rawlock $rawlock t0 [clock milliseconds]]
   catch {ase::run_log_write $logpath $meta {} {}}
 
   set ::execute(callback) [list ase::run_done $logpath $state $callback $meta]
@@ -5656,6 +7392,11 @@ proc ase::run_deck {state netlistfile {callback {}}} {
     catch {unset ::execute(callback,$::execute(id))}
     return -code error "ase: cannot start simulator '$sim' ([lindex $cmd 0] not runnable)"
   }
+  ## 1389: AND ONLY NOW. A launch that did not launch must leave no lock -- put
+  ## above the `$id == -1` arm this line would brick Run for the session every
+  ## time a user mistyped a simulator path, because nothing would ever clear a
+  ## lock whose run_done can never fire.
+  ase::run_lock_set $rawlock $id
   return $id
 }
 
@@ -5789,6 +7530,13 @@ proc ase::run_log_write {logpath meta data exitcode} {
 # metadata the file is written exactly as it always was (see run_log_write).
 proc ase::run_done {logpath state callback {meta {}}} {
   variable last_run
+  ## 1389: THE LOCK GOES FIRST, before anything below can raise. Everything in
+  ## this proc is either caught or advisory, but "either" is not "provably
+  ## neither", and a completion that died holding the lock would refuse every
+  ## later run for the rest of the session. The key is the one ase::run_deck
+  ## locked, carried in `meta`, never re-resolved. Absent metadata (the
+  ## three-argument shape test_ase_cosim.tcl calls at six sites) clears nothing.
+  ase::run_lock_clear [ase::state_get $meta rawlock {}]
   set data {}
   if {[info exists ::execute(data,last)]} { set data $::execute(data,last) }
   set exitcode -1

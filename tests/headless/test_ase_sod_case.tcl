@@ -79,6 +79,19 @@ set fixdir [file join $here fixtures ase_hier]
 source [file join $here scratch.tcl]
 set scratch [test_scratch ase_sod_case]
 
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## SC197-SC206b read `ase::sod_case_mode`, which resolves through
+## `ase::sim_casemode_requested` and therefore through the entry in force.
+## MEASURED before the fix: 11 FAILED under the developer's HOME (every `fold`
+## row reading PRESERVED spellings -- `v(TOPNET)`, `i(V9)`, `i(E.Xm.Xl.E1)`) and
+## ALL PASS (52) under a HOME with no registry. This suite is the FIFTH the
+## defect reached and was not on the batch's list, because a registry naming a
+## program that does not exist ALSO reads green here: `sim_status` refuses and
+## the floor answers, so the count is only wrong on a registry that WORKS.
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
+
 # --- SC192-SC196  sod_expr, with NOTHING loaded --------------------------------
 # Purity first, exactly as test_ase_interact H1 and 0161 HP1 do: this whole group
 # runs before any `xschem load`.

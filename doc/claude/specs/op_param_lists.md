@@ -1178,6 +1178,86 @@ back zero-length. Revisit it only if the custom ngspice does not arrive.
 `only_probes`. Binding them in `src/cadence_style_rc` with `break` displaces a
 shipped editing action for cadence-profile users only. Question Q5.
 
+> ✅ **ISSUE 1384, 2026-09-08 — THE COMMAND MODE ANNOUNCES ITSELF ON THE SHEET,
+> AND THE USER RULED THE GATE.** Asked whether to gate the hint on the verb-noun
+> interface, they declined both options offered and restated the condition:
+> *"If an instance is selected and user presses 1/2/3, only the selected
+> instance is processed. One does not enter command mode in this case. If more
+> than one selected, issue a warning in the CIW and refuse."* So **the gate is
+> command-mode entry** — `rdw::key`'s `none` branch and nothing else — and
+> `intuitive_interface` is not read at all: the pick is identical in both
+> grammars and a hint that appeared in only one would itself be the surprise.
+> Both other branches were **driven at HEAD before the hint was written** and
+> already behaved exactly as that sentence says, refusal-changes-nothing
+> included; no repair was owed.
+>
+> The sentence, per list identity and in the user's own words, is
+> `Click on instance for annotation|summary|all OP info in Results Display
+> Window`, built from ONE template because the identity token *is* the
+> adjective, and fenced by `rdw::_list_name` so `refresh` and any unknown name
+> answer the empty string.
+>
+> It goes in **`.statusbar.10`**, xschem's own mode-prompt label — the one that
+> already says `DRAW WIRE!` and `HIGHLIGHT NET! (click a net or label, ESC to
+> end)` — belonging to the canvas's own **top-level**, so a design in its own
+> window gets its own. (⚠ *Not* a tab: this spec said "and a tab each get their
+> own" and it was backwards. A tab's `current_win_path` is `.x1.drw`, which is
+> **not a Tk widget** — tabs share the one real `.drw` — and its `top_path` is
+> empty, so C writes the shared bar. `rdw::_hint_slot` asks `winfo toplevel`;
+> and the pick mode does not arm in a tab at all, which is issue **1387**.)
+> `.statusbar.1`, the wide field, was **measured and refused**: it is C's
+> `statusmsg()` slot and `callback.c:10177` rewrites it on every event with no
+> `ui_state` guard, so one hover motion destroyed the sentence, and
+> `statusmsg_hold()` buys only a fixed 5 s.
+>
+> `.statusbar.10` is *blanked* by `update_statusbar()` instead — unconditionally,
+> at the top of `callback()`, on every canvas event. ⚠ **A periodic re-assert is
+> not an answer to that**, though `ase::ui::sod_prompt_pump` ships one and this
+> feature copied its 80 ms and its reasoning. MEASURED: the sentence was on
+> screen **16–40 %** of the time while the pointer moved, and because the label
+> is packed `-side left` with no `-fill x` its width swung 8 ↔ 471 px at ~12 Hz,
+> dragging the coordinate readout beside it between 218 and 275 px. The answer is
+> a **private binding tag on the canvas** (`rdw::_hint_attach`), which re-asserts
+> inside the same binding invocation C blanked in, before the geometry manager
+> runs: 100 % visible, both widths constant, ~1.3 ms of CPU per second of moving
+> the mouse. `rdw::hint_period`'s 80 ms timer stays as the **backstop** — the
+> seized sequences `break` before any later binding tag is reached, and a mode
+> that ended by a route nobody added a door to still has to be noticed.
+>
+> **`rdw::_hint_sync` is the one proc that decides what the slot says**, and what
+> the canvas carries. Every exit is a door on it — `pick_start` (both success
+> paths), `pick_end` after its `array unset`, `pick_resume`'s rehome and drop
+> path — plus the binding tag and the backstop timer, because a stale *click on
+> instance* after the mode has ended is an instruction for a click that will do
+> nothing.
+>
+> The overflow tooltip the user asked for is `balloon_clipped` /
+> `balloon_off` / `label_clipped`, new beside `balloon` in `src/xschem.tcl`: a
+> tip is armed **only** when `font measure` overflows the label's own usable
+> width, re-armed on every text change with the previous sentence's pending
+> show cancelled, and taken away with the mode. Measured on `:99` at
+> 1920x1080: the annotation sentence needs 467 px, the slot gets 471 at every
+> main-window width from 815 px up (no tip) and shrinks below that (tip). The
+> tip carries the **whole** sentence rather than the clipped tail — rule debt
+> **1384**, with its alternative recorded.
+>
+> ⚠ **ARMING A TIP IS NOT SHOWING ONE, and the first pass shipped a tooltip that
+> the only gesture that reaches it could not reach.** The pointer arrives at the
+> status bar *from the canvas*; the last canvas event collapsed the label to
+> 8 px, the next re-assert grew it back to 471, and the arm — cached on
+> `winfo width` — re-fired, cancelling through `balloon_off` the
+> `after 1000 balloon_show` the `<Enter>` had just queued, with the pointer
+> already inside and no second `<Enter>` ever coming. Measured 3/3: `winfo
+> containing` on the label, binding correct, sentence on the label, **no
+> balloon**. Both halves are repaired (the tag stops the collapse; the arm is
+> cached on the clipped **verdict**, not the pixels) and row **HT12** drives the
+> whole gesture with nothing synthesised — canvas sweep, real warp, real 1000 ms
+> delay, a real toplevel asserted — because the row that used to fence this
+> called `balloon_show` directly and was green throughout. Row **HT15** holds
+> the second half on its own: a re-decision that changes nothing must not cancel
+> a show the pointer is already waiting for, driven by moving the label's own
+> `-width` rather than by asking a window manager for a resize.
+
 **B7. The button column.**
 
 | button | annotation list (`1`) | summary list (`2`) | all (`3`) |
@@ -1186,6 +1266,13 @@ shipped editing action for cadence-profile users only. Question Q5.
 | **Delete** | remove from annotation | remove from summary | **greyed** |
 | **Add** | — | add to annotation | add to **annotation or summary** (the dialog asks which) |
 | **Save** | write the settings file | write the settings file | write the settings file |
+
+⚠ **THAT TABLE IS THE LIST ACTIONS, NOT THE COLUMN'S WIDGET LIST.** Two more
+controls sit in `.rdw.b` and deliberately outside `rdw::_buttons` — `aA` (B8)
+and **Close** (B9). Neither acts on a list, so neither enters
+`rdw::_active_phrase`'s sentence about which buttons act on this list, and
+neither is ever greyed: `rdw::apply_list_state` configures a `-state` only for
+what that table names.
 
 > ✅ **ITEM B3, 2026-09-03 — THE COLUMN IS BUILT, GREYED AND INERT, AND THE
 > `—` IN THE `Add` CELL IS NOW `greyed`.** Five buttons `Up · Down · Delete ·
@@ -1264,11 +1351,47 @@ shipped editing action for cadence-profile users only. Question Q5.
 > the user read a six-row drag as a six-row Delete. MEASURED: `tag ranges sel` =
 > `8.4 13.4` with `::rdw::targetrow` = 8, and one press produced one verdict
 > about one parameter — every reader of the text selection in `src/rdw.tcl` is
-> on the CLIPBOARD path. A conditional clause now rides every verdict when a
-> selection really spans two or more lines. **The multi-row edit itself is a
-> ruling and is NOT built**: one dialog for N rows, one status line for N
-> outcomes, and ruling **DD-10**'s last-row refusal evaluated over a batch.
-> Rule debt **1356**.
+> on the CLIPBOARD path. A conditional clause rode every verdict when a
+> selection really spanned two or more lines, while the multi-row edit itself
+> was a ruling. Rule debt **1356**.
+>
+> ✅ **UPDATE, 2026-09-07 — THE RULING CAME BACK THE OTHER WAY AND THE MULTI-ROW
+> PRESS IS BUILT.** The user: *"When multiple lines of parameters are selected
+> and user presses Add or Delete, those should get processed the same way that
+> a single line would get processed."* **Add and Delete act on the parameter
+> rows the selection covers**, in pane order, deduped by name; Up and Down still
+> act on the shaded row alone and the clause survives narrowed to them. The
+> three costs the ruling was filed over are answered, each in one place:
+>
+> * **one dialog for N rows** — `rdw::scope_dialog` is raised once, outside the
+>   loop, which is why a batch is confined to a **single dump**: the dialog
+>   names one instance, one cell and one class, and a question that named one
+>   device while writing for another would be a false statement. A selection
+>   crossing dumps is refused with a sentence naming the classes (two lists, one
+>   answer cannot cover both) or the dump count.
+> * **one sentence for N outcomes** — `rdw::_batch_edit` names every row that
+>   changed **and every row that did not, with the core's own reason**. A count
+>   would be the defect the item removes, pointed the other way.
+> * **ruling DD-10 over the BATCH** — `rdw::_batch_last_row_why`, asked before
+>   the first write. A batch that would empty the list is refused **whole**; one
+>   that leaves exactly one row is allowed. There is no undo in this window and
+>   this is the leg that costs data if it is wrong.
+>
+> **A batch of ONE never reaches any of it** — `rdw::button` routes a single row
+> to `rdw::_edit` directly, so every byte-for-byte sentence this feature's
+> suites gold is still produced by the code that produced it before. The target
+> (which entry is written, what is in it now, how to name the scope) is built by
+> `rdw::_edit_target`, which BOTH paths call: two definitions of "which entry
+> does this press write" is invariant **I1**'s exact failure shape and the defect
+> `rdw::_scope_for` was written to remove.
+>
+> Fenced by **BT31** (the user's own gesture, all three legs), **BT37** (the
+> batch is read once, from one block, in pane order, deduped by name),
+> **BT38** (DD-10 at both boundaries), **BT39** (a skipped row is named, never
+> counted), **BT40** (the cross-dump refusal), **BT41** (one definition of each
+> fact), **LX11**/**LX15** (the clause narrowed to Up and Down), **SL5**,
+> **SL11**, and **KD1** of the keys suite. Three decisions the instruction did
+> not settle are recorded as rule debt **1381**.
 
 > ✅ **ITEM B2, 2026-09-03 — LIST 3 HAS NO PERSISTED STATE, AND THE STORE HAS
 > NO SLOT FOR IT.** It is live from the run, its Delete is greyed above, and a
@@ -1690,8 +1813,9 @@ RDW. it can be the 'aa' button you see in e-readers - 2nd a bigger. Key part, as
 soon as user hovers over it, tooltip should be displayed : click to increase
 font one unit. Ctrl+click to decrease font one unit"*.
 
-`.rdw.b.fontsize`, at the foot of B7's column and **deliberately outside
-`rdw::_buttons`** — it is not a list action, it is never greyed, and an entry in
+`.rdw.b.fontsize`, packed `-side bottom` below B7's five list actions (issue
+1382 later put **Close** below it again, so it is the middle of three groups
+rather than the foot) and **deliberately outside `rdw::_buttons`** — it is not a list action, it is never greyed, and an entry in
 that table would put "aA" into the chrome sentence *"only Up, Down, Delete, Add
 and Save do anything"*. Plain click `rdw::font_step 1`, `<Control-Button-1>`
 `rdw::font_step -1 ; break`. The hover goes through `balloon`, the tree's ONE
@@ -1743,6 +1867,99 @@ tooltip mechanism, carrying the user's sentence verbatim.
 > Fenced by section **FZ** (FZ1..FZ11) of `test_rdw_window_1245.tcl`, ten
 > sabotages, `RW_FLOOR` 168 → 172. Pure Tcl: no new file, so the issue **0424**
 > Makefile trap does not apply.
+
+**B9. Close — the column's own dismiss control (issue 1382).**
+
+The user: *"In the RDW, add a Close button to dismiss the window"*.
+
+`.rdw.b.close`, at the **foot** of B7's column below `aA`, `-command
+rdw::close` **and nothing else**. It is deliberately outside `rdw::_buttons`
+for `aA`'s own reason — it acts on no list, so it may not enter the chrome
+sentence *"only Up, Down, Delete, Add and Save do anything"* — and that absence
+is also what leaves it `normal` on all three identities, since
+`rdw::apply_list_state` configures a `-state` only for what that table names.
+
+> ✅ **ISSUE 1382, 2026-09-07 — BUILT, AND RULING DD-12 HAD ALREADY PROMISED
+> IT.** DD-12's stated cost reads *"a user who expects Escape to dismiss the
+> window will press it and see nothing happen. **The window has its own close
+> control**, and the dumps are worth more than the keystroke"* — and the only
+> close control the window had was the window MANAGER's `X`, which is chrome,
+> absent from the widget, and the first thing an undecorated toplevel loses. So
+> the consolation for a deliberately inert keystroke named a control this file
+> had never built.
+>
+> **ONE RULE, TWO DOORS.** The button's `-command` and `wm protocol .rdw
+> WM_DELETE_WINDOW` name the SAME proc; `rdw::close` occurs exactly **twice**
+> in the whole builder and `catch {destroy .rdw}` exactly **once** in the whole
+> file. **Escape is not a third door** — DD-12 is unchanged and row **CB2**
+> reds a change that makes it close, by arithmetic rather than by a golden
+> sentence.
+>
+> **CLOSE IS A WITHDRAW, NEVER A DISCARD.** `::rdw::blocks` is namespace state
+> and `rdw::close` touches it not at all, which is the property ruling
+> **DD-16** leans on when it lets a block be edited an hour later on a
+> different sheet. Fenced twice: **CB3** at source (close names `blocks`
+> nowhere, and neither does open) and **CB6** by a real `.rdw.b.close invoke`
+> and a reopen that repaints the same two dumps.
+>
+> **`rdw::button close` DOES NOT EXIST, by decision.** `rdw::close` is the
+> command path and predates the button; `rdw::button` is the door for the five
+> controls that need the greying table and a status line, and its own
+> obligation — *every path out of here ends in a status line that names the
+> button it came from* — cannot be kept by an arm that destroys the widget the
+> status line lives in. `rdw::button close` therefore **refuses**, and issue
+> 1382 corrected that refusal's wording: it had said *"There is no button
+> called '$id' in this window"*, which had been false about `aA` since issue
+> 1368 and would now be false about a button the user is looking at.
+>
+> Two single-definition repairs came with it: `rdw::apply_list_state`'s greying
+> loop walked the five ids as literals and now walks `rdw::_buttons`; and
+> **FZ17's fixture was leaning on `aA` being the lowest widget in the column**
+> — it parked the TOPLEVEL's bottom edge on the screen's, so packing Close
+> below `aA` made the tooltip stop needing to flip and redded that row with
+> `balloon_show` untouched. It now parks the BUTTON's own bottom edge.
+>
+> Where in the column, the absent `rdw::button close`, the silent success and
+> the reworded refusal are all unratified — rule debt **1382**. Fenced by
+> section **CB** of `test_rdw_window_1245.tcl`, `RW_FLOOR` 187 → 191. Pure Tcl:
+> no new file, so the issue **0424** Makefile trap does not apply.
+
+> ⚠ **REPAIR, SAME ISSUE — THE MINIMUM SIZE IS NOW A FUNCTION OF THE COLUMN,
+> AND THE FIRST PASS HAD BROKEN IT.** Close pushed `winfo reqheight .rdw.b`
+> from 204 px to 243 px against the 208 px that `wm minsize .rdw 520 260` — a
+> bare constant written for item **B3**'s five-button column and never
+> re-judged — leaves it. MEASURED at exactly 520×260, the window's OWN
+> advertised minimum, reachable by an ordinary drag of the bottom edge:
+> `winfo ismapped .rdw.b.fontsize` was **0**. `aA`, the control the user asked
+> for by name in issue **1368**, was gone, because `-side bottom` allocates
+> Close first and starves whatever it allocated last. Every earlier measurement
+> of this column was taken at the default 893×498, where 446 px of cavity hides
+> a 243 px request, so nothing showed.
+>
+> `rdw::min_floor` keeps B3's `520 260` as a **floor** and
+> `rdw::apply_minsize` raises it to `reqheight .rdw − reqheight .rdw.p +
+> reqheight .rdw.b` — the toplevel's own request with the pane swapped for the
+> column, so the header, the status strip and every pad are counted exactly
+> once and never modelled twice. MEASURED 498 − 446 + 243 = **295**, which is
+> to the pixel the first height at which the column gets its full request (294
+> leaves `aA` at 28 px). This is `calc::min_floor` / `calc::apply_minsize`'s
+> shape, which this tree already adopted for the same defect. `rdw::build`
+> names no literal minimum and calls the proc twice: once at the head, before
+> `.rdw.b` exists, which can only set the floor; once at the foot, after
+> `rdw::_apply_font`, which is the call that measures — and the only thing in
+> that proc that pumps the idle queue, which is why it is last.
+>
+> ⚠ **AND CLOSE DOES NOT END A RUNNING PICK.** The pick mode is seized on the
+> CANVAS, so after a real press with a pick live: `.rdw` gone, `pick_running`
+> still 1, `.drw`'s `<ButtonPress-1>` still `rdw::pick_click`, its
+> `<Key-Escape>` still `rdw::pick_end`. That is DD-12's asymmetry read the
+> other way round — Escape ends the MODE and never closes the window, so Close
+> closes the WINDOW and never ends the mode — and it could only be changed
+> inside `rdw::close`, where it would change the window manager's `X` too. It
+> is now a stated contract rather than an accident of where the seize lives.
+>
+> Rows **CB7** and **CB8** (both arms) and **CB9** and **CB10** (`:99`),
+> `RW_FLOOR` 191 → **193**.
 
 ### 4.3 The class map
 
@@ -2248,6 +2465,240 @@ one class the classifier genuinely cannot identify. B2c's row T4 used
 must not (or the five copy-a-file rows go red or vacuous), and both
 `load_conf {path {stamp 1}}` and `write_body {fp {old {}}}` must keep their
 **required** arity at one argument.
+
+---
+
+### AS BUILT — RDW UX item C, 2026-09-08: the settings file takes the PDK into account (issue 1388)
+
+**Ruled by the user, 2026-09-07: ONE FILE, PDK SECTIONS.** Shown one file with
+`[pdk sky130A]` sections against one file per PDK, they picked sections, and
+stated the precedence: *"PDK section beats the un-scoped rows above it."* Their
+constraint is the whole design and it is generous — *"a given launch, with a
+set of libraries will not have more than one PDK included"* — so **the PDK is a
+per-process constant**, nothing merges two PDKs, and **no store key gains a PDK
+field**.
+
+#### The grammar addition — one new LINE KIND, and the version does not move
+
+```
+[pdk sky130A]     open a PDK section: everything below applies only to a launch
+                  whose PDK is sky130A, until the next header
+[pdk *]           back to the rows that apply to EVERY PDK
+```
+
+Rows **above the first header** are un-scoped and apply to every PDK — which is
+what every row in every file written before this is, so **backward
+compatibility needed no migration and gets none**. `version` stays **2**: a v2
+file is completely correct under this grammar, so a bump would report a
+mismatch at every launch about a file with nothing wrong with it, and DD-11
+would then rewrite the user's version line for no behavioural reason. ⚠ **The
+price, stated:** an *older* xschem reports the header as an unknown keyword,
+skips it, and then applies the section's rows to every PDK — a sectioned file
+is shareable with a teammate on this build or newer, wrong-not-broken on an
+older one.
+
+#### Three precedence axes, ordered, because two of them used to be one
+
+1. **Tier** — the project file's rows for a `(scope, key, listname)` replace the
+   user-global file's, **whatever PDK scope either was written in**. Unchanged;
+   `touched` is per file, so this stays outermost.
+2. **PDK scope, within one file** — a row under `[pdk <name>]` for *this*
+   launch's PDK beats an un-scoped row, **wherever the section sits**. This is
+   a **RANK, not file order**: the user's ruling is "PDK section beats the
+   un-scoped rows", and a rank means moving your section to the top of the file
+   cannot silently cost you your per-PDK list. Implemented by reading the file
+   in **two passes** — un-scoped rows first, then this PDK's — so the same
+   "first touch of a key clears what came before" machinery that answers axis 1
+   answers axis 2, with **no rank field anywhere**.
+3. **File order among flavor globs** (ruling DD-8) — the *rule* is untouched,
+   but the **implementation had to be moved to keep it true**, and the first
+   draft did not. See the box below.
+
+A row for **another** PDK is never parsed into the store at all, which is the
+same structural move DD-7 makes about provenance: you cannot leak a row you
+never read. `effective`, `governs` and `apply` are **not called differently and
+gain no PDK argument**.
+
+#### ⚠ AXIS 3 CANNOT RIDE ON AXIS 2's PASSES — the repair pass's first blocker
+
+`keyorder` — the list `governs` walks to answer "which flavor glob wins on this
+cell" — was being appended to by the two passes that implement axis 2. That made
+it **phase order**, not file order, so a `flavor` row inside *this launch's own*
+`[pdk ...]` section was always tried **after** every un-scoped one: it lost
+while sitting **first** in the file and while being the PDK-specific row.
+Measured on the brief's own example shape:
+
+```
+version 2
+[pdk sky130A]
+param flavor mos *nfet_01v8_lvt* annotation A id 0
+[pdk *]
+param flavor mos *              annotation B gm 1
+```
+
+| file | `governs mos annotation sky130_fd_pr__nfet_01v8_lvt` |
+|---|---|
+| as above | `flavor {mos *}` — the **broad, lower, un-scoped** row |
+| the same two rows with both headers deleted | `flavor {mos *nfet_01v8_lvt*}` |
+
+That made the flavor paragraph the writer stamps into **every** settings file
+("THE FIRST ONE IN THIS FILE WINS … put the row you want to win ABOVE the other
+one") measurably **false** for every sectioned file — a file lying to its own
+reader, which is the exact failure that paragraph records two earlier attempts
+making. Row **F5** stayed green because its fixture is unsectioned.
+
+**The fix:** `load_conf` **seeds `keyorder` in file order, in one pass, before**
+the two phase passes, using `_row_id` — the same row recogniser the writer uses.
+The two axes now answer in different places and cannot collide: **axis 2 decides
+which rows fill a key; axis 3 decides which key answers a cell.** Rows **PK13**
+(F5's own worked example, read out of the emitted header, driven through a
+sectioned file in both orders) and **PK13b**.
+
+#### The identity: `env(PDK)`, and the three candidates that die on measurement
+
+Measured 2026-09-08 by sourcing each workarea rc in a live `./src/xschem`:
+
+| workarea | `env(PDK)` | `env(PDK_ROOT)` | `::PDK_ROOT` | `XSCHEM_LIBRARY_PATH` | descriptors |
+|---|---|---|---|---|---|
+| `sky130A` | `sky130A` | UNSET | `…/share/pdk` | **`{}`** | `nmos pmos` |
+| `gf180mcuD` | `gf180mcuD` | UNSET | UNSET | **`{}`** | `nmos pmos` |
+| `ihp-sg13g2` | `ihp-sg13g2` | UNSET | UNSET | **`{}`** | `nmos pmos vertical_npn` |
+
+* `env(PDK_ROOT)` is set by **none** of them; `::PDK_ROOT` is the directory
+  that *holds* PDKs — a **location, not an identity**, identical for every PDK
+  in one open_pdks install.
+* `$::XSCHEM_LIBRARY_PATH` is **EMPTY** in all three (registry-only Cadence
+  mode). It distinguishes nothing.
+* **The registered descriptors cannot tell sky130A from gf180mcuD**, which is
+  the user's own example: both are `{nmos pmos}` with byte-identical
+  declarations. The most semantically honest candidate cannot answer the
+  question that was asked.
+
+#### ⚠ The PDK is not known when the file is read, and that is the real defect
+
+`catch {::op_param_lists::load}` (`xschem.tcl:17550`) runs while `xschem.tcl`
+is **sourced**; a workarea is entered with `--script <ws>/cadence_style_rc`,
+which `xinit.c:3793` sources **after**. Measured: `env(PDK)` is UNSET at the top
+of the `--script` phase. Two supported orders:
+
+* **`PDK` exported before launch** (open_pdks) — `load` sees it, no code needed;
+* **the rc declares it** — `op_param_lists::set_pdk`, which **re-reads the two
+  tiers**, exactly (byte-identical to a process that knew its PDK from the
+  start) and **never over a key this session already changed**. The three
+  shipped `cadence_style_rc` files call it, guarded.
+
+⚠ **"Has the PDK changed" is a question about the ROWS, not about `pdk`.** The
+rcs set `env(PDK)` **first** and declare **second**, so `pdk` already answers
+the new name when `set_pdk` runs; a before/after comparison of it is equal and
+skips the re-read. Measured end to end, with the section silently lost. The
+store therefore records `loadedpdk` — the PDK the last `load` actually ran
+under — and compares against that. `reset` clears it; it does **not**
+un-declare the PDK. Row **PK7b**, minted because every existing row was green
+for this.
+
+⚠ **AND THE RE-READ REBUILDS THE STORE — it does not run on top of it.** The
+first draft called `load` straight over the existing store, on the strength of
+"first touch of a key clears what came before". That really does rebuild every
+key's **content**; it leaves **`keyorder`** carrying the first read's positions
+with the second read's new keys appended after them. So **the same two files
+gave different answers depending on how the PDK arrived**, and the rc is the
+default path for all three PDKs this tree ships:
+
+| how the PDK arrived | winner, user tier `[pdk sky130A] flavor mos *nfet_01v8_lvt*` vs project tier un-scoped `flavor mos *` |
+|---|---|
+| `PDK=sky130A xschem` — environment first, one read | `*nfet_01v8_lvt*` (the section) |
+| the shipped rc — read, **then** declare | `*` (the bare glob) |
+
+`set_pdk` now **`reset`s and re-reads**, which is safe because it already
+refuses when anything is dirty, and which makes "identical to a launch that knew
+its PDK all along" true **order and all** rather than merely plausible. `reset`
+deliberately keeps `pdkoverride` (the declaration) and `applied` (issue 1292's
+undo). Row **PK13b**.
+
+#### What a real workarea launch PRINTS
+
+A section that is read and not applied is reported **once**, naming both PDKs —
+**except from a read that could still be superseded**, which says nothing about
+sections at all. The startup `load` runs before the rc that declares the PDK, so
+"this launch has no PDK" is a claim it is not in a position to make. Measured
+before the gate, `cd <proj> && xschem --script sky130A/cadence_style_rc` over a
+conf with three sections printed **five** lines, the first of them **false**:
+
+```
+:3: the rows under `[pdk sky130A]`    … this launch has no PDK      <- FALSE:
+                                          applied one line later
+:5: the rows under `[pdk gf180mcuD]`  … this launch has no PDK
+:7: the rows under `[pdk ihp-sg13g2]` … this launch has no PDK
+:5: the rows under `[pdk gf180mcuD]`  … this launch is PDK sky130A  <- again
+:7: the rows under `[pdk ihp-sg13g2]` … this launch is PDK sky130A  <- again
+```
+
+and after it, **two** — the gf180mcuD and ihp-sg13g2 ones, from the read that
+governs, and not a word about the section it applied. `load_conf` gained an
+optional trailing `provisional` (required arity unchanged, row J5); only `load`
+passes it, and only for the session's first read with no PDK. **`_say` gained an
+echo gate** (`echoskip`, filled by `set_pdk` for the duration of its own
+re-read) so a *row's* complaint — a malformed line, an unknown keyword — is
+printed **once** across the two reads instead of twice. The gate is on the
+terminal echo only: `said` still receives every sentence, so nothing that counts
+reports can move. Row **PK14**, which counts the lines in a **child process**,
+because a buffer-only assertion would score the duplicate echo green.
+
+⚠ **Price, stated.** A launch with **no** PDK at all — someone who started
+outside their workarea, with sections in their file — is no longer told at
+startup why those sections did not apply. The no-PDK wording is still live for a
+direct `load_conf` (an import is nobody's provisional read), and the alternative
+was a false sentence on **every** workarea launch this tree ships.
+
+#### The tier/PDK interaction, which the emitted header did not state
+
+A `[pdk sky130A]` list in the **user-global** file is replaced by an **un-scoped**
+list for the same key in the **project** file — the less specific row wins,
+because read order settles the tier (axis 1) and the PDK rank only orders rows
+*within* one file. That direction surprises, so the emitted header now says it
+in one line, and row **PK15** holds the code and the sentence to each other.
+
+#### Rows under a header nobody can read are DATA nobody may rewrite
+
+`_scope_applies`'s `bad` arm is what stops the **writer** rewriting rows under a
+malformed header. It had no fence: the reader was independently protected by its
+phase loop, so with `_scope_applies` sabotaged to accept everything the reader
+stayed correct, the whole suite stayed green, and the **writer replaced the
+user's rows**. The reader now asks **one** predicate (`_scope_applies`, then
+`_phase_of` purely as a partition of scopes that already apply), so the sabotage
+reds the reader too, and row **PK5b** is the writer's own fence.
+
+#### Save edits the rows **where they already are** — unratified, rule debt 1388
+
+A Save writes into this launch's `[pdk ...]` section when the file already
+carries rows for that list there, and otherwise into the un-scoped rows, which
+is byte-for-byte the pre-1388 behaviour. **It never invents a section**;
+per-PDK lists are opted into by typing one header. The alternative — "a Save
+under a PDK always writes into that PDK's section" — reads the user's sentence
+more literally and also grows a section into a file whose owner never asked for
+one and strands the un-scoped rows as a stale list a PDK-less launch reads
+back. **The user's to settle.**
+
+One writer detail that nothing else would catch: an appended row lands at the
+**end** of the file, and the end of a sectioned file is **inside** a section, so
+the writer emits `[pdk *]` before anything it appends when the walk ended
+elsewhere. Row PK9.
+
+**No PDK detected is not an error.** A PDK-less launch reads the un-scoped rows
+and `[pdk *]` and behaves exactly as before.
+
+**Rows:** section **PK** of `tests/headless/test_op_param_store_1245.tcl`,
+`OL_FLOOR` 135 → 151 → **158** after the repair pass, including **PK20/PK21,
+the two-process fence owed since issue 1380** — write in one process, read in a
+fresh one through the **startup path alone**. Fifteen sabotages, all caught:
+commenting out the startup `load` reds PK20/PK21 and nothing else; putting the
+`pdk`-before/after comparison back reds PK7b alone; dropping the file-order
+seed reds PK13 alone; taking `reset` back out of `set_pdk` reds PK13b and PK14;
+removing either the `provisional` gate or the echo gate reds PK14; deleting
+`_pdk_why`'s `]` refusal reds PK1b; making `forget_pdk` re-read reds PK1c and
+PK5b; removing the header's tier sentence reds PK15; and `_scope_applies`
+returning 1 unconditionally reds **twelve** rows including PK5 and PK5b, where
+before the `_phase_of` change it reddened neither.
 
 ---
 

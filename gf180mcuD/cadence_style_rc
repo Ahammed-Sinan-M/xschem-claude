@@ -51,6 +51,21 @@ set ::ASE_DEFAULT_MODELS [list \
 set ::ASE_DEFAULT_INCLUDES [list [list file {$::180MCU_MODELS/design.ngspice}]]
 # PDK/PDK_ROOT are referenced by a couple of status strings.
 if {![info exists ::env(PDK)]} { set ::env(PDK) gf180mcuD }
+
+# ⚠ AND THE OP PARAMETER-LIST STORE IS TOLD, HERE, BECAUSE IT ALREADY READ ITS
+# FILES (issue 1388). `.xschem/op_param_lists.conf` may carry `[pdk <name>]`
+# sections, and only the rows for THIS launch's PDK apply. But xschem.tcl:17550
+# runs `op_param_lists::load` while xschem.tcl is being SOURCED, and xinit.c
+# sources a `--script` rc AFTER that -- MEASURED: `env(PDK)` is still UNSET at
+# the top of the --script phase, which is already later than the load. So a
+# workarea entered the way this file is entered would read its own PDK's rows
+# as "some other PDK's" and skip them. `set_pdk` re-reads the two tiers, which
+# is exact rather than additive (its own comment says why), and is a no-op when
+# PDK was exported in the environment before launch -- the open_pdks order, in
+# which `load` already saw it.
+if {[info commands ::op_param_lists::set_pdk] ne {}} {
+  ::op_param_lists::set_pdk $::env(PDK)
+}
 source [file join $_ws gf180_procs.tcl]
 
 # Run the GF180MCU menu builder after each window is created (append, don't

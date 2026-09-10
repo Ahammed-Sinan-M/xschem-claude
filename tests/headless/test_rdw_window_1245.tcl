@@ -230,6 +230,25 @@ set RW_XTCL  [file join $repo src xschem.tcl]
 ## tree's own.
 set RW_FILE  [file join $repo src rdw.tcl]
 
+## ⚠ THE PROJECT SETTINGS FILE IS A SNAPSHOT, NOT AN ABSENCE (issue 1381).
+## BT9's last-but-one leg used to assert that `<repo>/.xschem` did not exist,
+## which was true only for as long as nothing ever SAVED a list there.  It is a
+## legitimate user artifact -- `rdw::button save` with project scope writes
+## exactly `<repo>/.xschem/op_param_lists.conf`, by design -- so a developer who
+## had used the feature in their own tree redded this suite for having used it,
+## and the obvious way to green it again is to delete their file.  That happened:
+## a real saved list was destroyed because a red row read as litter.  What BT9
+## actually means is "THE BUTTONS ABOVE WROTE NOTHING HERE", so take the file's
+## identity before the section runs and compare it afterwards.
+proc rw_conf_stamp {} {
+  global repo
+  set f [file join $repo .xschem op_param_lists.conf]
+  if {![file exists $f]} { return {ABSENT} }
+  if {[catch {list [file size $f] [file mtime $f]} st]} { return {UNREADABLE} }
+  return $st
+}
+set RW_CONF0 [rw_conf_stamp]
+
 ## Anything this session might be tempted to write goes to the scratch dir.
 set ::netlist_dir $scratch
 
@@ -3509,11 +3528,11 @@ cd $BT9_OLDPWD
 set BT9_HEADLESS [expr {$live_tk ? {n/a} : \
   [expr {[llength [info commands ::rdw::b5_real_scope_dialog]] \
          ? [rw_ans ::rdw::b5_real_scope_dialog delete {} annotation] : {NOPROC}}]}]
-check {BT9 the scope dialog is consulted EXACTLY ONCE per Delete and once per Add and NEVER for Up, Down or Save, no settings file is dropped on the repo root, and with no Tk at all the real dialog answers Cancel and returns instead of blocking (issue 0803, answered by construction)} \
+check {BT9 the scope dialog is consulted EXACTLY ONCE per Delete and once per Add and NEVER for Up, Down or Save, the repo's own project settings file is exactly as this section found it - unwritten, whether or not the developer has one of their own (issue 1381), and with no Tk at all the real dialog answers Cancel and returns instead of blocking (issue 0803, answered by construction)} \
   [list $BT9_UP $BT9_DN $BT9_DEL $BT9_ADD $BT9_SAVE \
-        [expr {[file isdirectory [file join $repo .xschem]] ? 1 : 0}] \
+        [expr {[rw_conf_stamp] eq $RW_CONF0 ? 1 : 0}] \
         [expr {$live_tk ? {n/a} : $BT9_HEADLESS}]] \
-  [list 0 0 1 1 0 0 [expr {$live_tk ? {n/a} : {}}]]
+  [list 0 0 1 1 0 1 [expr {$live_tk ? {n/a} : {}}]]
 
 # --- BT10  NARROW TOUCHES ONE FLAVOR, BROAD MOVES THE CLASS ------------------
 ## The acceptance sentence, both halves, plus DD-8's shadow. A narrow write is
@@ -4130,21 +4149,38 @@ if {$live_tk} {
     [list {1 1 1 1 1} 1 {{gm gm 1} {id ids 0} {gds gds 1}} 1 1 1]
   catch {destroy .rdw.scope}
 
-  # --- BT31  ISSUE 1356: THE USER'S OWN GESTURE, AND WHAT IT REALLY DID -------
-  ## THE USER'S WORDS: "I select a bunch of lines - sa, sb, up to scc - and
-  ## press Delete".  MEASURED on their own M18 at HEAD d81b4b24: `tag ranges
-  ## sel` covered SIX rows, `::rdw::targetrow` was the anchor row alone, and
-  ## one press produced ONE verdict about ONE parameter.  A multi-row delete is
-  ## not a thing this window does -- `rdw::button` reads `rdw::_target_line`,
-  ## whose only setter is the <Button-1> click, while every reader of the text
-  ## selection in this file is on the CLIPBOARD path -- and nothing on screen
-  ## said so, which is why "the delete did not have an effect" was a reasonable
-  ## reading of a delete that had exactly one.
+  # --- BT31  THE USER'S OWN GESTURE, NOW THAT IT DOES SOMETHING ---------------
+  ## THE USER'S WORDS, TWICE, AND THE SECOND SET REVERSES THE FIRST.
   ##
-  ## THE ROW ASSERTS BOTH HALVES, because a note that fired unconditionally
-  ## would be noise rather than an answer: with a multi-line selection standing
-  ## the sentence is there, and with the selection gone the very same press on
-  ## the very same fixture is byte-identical without it.
+  ## FIRST: "I select a bunch of lines - sa, sb, up to scc - and press Delete."
+  ## MEASURED on their own M18 at HEAD d81b4b24: `tag ranges sel` covered SIX
+  ## rows, `::rdw::targetrow` was the anchor row alone, and one press produced
+  ## ONE verdict about ONE parameter.  This row used to gold that -- one row
+  ## leaves, and a clause says the selection was not the target -- because a
+  ## multi-row press was a RULING and not a patch (issue 1356).
+  ##
+  ## SECOND: "When multiple lines of parameters are selected and user presses
+  ## Add or Delete, those should get processed the same way that a single line
+  ## would get processed."  So the ruling was taken, and the three problems the
+  ## clause was standing in for are answered rather than declared.  This row
+  ## now golds all three, in the order they can go wrong:
+  ##
+  ##   LEG SET A -- RULING DD-10 IS ASKED OF THE BATCH.  A selection covering
+  ##   EVERY parameter row of the block, then one Delete: NOTHING is removed,
+  ##   because removing them all would empty the list.  This is the leg that
+  ##   matters most.  Per-row evaluation would have deleted N-1 and refused the
+  ##   last, in a window with no undo, on one press -- which is why the feature
+  ##   was a ruling in the first place.
+  ##   LEG SET B -- A PROPER SUBSET REALLY GOES, ALL OF IT, ON ONE PRESS, and
+  ##   the one sentence names every row it removed.
+  ##   LEG SET C -- THE CONTROL.  The identical fixture with NO selection
+  ##   standing removes exactly one row and is byte-for-byte the press this
+  ##   window has always made, so the batch is an addition and not a rewrite.
+  ##
+  ## And the clause itself: it must NOT appear on a Delete any more (the
+  ## sentence names the rows, which is a better answer than a lecture) and it
+  ## must still appear on an Up, which cannot take a batch at all.  Row LX15
+  ## drives the note's own boundary; this row drives it where the user meets it.
   b5_lists_reset
   b5_dlg {scope broad list annotation}
   b5_fixture_blocks
@@ -4153,40 +4189,252 @@ if {$live_tk} {
   rw_ans ::rdw::set_list annotation
   rw_ans ::rdw::render_pane
   catch {update idletasks}
-  set BT31_PR {}
-  set BT31_N 0
-  foreach _e [b5_flat] {
-    incr BT31_N
-    if {[rw_ans ::rdw::_row_param $_e] ne {}} { lappend BT31_PR $BT31_N }
+  ## The parameter rows of the FIRST block, by pane line -- `rdw::_locate` is
+  ## the only line->row converter, here as in the code under test.
+  proc bt31_lines {want} {
+    set o {} ; set n 0
+    foreach _e [b5_flat] {
+      incr n
+      if {[rw_ans ::rdw::_row_param $_e] eq {}} continue
+      if {[lindex [rw_ans ::rdw::_locate $n] 0] != $want} continue
+      lappend o $n
+    }
+    return $o
   }
+  proc bt31_sel {lines} {
+    catch {.rdw.p.t tag remove sel 1.0 end}
+    if {[llength $lines]} {
+      catch {.rdw.p.t tag add sel [lindex $lines 0].0 \
+                                  [expr {[lindex $lines end] + 1}].0}
+    }
+    catch {update idletasks}
+    return {}
+  }
+  ## Block 1 is M1, the four-row dump; block 0 is M2's single row (`rdw::push`
+  ## PREPENDS, ruling DD-1).  M1 is the one with rows to batch over, and one of
+  ## its four -- `vgs` -- is a row this run published that no list declares, so
+  ## the whole-block selection also drives the skipped-row half.
+  set BT31_PR    [bt31_lines 1]
   set BT31_FIRST [lindex $BT31_PR 0]
-  set BT31_LAST  [lindex $BT31_PR end]
-  catch {.rdw.p.t tag remove sel 1.0 end}
-  catch {.rdw.p.t tag add sel $BT31_FIRST.0 [expr {$BT31_LAST + 1}].0}
-  catch {update idletasks}
+
+  ## --- A: every row of the block selected.  DD-10 refuses the WHOLE press.
+  bt31_sel $BT31_PR
   set BT31_SEL   [rw_ans ::rdw::_selection_lines]
+  set BT31_ROWS  {}
+  catch {set BT31_ROWS [dict get [rw_ans ::rdw::_selection_rows] params]}
   set BT31_TROW  [rw_ans ::rdw::set_row $BT31_FIRST]
   set BT31_EFF0  [b5_eff annotation]
   set BT31_M     [b5_press delete]
-  set BT31_EFF1  [b5_eff annotation]
-  ## THE CONTROL: the same fixture, the same press, no selection standing.
+  set BT31_EFFA  [b5_eff annotation]
+
+  ## --- B: a proper subset.  All of it goes, on one press.
   b5_lists_reset
   b5_dlg {scope broad list annotation}
-  b5_fixture_blocks
   rw_ans ::rdw::render_pane
+  catch {update idletasks}
+  set BT31_SUB [lrange [bt31_lines 1] 0 1]
+  bt31_sel $BT31_SUB
+  set BT31_EFFB0 [b5_eff annotation]
+  set BT31_MB    [b5_press delete]
+  set BT31_EFFB1 [b5_eff annotation]
+
+  ## --- C: THE CONTROL.  The same fixture, the same press, no selection.
+  b5_lists_reset
+  b5_dlg {scope broad list annotation}
+  rw_ans ::rdw::render_pane
+  bt31_sel {}
+  rw_ans ::rdw::set_row $BT31_FIRST
+  set BT31_EFFC0 [b5_eff annotation]
+  set BT31_M2    [b5_press delete]
+  set BT31_EFFC1 [b5_eff annotation]
+
+  ## --- D: the clause is owed to Up and Down and to nobody else.
+  b5_lists_reset
+  b5_dlg {scope broad list annotation}
+  rw_ans ::rdw::render_pane
+  bt31_sel [bt31_lines 1]
+  rw_ans ::rdw::set_row [lindex [bt31_lines 1] 1]
+  set BT31_MUP [b5_press up]
+  check {BT31 THE USER'S OWN GESTURE, NOW THAT IT DOES SOMETHING: a mouse selection covering EVERY parameter row of a block plus one Delete removes NOTHING, because ruling DD-10 is asked of the batch before the first write rather than of each row in turn - a proper subset really goes, all of it, on the one press, and the sentence names every row - the identical press with no selection standing still removes exactly one - and the old "not the target" clause is gone from Delete and still owed to Up} \
+    [list [expr {$BT31_SEL >= 2 ? 1 : 0}] [llength $BT31_ROWS] $BT31_TROW \
+          [expr {[llength $BT31_EFF0] - [llength $BT31_EFFA]}] \
+          [b5_ok1 $BT31_M {would empty the annotation list}] \
+          [rw_count $BT31_M {Delete:}] \
+          [expr {[llength $BT31_EFFB0] - [llength $BT31_EFFB1]}] \
+          [b5_ok1 $BT31_MB {removed}] [rw_has $BT31_MB { and }] \
+          [expr {[llength $BT31_EFFC0] - [llength $BT31_EFFC1]}] \
+          [expr {$BT31_M2 ne {} && $BT31_M2 ne {NOVAR} ? 1 : 0}] \
+          [rw_has $BT31_M  {act on the shaded row alone}] \
+          [rw_has $BT31_MB {act on the shaded row alone}] \
+          [rw_has $BT31_M2 {act on the shaded row alone}] \
+          [rw_has $BT31_MUP {act on the shaded row alone}]] \
+    [list 1 4 $BT31_FIRST 0 1 1 2 1 1 1 1 0 0 0 1]
+  catch {.rdw.p.t tag remove sel 1.0 end}
+
+  # --- BT37  THE BATCH IS ONE BLOCK, DEDUPED BY NAME, AND IN PANE ORDER ------
+  ## `rdw::_selection_rows` is the only reader of the gesture, and three of its
+  ## properties are load-bearing rather than tidy:
+  ##
+  ##  * PANE ORDER, so the one sentence names the rows in the order the user
+  ##    sees them rather than in list order or hash order.
+  ##  * DEDUPED BY PARAMETER NAME AND NOT BY LINE.  A drag can cover the same
+  ##    parameter in two dumps -- this window keeps its dumps, so two dumps of
+  ##    one device are the ordinary case -- and the second Delete of `gm` would
+  ##    be refused by a store that had just removed it, turning a successful
+  ##    batch into one reporting a failure it caused itself.
+  ##  * BLOCKS RECORDED, so a selection crossing a dump boundary can be refused
+  ##    rather than answered with a dialog naming one device and a write
+  ##    reaching another.
+  ##
+  ## And `rdw::_locate` is the only line->row converter here as everywhere else
+  ## -- a second walk with its own arithmetic would drift the first time a
+  ## block gained a line.
+  b5_lists_reset
+  b5_fixture_blocks
+  rw_ans ::rdw::set_list annotation
+  rw_ans ::rdw::render_pane
+  catch {update idletasks}
+  set BT37_A1 [bt31_lines 1]
+  bt31_sel $BT37_A1
+  set BT37_R1 [rw_ans ::rdw::_selection_rows]
+  ## The WHOLE pane, which crosses both dumps and covers `ids` in each.
+  catch {.rdw.p.t tag remove sel 1.0 end}
+  catch {.rdw.p.t tag add sel 1.0 end}
+  catch {update idletasks}
+  set BT37_R2 [rw_ans ::rdw::_selection_rows]
+  ## No selection at all.
   catch {.rdw.p.t tag remove sel 1.0 end}
   catch {update idletasks}
-  rw_ans ::rdw::set_row $BT31_FIRST
-  set BT31_M2 [b5_press delete]
-  check {BT31 ISSUE 1356 THE USER'S OWN GESTURE: a mouse selection covering every parameter row of a block, then one Delete - exactly ONE parameter leaves the list, and the window SAYS the selection was not the target instead of leaving the user to infer it from a store they cannot see; the identical press with no selection standing carries no such clause, so the sentence is an answer and not noise} \
-    [list [expr {$BT31_SEL >= 2 ? 1 : 0}] $BT31_TROW \
-          [expr {[llength $BT31_EFF0] - [llength $BT31_EFF1]}] \
-          [b5_ok1 $BT31_M {the buttons act on the shaded row alone}] \
-          [rw_count $BT31_M {Delete:}] \
-          [rw_has $BT31_M2 {the buttons act on the shaded row alone}] \
-          [expr {$BT31_M2 ne {} && $BT31_M2 ne {NOVAR} ? 1 : 0}]] \
-    [list 1 $BT31_FIRST 1 1 1 0 1]
+  set BT37_R3 [rw_ans ::rdw::_selection_rows]
+  ## A selection standing on rows that carry no parameter -- the header and the
+  ## note lines of one block.  A gesture that chose nothing must fall back to
+  ## the shaded row, not act on an empty batch.
+  set BT37_H [expr {[lindex [bt31_lines 1] 0] - 3}]
+  catch {.rdw.p.t tag add sel $BT37_H.0 [expr {$BT37_H + 2}].0}
+  catch {update idletasks}
+  set BT37_R4 [rw_ans ::rdw::_selection_rows]
   catch {.rdw.p.t tag remove sel 1.0 end}
+  proc bt37_get {d k} {
+    if {$d eq {} || [rw_bad $d]} { return {} }
+    if {[catch {dict get $d $k} v]} { return RAISED }
+    return $v
+  }
+  check {BT37 THE BATCH IS READ ONCE, FROM ONE BLOCK, IN PANE ORDER AND DEDUPED BY PARAMETER NAME: a drag inside one dump answers that dump's rows in the order they are drawn; a drag over the WHOLE pane records BOTH dumps so the press can be refused rather than answered with a dialog naming one device and a write reaching another, and it lists the parameter shared by the two dumps ONCE - a second copy would be refused by a store that had just removed it, so the batch would report a failure it caused itself; and a selection that is absent, or standing only on rows that carry no parameter, answers nothing at all so the press falls back to the shaded row} \
+    [list [bt37_get $BT37_R1 params] [bt37_get $BT37_R1 blocks] \
+          [expr {[llength [bt37_get $BT37_R1 locs]] == [llength [bt37_get $BT37_R1 params]] ? 1 : 0}] \
+          [bt37_get $BT37_R2 blocks] \
+          [rw_count [bt37_get $BT37_R2 params] ids] \
+          $BT37_R3 $BT37_R4 \
+          [rw_has [rw_body ::rdw::_selection_rows] {rdw::_locate}]] \
+    [list {ids gm gds vgs} 1 1 {0 1} 1 {} {} 1]
+
+  # --- BT38  THE BATCH'S OWN SENTENCES, AT THEIR OWN BOUNDARIES --------------
+  ## Every one of these is prose the user reads on a four-line surface, and
+  ## every one of them is reachable only through a gesture, so they are driven
+  ## here directly rather than left to be exercised by accident.
+  ##
+  ## ⚠ RULING DD-10 IS THE ONE THAT COSTS DATA IF IT IS WRONG.  A batch that
+  ## takes the list to exactly one row is ALLOWED; a batch that would empty it
+  ## is refused whole.  Both boundaries are driven.  A batch of ONE falls
+  ## straight through to `rdw::_last_row_why`, so the single-row wording rows
+  ## CL7 and BE gold is reached by exactly the code that reached it before.
+  set BT38_BASE {{id ids 0} {gm gm 1} {gds gds 1}}
+  set BT38_ONE  {{id ids 0}}
+  check {BT38 THE BATCH'S OWN SENTENCES AT THEIR OWN BOUNDARIES: ruling DD-10 allows a batch that leaves exactly one row and refuses whole the batch that would leave none, on both lists, in their own words; a batch of ONE is handed straight to the single-row rule so the sentence the rest of this suite golds byte-for-byte is produced by the same code as before; a batch naming rows that are not in the list at all is not refused by DD-10, because it removes nothing; and the prose list punctuates one, two and three names the one way} \
+    [list [rw_ans ::rdw::_batch_last_row_why $BT38_BASE annotation {ids gm}] \
+          [rw_has [rw_ans ::rdw::_batch_last_row_why $BT38_BASE annotation {ids gm gds}] {would empty the annotation list}] \
+          [rw_has [rw_ans ::rdw::_batch_last_row_why $BT38_BASE summary {ids gm gds}] {would empty the summary list}] \
+          [rw_ans ::rdw::_batch_last_row_why $BT38_BASE annotation {nosuch1 nosuch2}] \
+          [rw_ans ::rdw::_batch_last_row_why $BT38_ONE annotation {ids}] \
+          [rw_ans ::rdw::_batch_last_row_why $BT38_BASE annotation {ids}] \
+          [rw_ans ::rdw::_and_list {a}] \
+          [rw_ans ::rdw::_and_list {a b}] \
+          [rw_ans ::rdw::_and_list {a b c}] \
+          [rw_ans ::rdw::_and_list {}]] \
+    [list {} 1 1 {} \
+          {at least one parameter must stay. To stop showing operating-point values on this device, turn the annotation off instead.} \
+          {} {a} {a and b} {a, b and c} {}]
+
+  # --- BT39  A ROW THAT DID NOT CHANGE IS NAMED, WITH ITS OWN REASON ---------
+  ## ⚠ A COUNT WOULD BE THE DEFECT THIS ITEM REMOVES, POINTED THE OTHER WAY.
+  ## "3 rows were not changed" tells the user something silently did not happen
+  ## and gives them no way to find out what - which is the shape of the report
+  ## they filed as "Delete is not affecting the current display".  The reasons
+  ## come from `rdw::_edit` itself, so there is no second wording of any of
+  ## them, and the surface is four lines, so past two the rest are NAMED
+  ## without their reasons and the user is told how to see one.
+  check {BT39 A ROW THAT DID NOT CHANGE IS NAMED WITH THE CORE'S OWN REASON, never counted: one and two rows carry their reasons in full, past two the remainder are named and the reader is told how to get the reason for one of them, the singular and the plural of that clause agree with themselves, and an empty skip list says nothing at all} \
+    [list [rw_ans ::rdw::_batch_skipped_say {One row was not changed} {a} {{because A.}}] \
+          [rw_ans ::rdw::_batch_skipped_say {2 rows were not changed} {a b} {{because A.} {because B.}}] \
+          [rw_has [rw_ans ::rdw::_batch_skipped_say {3 rows were not changed} {a b c} {{because A.} {because B.} {because C.}}] {c was not changed either; press it alone to see why.}] \
+          [rw_has [rw_ans ::rdw::_batch_skipped_say {4 rows were not changed} {a b c d} {{A.} {B.} {C.} {D.}}] {c and d were not changed either; press one of them alone to see why.}] \
+          [rw_ans ::rdw::_batch_skipped_say {nothing was removed} {} {}]] \
+    [list {One row was not changed - a: because A.} \
+          {2 rows were not changed - a: because A. b: because B.} 1 1 {}]
+
+  # --- BT40  A SELECTION THAT CROSSES DUMPS IS REFUSED, AND SAYS WHY --------
+  ## `rdw::scope_dialog` names ONE instance in its question, ONE cell on its
+  ## narrow radiobutton and ONE class on its broad one.  A press that answered
+  ## that question and then wrote for a second device would make the dialog a
+  ## false statement, so the batch is confined to one dump.  The sentence earns
+  ## the refusal by naming what is actually different: two CLASSES are two
+  ## different lists and one answer cannot cover both; two dumps of one class
+  ## are the ordinary case in a window that deliberately keeps its dumps, and
+  ## get the plainer sentence.
+  b5_lists_reset
+  b5_fixture_blocks
+  rw_ans ::rdw::set_list annotation
+  rw_ans ::rdw::render_pane
+  catch {update idletasks}
+  catch {.rdw.p.t tag add sel 1.0 end}
+  catch {update idletasks}
+  rw_ans ::rdw::set_row [lindex [bt31_lines 1] 0]
+  set BT40_EFF0 [b5_eff annotation]
+  b5_dlg {scope broad list annotation}
+  set BT40_M [b5_press delete]
+  set BT40_EFF1 [b5_eff annotation]
+  catch {.rdw.p.t tag remove sel 1.0 end}
+  check {BT40 A SELECTION THAT CROSSES DUMPS IS REFUSED BEFORE THE DIALOG AND NOTHING IS WRITTEN: the scope question names one instance, one cell and one class, so a press that answered it and then wrote for a second device would make the dialog a false statement - the sentence names how many dumps were spanned and tells the user what to do instead, the store is untouched, and the refusal is one line} \
+    [list [b5_ok1 $BT40_M {span 2 dumps}] \
+          [b5_ok1 $BT40_M {select rows from one dump at a time}] \
+          [expr {$BT40_EFF1 eq $BT40_EFF0 ? 1 : 0}] \
+          [rw_count $BT40_M {Delete:}] \
+          [rw_has [rw_ans ::rdw::_batch_spread_why {}] {span 0 dumps}]] \
+    [list 1 1 1 1 1]
+
+  # --- BT41  ONE DEFINITION OF EACH FACT, WITH THE BATCH ADDED --------------
+  ## Invariant I1 is the one this feature could most easily have broken: a
+  ## multi-row press needs the key, the base and the scope phrase that a
+  ## single-row press needs, and the cheap way to get them is to copy the
+  ## arithmetic.  Two definitions of "which entry does this press write" is the
+  ## exact failure shape `rdw::_scope_for` was written to remove (issue 1348,
+  ## measured: `owns` answered 0 where `effective` answered the flavor list, so
+  ## the reorder wrote the class entry and the pane did not move while the
+  ## status line said it had).  So: ONE target builder, called by both; the
+  ## batch calls the single-row CORE rather than reimplementing the edit; and
+  ## a batch of ONE never reaches the batch code at all, which is why every
+  ## sentence this suite golds byte-for-byte is still produced by the code that
+  ## produced it before this item.
+  check {BT41 ONE DEFINITION OF EACH FACT, WITH THE MULTI-ROW PRESS ADDED: the target - which entry is written, what is in it now, how to name the scope - is built in ONE proc that both the single-row core and the batch call, so the two cannot disagree about which entry a press reaches; the batch performs no edit of its own but calls the core once per row; the per-cell clause and the mint clause are named callees rather than literals on two arms; and rdw::button routes ONE row to the core directly, so a single-row press is byte-for-byte the press this window made before the batch existed - while the batch core reached with NO rows at all refuses with a sentence rather than an empty one, because a refusal printing as a bare label would read as the window failing silently} \
+    [list [rw_has [rw_body ::rdw::_edit] {rdw::_edit_target}] \
+          [rw_count [rw_body ::rdw::_edit] {rdw::_write_key}] \
+          [rw_has [rw_body ::rdw::_batch_edit] {rdw::_edit_target}] \
+          [rw_count [rw_body ::rdw::_batch_edit] {rdw::_write_key}] \
+          [rw_has [rw_body ::rdw::_batch_edit] {rdw::_edit }] \
+          [rw_count [rw_body ::rdw::_batch_edit] {op_param_lists::set_list}] \
+          [rw_has [rw_body ::rdw::_edit] {rdw::_percell_note}] \
+          [rw_has [rw_body ::rdw::_batch_edit] {rdw::_percell_note}] \
+          [rw_has [rw_body ::rdw::_batch_edit] {rdw::_sheet_note}] \
+          [rw_has [rw_body ::rdw::_batch_edit] {rdw::_shadow_why}] \
+          [rw_has [rw_body ::rdw::_batch_edit] {rdw::_batch_last_row_why}] \
+          [rw_has [rw_body ::rdw::button] {rdw::_batch_edit}] \
+          [rw_has [rw_body ::rdw::button] {rdw::_edit }] \
+          [rw_count [rw_body ::rdw::_edit_target] {rdw::_write_key}] \
+          [lindex [rw_ans ::rdw::_batch_edit delete {} annotation broad {}] 0] \
+          [rw_has [rw_ans ::rdw::_batch_edit delete {} annotation broad {}] {nothing to remove}] \
+          [rw_has [rw_ans ::rdw::_batch_edit add {} annotation broad {}] {nothing to add}]] \
+    [list 1 0 1 0 1 0 1 1 1 1 1 1 1 3 refused 1 1]
+
   catch {destroy .rdw.scope}
   rw_ans ::rdw::close
   catch {update idletasks}
@@ -5243,14 +5491,70 @@ if {$RE10_REN} {
   rename ::re10_real_dialog ::rdw::scope_dialog
   set RE10_REST [expr {[llength [info commands ::rdw::scope_dialog]] ? 1 : 0}]
 }
-check {RE10 Delete and Add leave the pane and the store agreeing about ORDER, which is the property Up and Down had just taught the user to rely on: a broad Delete then an Add of the same parameter puts the store back in a new order and the pane follows it, while the pane's row SET is untouched from the first press to the last - a re-slot is a permutation over the rows this run published, so it adds no row the simulator did not report and drops none that it did} \
+## ⚠ AND THE ROW SET SURVIVING IS THE *PERMUTATION* PATH, SAID OUT LOUD.
+## The user has since ruled that a list edit must reach the blocks already in
+## the pane -- "Delete is not affecting the current display.  Only future items
+## sent to the RDW are conforming to the new list" -- so a block that CAN be
+## rebuilt now loses the deleted row, and the "row SET is untouched" leg above
+## would be false there.  It is true HERE because this fixture's blocks are
+## hand-pushed with no raw loaded, so `rdw::_rebuild_block` refuses every one
+## of them and `rdw::_reorder_shown` is what runs.
+##
+## ⚠ THAT USED TO BE AN ACCIDENT AND IS NOW A LEG.  A row that is green because
+## of a property of its fixture that nobody wrote down is a row that will go
+## green again for the wrong reason; `$RE10_RB` asks `rdw::_rebuild_class` what
+## it actually did and golds `0 rebuilt`, so if a future change makes the
+## rebuild reach this fixture, the leg reds and the reader is sent here rather
+## than left with a set-preserved assertion that has quietly changed meaning.
+set RE10_RB [rw_ans ::rdw::_rebuild_class re2cls annotation {}]
+check {RE10 Delete and Add leave the pane and the store agreeing about ORDER, which is the property Up and Down had just taught the user to rely on: a broad Delete then an Add of the same parameter puts the store back in a new order and the pane follows it, while the pane's row SET is untouched from the first press to the last - because with no raw loaded NO block here can be rebuilt, which is asserted rather than assumed, so what ran is the permutation, and a permutation over the rows this run published adds no row the simulator did not report and drops none that it did} \
   [list $RE10_REN $RE10_REST \
         [re_ok1 $RE10_MU gds] $RE10_AU \
         [re_ok1 $RE10_MD gds] $RE10_PD \
         [re_ok1 $RE10_MA gds] $RE10_PA $RE10_LA \
         [expr {$RE10_PA eq $RE10_LA ? 1 : 0}] \
-        [expr {$RE10_SET1 eq $RE10_SET0 ? 1 : 0}] [llength $RE10_PA]] \
-  [list 1 1 1 1 1 {ids gds gm} 1 {ids gm gds} {ids gm gds} 1 1 3]
+        [expr {$RE10_SET1 eq $RE10_SET0 ? 1 : 0}] [llength $RE10_PA] \
+        [lindex $RE10_RB 0] [expr {[lindex $RE10_RB 1] > 0 ? 1 : 0}]] \
+  [list 1 1 1 1 1 {ids gds gm} 1 {ids gm gds} {ids gm gds} 1 1 3 0 1]
+
+# --- RE12  A REBUILD NEVER TRADES REAL NUMBERS FOR A REFUSAL ----------------
+## THE SHARPEST DEFECT OF THE ITEM THAT BUILT THE REBUILD, caught by RE10 and
+## RE11 going red and worth a row of its own so it cannot come back.
+##
+## The user's ruling is that a list edit reaches the blocks already in the
+## pane, and the honest way to do that is to build the block AGAIN through
+## `rdw::_make_block` -- the seam's one builder, so a rebuilt block and a fresh
+## dump come out identical (row NW9).  But `_make_block` is entitled to answer
+## with a REFUSAL block: with no simulator backend, no reader hook, or no raw
+## loaded, "there is nothing to ask for this device" is the correct dump.  The
+## first cut installed that answer, so a Delete pressed with no raw loaded
+## wiped every number off a block that had them and replaced it with a
+## sentence.  MEASURED: rows RE10 and RE11 answered `{}` where parameters were
+## expected.  A feature whose whole promise is "the pane follows the store" had
+## started deleting the pane.
+##
+## THE GUARD IS A COUNT, NOT A SHAPE: a rebuild that would take a block from
+## SOME parameter rows to NONE is refused, the old block stands, and the block
+## is counted as STUCK so `rdw::_stuck_note` says so on screen.  A block that
+## legitimately has no parameter rows to begin with is not protected by this
+## and does not need to be -- it has nothing to lose.
+set RE12_P0 [re_params 2]
+set RE12_P1 [re_params 1]
+set RE12_BLK [lindex $::rdw::blocks 2]
+set RE12_ONE [rw_ans ::rdw::_rebuild_block 2]
+set RE12_CLS [rw_ans ::rdw::_rebuild_class re2cls annotation {}]
+check {RE12 A REBUILD NEVER TRADES REAL NUMBERS FOR A REFUSAL: with no raw loaded the seam's one builder answers a well-formed REFUSAL block carrying no parameter rows, which is the correct answer to a dump and a catastrophic answer to a rebuild - so a rebuild that would take a block from some parameter rows to none is refused, every block keeps every number it had, the block is byte-identical rather than merely the same length, and it is COUNTED as stuck so the window can say a dump did not follow instead of silently showing one that did not} \
+  [list $RE12_ONE \
+        [expr {[lindex $::rdw::blocks 2] eq $RE12_BLK ? 1 : 0}] \
+        [expr {[re_params 2] eq $RE12_P0 ? 1 : 0}] \
+        [expr {[re_params 1] eq $RE12_P1 ? 1 : 0}] \
+        [expr {[llength $RE12_P0] > 0 ? 1 : 0}] \
+        [lindex $RE12_CLS 0] [expr {[lindex $RE12_CLS 1] > 0 ? 1 : 0}] \
+        [expr {[rw_ans ::rdw::_stuck_note 0] eq {} ? 1 : 0}] \
+        [rw_has [rw_ans ::rdw::_stuck_note 1] {One older dump}] \
+        [rw_has [rw_ans ::rdw::_stuck_note 4] {4 older dumps}] \
+        [rw_has [rw_body ::rdw::_rebuild_block] {_param_count}]] \
+  [list 0 1 1 1 1 0 1 1 1 1 1]
 
 # --- RE11  A BROAD WRITE DOES NOT RE-SLOT A BLOCK IT DID NOT REACH ----------
 ## The other side of issue 1348, and it is `rdw::_shadow_why`'s own sentence
@@ -6114,7 +6418,18 @@ check {NW8 RULINGS DD-4 AND DD-6 the display decision stays out of the deck: a r
 ## the keys would select an identity that never reached the renderer, which IS
 ## issue 1300.  A ctx that already names a list still wins, so every hand-built
 ## context in this file is unaffected.
-set NW9_BODY [rw_body ::rdw::dump_devpath]
+## ⚠ THE DOOR IS NOW A DOOR PLUS A BUILDER, AND THE ROW FOLLOWS THE SPLIT.
+## `rdw::dump_devpath` used to hold the amendment itself; a block that had to
+## be REBUILT in place (the user's ruling: an edited list reaches the blocks
+## already on the screen, not only the next dump) needed the identical route
+## without the `push`, so the body moved down into `rdw::_make_block` and the
+## door became `push [_make_block ...]`.  The contract this row exists for is
+## unchanged and is now asserted in three parts: the BUILDER carries the
+## amendment, the DOOR reaches the builder, and the door does NOT render an
+## answer of its own -- which is what stops a second builder growing back, the
+## defect shape of issues 1288, 1300 and 1355.
+set NW9_BODY [rw_body ::rdw::_make_block]
+set NW9_DOOR [rw_body ::rdw::dump_devpath]
 set NW9_KEEP $::rdw::listkind
 catch {rw_ans ::rdw::set_list summary}
 set NW9_S [rw_ans ::rdw::_list_ctx [rw_ctx {M1:/} {@m.M1} op M1]]
@@ -6128,12 +6443,14 @@ proc nw9 {c k} {
   if {![dict exists $c $k]} { return NOKEY }
   return [dict get $c $k]
 }
-check {NW9 THE SEAM'S ONLY DOOR AMENDS THE CTX WITH THE LIVE LIST IDENTITY AND THE DEVICE'S CLASS, the way it already amends `sim` and `simtype`: a key press narrows without any caller knowing how, the identity really follows rdw::set_list, a ctx that already names a list still wins, and an instance the editor cannot resolve gets NO class rather than a guessed one} \
+check {NW9 THE SEAM'S ONE BUILDER AMENDS THE CTX WITH THE LIVE LIST IDENTITY AND THE DEVICE'S CLASS, the way it already amends `sim` and `simtype` - and the door still reaches that builder rather than rendering an answer of its own, so a rebuilt block and a new dump take the identical route: a key press narrows without any caller knowing how, the identity really follows rdw::set_list, a ctx that already names a list still wins, and an instance the editor cannot resolve gets NO class rather than a guessed one} \
   [list [rw_bad $NW9_BODY] [rw_has $NW9_BODY {rdw::_list_ctx}] \
+        [rw_bad $NW9_DOOR] [rw_has $NW9_DOOR {rdw::_make_block}] \
+        [rw_has $NW9_DOOR {rdw::format_answer}] \
         [nw9 $NW9_S list] [nw9 $NW9_A list] [nw9 $NW9_W list] \
         [nw9 $NW9_A class] [file tail [nw9 $NW9_A cellname]] \
         [nw9 $NW9_N list] [nw9 $NW9_N class]] \
-  [list 0 1 summary annotation all nwcls nw.sym annotation NOKEY]
+  [list 0 1 0 1 0 summary annotation all nwcls nw.sym annotation NOKEY]
 
 check {NW10 THE LIST NAME TRAVELS WITH THE PASTE: the narrowing sentence is a line of the BLOCK, so rdw::block_text hands it to the clipboard and a dump pasted into a design review says which list it came from and that it is not the whole run - which a window title or a chrome label above the pane could not do - and it is a `note` line, not a value row} \
   [list [rw_has [rw_ans ::rdw::block_text [rw_block $NW_ANS [nw_ctx annotation]]] $NW_NARROW1] \
@@ -6519,14 +6836,24 @@ check {LX10 THE CHROME DOES NOT TRAVEL WITH THE PASTE, which is row NW10's other
         [rw_has [rw_ans ::rdw::block_text [rw_block $NW_ANS [nw_ctx annotation]]] {Results Display Window}]] \
   [list 1 0 0 0 0]
 
-check {LX11 ISSUE 1356: SELECTING LINES IS NOT SELECTING THEM FOR EDITING, and the window says so exactly when it matters - the note is one sentence, it fires only on a selection covering two lines or more, and with no Tk at all it is silent, so the --nogui arm and a window with no selection are never told about a gesture nobody made} \
-  [list [rw_ans ::rdw::_selection_note] \
+## ⚠ THE CLAUSE IS NOW PER BUTTON, WHICH IS THE USER'S RULING ARRIVING HERE.
+## It used to say "the buttons act on the shaded row alone" of all four; Add
+## and Delete now act on the selected rows, so that wording would be a false
+## statement on a screen the user is reading -- the exact defect the clause was
+## written to remove, pointed the other way.  Up and Down still cannot take a
+## batch (no dialog, and N rows each moving up one has no meaning independent
+## of the order they are asked in), so the clause survives narrowed to them,
+## and `rdw::_selection_note` is handed the button id to say so.
+check {LX11 SELECTING LINES IS NOT SELECTING THEM FOR *Up* AND *Down*, and the window says so exactly when it matters - the note is one sentence, it fires only on a selection covering two lines or more AND only for the two buttons that still act on the shaded row alone, and with no Tk at all it is silent, so the --nogui arm and a window with no selection are never told about a gesture nobody made} \
+  [list [rw_ans ::rdw::_selection_note up] \
+        [rw_ans ::rdw::_selection_note delete] \
         [rw_ans ::rdw::_selection_lines] \
         [expr {[llength [info commands ::rdw::_selection_note]] ? 1 : 0}] \
         [expr {[llength [info commands ::rdw::_selection_lines]] ? 1 : 0}] \
         [rw_has [rw_body ::rdw::_selection_note] {_selection_lines}] \
-        [rw_has [rw_body ::rdw::button] {_selection_note}]] \
-  [list {} 0 1 1 1 1]
+        [rw_has [rw_body ::rdw::button] {_selection_note}] \
+        [rw_has [rw_body ::rdw::button] {_selection_rows}]] \
+  [list {} {} 0 1 1 1 1 1]
 
 ## ---------------------------------------------------------------------------
 ## LX12..LX16 — THE THREE CHROME SENTENCES THAT WERE MEASURED FALSE, AND THE
@@ -6657,17 +6984,19 @@ check {LX18 THE KEYS ARE LOOKED FOR WHERE THEY ACTUALLY ARE: issue 1358 put the 
         [rw_has [rw_body ::rdw::_digit] {rdw::key}]] \
   [list 1 1 1 1 1]
 
-check {LX15 THE SELECTION NOTE'S BOUNDARY IS AT EXACTLY ONE LINE, and it is driven at the boundary rather than around it: a one-line drag is the select-a-value-to-copy-it gesture this window exists for and it stays silent, two lines is the gesture the sentence answers and it fires - an off-by-one here passed both suites while lecturing every ordinary copy} \
-  [list [rw_ans ::rdw::_selection_note_for 0] \
-        [rw_ans ::rdw::_selection_note_for 1] \
-        [rw_ans ::rdw::_selection_note_for 2] \
-        [rw_ans ::rdw::_selection_note_for 16] \
+set LX15_NOTE {Selecting lines does not choose them for Up and Down - those act on the shaded row alone.}
+check {LX15 THE SELECTION NOTE'S TWO BOUNDARIES, EACH DRIVEN AT ITSELF: the LINE boundary is at exactly one - a one-line drag is the select-a-value-to-copy-it gesture this window exists for and it stays silent, two lines is the gesture the sentence answers and it fires, and an off-by-one here passed both suites while lecturing every ordinary copy - and the BUTTON boundary is Up and Down, because Add and Delete now act on the selected rows and a clause telling the user otherwise would be false on a screen they are reading} \
+  [list [rw_ans ::rdw::_selection_note_for 0 up] \
+        [rw_ans ::rdw::_selection_note_for 1 up] \
+        [rw_ans ::rdw::_selection_note_for 2 up] \
+        [rw_ans ::rdw::_selection_note_for 16 up] \
+        [rw_ans ::rdw::_selection_note_for 16 down] \
+        [rw_ans ::rdw::_selection_note_for 16 delete] \
+        [rw_ans ::rdw::_selection_note_for 16 add] \
+        [rw_ans ::rdw::_selection_note_for 16 save] \
         [rw_has [rw_body ::rdw::_selection_note] {_selection_note_for}] \
         [rw_has [rw_body ::rdw::_selection_note] {_selection_lines}]] \
-  [list {} {} \
-        {Selecting lines does not choose them for editing - the buttons act on the shaded row alone.} \
-        {Selecting lines does not choose them for editing - the buttons act on the shaded row alone.} \
-        1 1]
+  [list {} {} $LX15_NOTE $LX15_NOTE $LX15_NOTE {} {} {} 1 1]
 
 check {LX16 ONE SETTER FOR THE LIST STATE AND NO SECOND COPY IN `build`: the chrome and the title are set by rdw::apply_list_state alone, which build calls on its way out, so build's own reads of `listkind` - dead code whose comment named LX7/LX8's close-and-reopen leg as their fence, a leg that passes with them gutted - are gone rather than left standing as a fence that does not fence} \
   [list [rw_count [rw_body ::rdw::build] {_title}] \
@@ -6999,13 +7328,22 @@ if {$live_tk} {
   ## design any more".  That is a true sentence about the wrong thing, and a
   ## row that measured it would have been green about a refusal instead of the
   ## verdict this section exists for.
-  set SL5_PR {} ; set SL5_N 0
+  ## ⚠ AND FROM ONE BLOCK, WHICH IS THE USER'S RULING ARRIVING HERE.  A
+  ## multi-row press is confined to a single dump -- the scope dialog names one
+  ## instance, one cell and one class, and a question that named one device
+  ## while writing for another would be a false statement -- so a selection
+  ## crossing a block boundary now produces the SPREAD refusal rather than the
+  ## verdict this row exists to measure.  Take the first block whose subject
+  ## resolves and stay inside it.
+  set SL5_PR {} ; set SL5_N 0 ; set SL5_BI {}
   foreach _e [b5_flat] {
     incr SL5_N
     if {[rw_ans ::rdw::_row_param $_e] eq {}} continue
     set _loc [rw_ans ::rdw::_locate $SL5_N]
     if {[sl_len $_loc] != 2} continue
     if {[rw_ans ::rdw::_subject [lindex $_loc 0]] eq {}} continue
+    if {$SL5_BI eq {}} { set SL5_BI [lindex $_loc 0] }
+    if {[lindex $_loc 0] ne $SL5_BI} continue
     lappend SL5_PR $SL5_N
   }
   catch {.rdw.p.t tag remove sel 1.0 end}
@@ -7023,12 +7361,13 @@ if {$live_tk} {
   if {$SL5_DESC0 ne {} && ![string match {NOPROC*} $SL5_DESC0]} {
     catch {op_annot::register $SL5_TY $SL5_DESC0}
   }
-  check {SL5 ISSUE 1356'S CLAUSE ARRIVES WHERE THE USER CAN READ IT: the user's own gesture - a selection covering every parameter row, then one Delete - produces the verdict that carries the answer, that verdict is longer than one line of this window, and every character of it is on screen at the window's default size instead of the last clause being parked past the right-hand edge with no scrollbar and no marker} \
+  check {SL5 THE BATCH VERDICT ARRIVES WHERE THE USER CAN READ IT: the user's own gesture - a selection covering every parameter row of one dump, then one Delete - produces the answer ruling DD-10 gives a batch, that answer is longer than one line of this window, and every character of it is on screen at the window's default size instead of the last clause being parked past the right-hand edge with no scrollbar and no marker} \
     [list [expr {$SL5_SEL >= 2 ? 1 : 0}] \
-          [b5_ok1 $SL5_MSG {the buttons act on the shaded row alone}] \
+          [b5_ok1 $SL5_MSG {would empty the annotation list}] \
+          [b5_ok1 $SL5_MSG {at least one parameter must stay}] \
           [expr {[string length $SL5_MSG] > 120 ? 1 : 0}] \
           $SL5_PROBE] \
-    [list 1 1 1 {1 1 1 1}]
+    [list 1 1 1 1 {1 1 1 1}]
 
   # --- SL6  PAST THE CAP THE SENTENCE IS HELD, DRAWN AND REACHABLE ----------
   ## ⚠ RE-SPELLED BY ISSUE 1365.  This row used to assert that past the cap the
@@ -7289,11 +7628,21 @@ if {$live_tk} {
   ## A NARROW delete first, so a device-flavor entry exists; then a BROAD one,
   ## which is the gesture `rdw::_shadow_why` reports on.
   set SL11_E1 [rw_ans ::rdw::_edit delete $SL11_SUBJ annotation narrow gds]
-  set SL11_E2 [rw_ans ::rdw::_edit delete $SL11_SUBJ annotation broad ids]
+  ## ⚠ THE SECOND PRESS IS A BATCH NOW, AND THAT IS THE POINT.  This row exists
+  ## to hold the surface against the LONGEST verdict the button column can
+  ## compose, and since the user's ruling that is a multi-row press: the batch
+  ## sentence, the sheet note ruling DD-16 appends, the per-row reason for
+  ## every row that did NOT change, and `rdw::_shadow_why`'s broad-under-flavor
+  ## clause, in one string.  The old composition appended
+  ## `rdw::_selection_note_for`'s clause instead, which Delete no longer
+  ## carries -- Add and Delete act on the selected rows now, so a clause saying
+  ## they do not would be a false statement on the very surface this row is
+  ## measuring.
+  set SL11_E2 [rw_ans ::rdw::_batch_edit delete $SL11_SUBJ annotation broad \
+                    {ids sl11nosuchparam}]
   set SL11_V {}
   if {[llength $SL11_E2] == 2 && [lindex $SL11_E2 0] eq {ok}} {
-    set SL11_V [rw_ans ::rdw::_bstatus "Delete: [lindex $SL11_E2 1]" \
-                        [rw_ans ::rdw::_selection_note_for 6]]
+    set SL11_V [rw_ans ::rdw::_bstatus "Delete: [lindex $SL11_E2 1]" {}]
   }
   catch {update idletasks} ; catch {update}
   set SL11_MSG [expr {[info exists ::rdw::statusmsg] ? $::rdw::statusmsg : {NOVAR}}]
@@ -7317,12 +7666,13 @@ if {$live_tk} {
   if {$SL11_DESC0 ne {} && ![string match {NOPROC*} $SL11_DESC0]} {
     catch {op_annot::register $SL11_TY $SL11_DESC0}
   }
-  check {SL11 A VERDICT COMPOSED THE WAY THE BUTTON COLUMN COMPOSES ONE IS READ AND COPIED WHOLE: rdw::_edit's own success sentence with the sheet note and the shadow clause it carries, plus the selection clause rdw::_bstatus appends, in real prose with real punctuation and a real filesystem path - it runs past the cap, the surface still holds every character of it, the clipboard gets every character of it, and its last character can be brought on screen} \
+  check {SL11 A MULTI-ROW VERDICT COMPOSED THE WAY THE BUTTON COLUMN COMPOSES ONE IS READ AND COPIED WHOLE: rdw::_batch_edit's own success sentence with the sheet note and the shadow clause it carries, plus the per-row reason for the row that did not change, in real prose with real punctuation and a real filesystem path - it runs past the cap, the surface still holds every character of it, the clipboard gets every character of it, and its last character can be brought on screen} \
     [list [expr {[llength $SL11_E1] == 2 ? [lindex $SL11_E1 0] : $SL11_E1}] \
           [expr {[llength $SL11_E2] == 2 ? [lindex $SL11_E2 0] : $SL11_E2}] \
           [rw_has $SL11_MSG {which is not the sheet now open}] \
           [rw_has $SL11_MSG {precedence is file order}] \
-          [rw_has $SL11_MSG {the buttons act on the shaded row alone}] \
+          [rw_has $SL11_MSG {sl11nosuchparam}] \
+          [rw_has $SL11_MSG {One row was not changed}] \
           [rw_has $SL11_MSG $B5_SCH] \
           [expr {[rw_count $SL11_MSG {. }] >= 3 ? 1 : 0}] \
           [expr {[string length $SL11_MSG] > 500 ? 1 : 0}] \
@@ -7330,7 +7680,7 @@ if {$live_tk} {
           [expr {$SL11_SHOWN eq $SL11_MSG ? 1 : 0}] \
           [expr {$SL11_CLIP eq $SL11_MSG ? 1 : 0}] \
           [expr {[sl_len $SL11_BB] == 4 ? 1 : 0}]] \
-    [list ok ok 1 1 1 1 1 1 1 1 1 1]
+    [list ok ok 1 1 1 1 1 1 1 1 1 1 1]
   b5_lists_reset
 
   sl_set {}
@@ -7611,14 +7961,30 @@ set FZ4_CH   [rw_ans ::rdw::_pane_chars]
 ## options is a READ (rdw::_font derives the private font from it); this needle
 ## catches only a WRITE.
 set FZ4_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
-check {FZ4 THE SETTER IS ORDER-INDEPENDENT, RAISES NOTHING WITH NO WINDOW, AND THE SHARED FONT IS NEVER WRITTEN: set_font_size records the model with the window closed and refuses out-of-band and non-integer sizes without moving it, _apply_font answers 0 instead of raising, an unchosen size leaves the pane at the 96x26 the window shipped with, and rdw.tcl sets an option on TkFixedFont NOWHERE - which is the whole difference between a window-local control and a global one, since every bare text widget in the tree defaults to that font} \
+## ⚠ THE TOOLTIP LEGS MOVED 1 -> 3 WITH ISSUE 1384, AND THEY ARE NOW NAMED.
+## They used to be a bare `rw_count ::balloon` == 1, which read as "this file
+## calls the tree's one tooltip mechanism once" and would have been satisfied by
+## ANY three calls once the count was bumped.  rdw.tcl now has three, and each
+## has a different job, so the row counts them by name: `::balloon` once (the
+## `aA` button's fixed tip, issue 1368), `::balloon_off` and `::balloon_clipped`
+## once each (the status-bar hint, whose string CHANGES and whose widget belongs
+## to C the rest of the time).  A fourth mechanism, or a private `rdw::balloon`
+## / `rdw::tooltip`, still reds.
+set FZ4_TIPS [list [rw_count $FZ4_F {::balloon}] \
+                   [rw_count $FZ4_F {::balloon }] \
+                   [rw_count $FZ4_F {::balloon_off}] \
+                   [rw_count $FZ4_F {::balloon_clipped}] \
+                   [rw_count $FZ4_F {proc rdw::balloon}] \
+                   [rw_count $FZ4_F {proc rdw::tooltip}]]
+set FZ4_CMDS [list [expr {[llength [info commands ::balloon]] ? 1 : 0}] \
+                   [expr {[llength [info commands ::balloon_off]] ? 1 : 0}] \
+                   [expr {[llength [info commands ::balloon_clipped]] ? 1 : 0}] \
+                   [expr {[llength [info commands ::label_clipped]] ? 1 : 0}]]
+check {FZ4 THE SETTER IS ORDER-INDEPENDENT, RAISES NOTHING WITH NO WINDOW, THE SHARED FONT IS NEVER WRITTEN, AND EVERY TOOLTIP IN THIS FILE IS THE TREE'S OWN: set_font_size records the model with the window closed and refuses out-of-band and non-integer sizes without moving it, _apply_font answers 0 instead of raising, an unchosen size leaves the pane at the 96x26 the window shipped with, rdw.tcl sets an option on TkFixedFont NOWHERE - the whole difference between a window-local control and a global one, since every bare text widget in the tree defaults to that font - and its three tooltip calls are `::balloon` once for the aA button and `::balloon_off` / `::balloon_clipped` once each for the status-bar hint, with no private rdw::balloon or rdw::tooltip anywhere and all four shared procs really defined} \
   [list $FZ4_SET $FZ4_VAR $FZ4_EFF $FZ4_REF $FZ4_KEPT $FZ4_NOOP $FZ4_CH \
         [expr {$FZ4_F eq {NOFILE} ? {NOFILE} : [rw_count $FZ4_F {font configure TkFixedFont -}]}] \
-        [rw_count $FZ4_F {::balloon}] \
-        [rw_count $FZ4_F {proc rdw::balloon}] \
-        [rw_count $FZ4_F {proc rdw::tooltip}] \
-        [expr {[llength [info commands ::balloon]] ? 1 : 0}]] \
-  [list 1 14 14 {0 0 0} 14 0 {96 26} 0 1 0 0 1]
+        $FZ4_TIPS $FZ4_CMDS] \
+  [list 1 14 14 {0 0 0} 14 0 {96 26} 0 {3 1 1 1 0 0} {1 1 1 1}]
 
 ## ---------------------------------------------------------------------------
 ## FZ12 — THE CONTROL THE USER NAMED, AND WHERE IT IS NOT.
@@ -7651,7 +8017,7 @@ foreach _p $FZ12_PH {
   incr FZ12_SAID
   if {[rw_has $_p {aA}]} { set FZ12_AA 1 }
 }
-check {FZ12 THE BUTTON CARRIES THE LABEL THE USER ASKED FOR, SITS AT THE FOOT OF THE BUTTON COLUMN, AND IS NOT A LIST ACTION: `rdw::build` creates exactly one `.rdw.b.fontsize` with `-text {aA}` and packs it `-side bottom`, its Control arm names `rdw::_focus_click` because its own `break` stops the toplevel bindtag that would otherwise have run it, and `fontsize` appears NOWHERE in rdw::_buttons - so it is never greyed, never refuses on a list identity and never enters the chrome sentence that says which buttons act on this list} \
+check {FZ12 THE BUTTON CARRIES THE LABEL THE USER ASKED FOR, SITS BELOW THE LIST ACTIONS IN THE BUTTON COLUMN (issue 1382 put Close below it again, so `-side bottom` and not `the foot` is what this row means), AND IS NOT A LIST ACTION: `rdw::build` creates exactly one `.rdw.b.fontsize` with `-text {aA}` and packs it `-side bottom`, its Control arm names `rdw::_focus_click` because its own `break` stops the toplevel bindtag that would otherwise have run it, and `fontsize` appears NOWHERE in rdw::_buttons - so it is never greyed, never refuses on a list identity and never enters the chrome sentence that says which buttons act on this list} \
   [list [rw_count $FZ12_B {fontsize}] \
         $FZ12_AA $FZ12_SAID \
         [rw_count $FZ12_BLD {.rdw.b.fontsize}] \
@@ -8113,16 +8479,39 @@ if {$live_tk} {
     lassign $r bw bh bx by px py rx ry
     return [expr {$by + $bh <= $ry ? 1 : 0}]
   }
+  ## ⚠ THE TWO VERTICAL CASES ARE FORCED ON THE BUTTON, NOT ON THE WINDOW —
+  ## ISSUE 1382.  Both used to park the TOPLEVEL's bottom edge on the screen's,
+  ## which forced the bottom clamp only while `aA` happened to be the LOWEST
+  ## widget in the column.  Item A packed Close below it, `aA` rose by the
+  ## height of a button and a gap, the tip stopped needing to flip at all, and
+  ## FZ17 went RED with `balloon_show` untouched — a fixture leaning on a fact
+  ## it never stated, which is the defect this suite's own preamble is about.
+  ## Park the BUTTON's own bottom edge on the screen's instead, in two steps
+  ## because `wm geometry` addresses the window FRAME while `winfo rooty` reads
+  ## the client area: place, measure the error, correct it.  Whatever the column
+  ## is made of, the tip then really has nowhere below it to go.
+  proc fz_park_bottom {} {
+    set w .rdw.b.fontsize
+    set y [expr {[winfo screenheight .] - [rw_w winfo height .rdw]}]
+    rw_w wm geometry .rdw +600+$y
+    rw_w update idletasks ; rw_w update
+    if {![winfo exists $w]} { return $y }
+    set err [expr {[winfo screenheight .]
+                   - ([rw_w winfo rooty $w] + [rw_w winfo height $w])}]
+    rw_w wm geometry .rdw +600+[expr {$y + $err}]
+    rw_w update idletasks ; rw_w update
+    return [expr {$y + $err}]
+  }
   set FZ_CW [rw_w font measure fixed W]
   set FZ_LH [rw_w font metrics fixed -linespace]
   if {![string is integer -strict $FZ_CW] || $FZ_CW < 1} { set FZ_CW 1 }
   if {![string is integer -strict $FZ_LH] || $FZ_LH < 1} { set FZ_LH 1 }
   set FZ_WIDE [string repeat W [expr {[winfo screenwidth .] / $FZ_CW + 20}]]
   set FZ_TALL [join [lrepeat [expr {[winfo screenheight .] / $FZ_LH + 20}] X] "\n"]
-  ## The window at the foot of the screen: a tip hung BELOW the button would
-  ## run off the bottom, so it flips above it.
-  rw_w wm geometry .rdw +600+[expr {[winfo screenheight .] - [rw_w winfo height .rdw]}]
-  rw_w update idletasks ; rw_w update
+  ## The BUTTON at the foot of the screen: a tip hung BELOW it would run off
+  ## the bottom, so it flips above it.  See fz_park_bottom for why it is the
+  ## button's edge and no longer the window's.
+  fz_park_bottom
   set FZ17_FLIP [fz_tip $FZ_TIP 1]
   set FZ17_WIDE [fz_tip $FZ_WIDE 1]
   set FZ17_TALL [fz_tip $FZ_TALL 1]
@@ -8150,8 +8539,7 @@ if {$live_tk} {
   rw_w wm geometry .rdw +0+0
   rw_w update idletasks ; rw_w update
   set FZ18_L0 [fz_tip $FZ_TIP 0]
-  rw_w wm geometry .rdw +600+[expr {[winfo screenheight .] - [rw_w winfo height .rdw]}]
-  rw_w update idletasks ; rw_w update
+  fz_park_bottom
   set FZ18_B0 [fz_tip $FZ_TIP 0]
   ## A tip that fits is anchored 20 px right of the pointer exactly as it
   ## always was — asserted against the MEASURED pointer, not against a number.
@@ -8180,6 +8568,325 @@ if {$FZ_SAVE eq {NOVAR}} { catch {unset ::rdw_font_size} } \
 else { set ::rdw_font_size $FZ_SAVE }
 if {$live_tk} { foreach _f {pane hdr} { rw_ans ::rdw::_font $_f } }
 rw_ans ::rdw::status $FZ_MSG0
+
+# ============================================================================
+# SECTION CB — ISSUE 1382: THE COLUMN'S OWN CLOSE, A SECOND DOOR ON ONE RULE
+# ============================================================================
+# The user, 2026-09-07: "In the RDW, add a Close button to dismiss the window".
+#
+# ⚠ RULING DD-12 HAD ALREADY PROMISED IT AND THE COLUMN DID NOT CARRY IT. That
+# ruling's stated cost, verbatim: "a user who expects Escape to dismiss the
+# window will press it and see nothing happen. The window has its own close
+# control, and the dumps are worth more than the keystroke." The only close
+# control the window had was the window MANAGER's X, which is chrome and not
+# part of this window at all — so the consolation offered for a keystroke that
+# deliberately does nothing named a control this file had never built.
+#
+# ⚠ DD-12 IS NOT OVERTURNED, AND CB2's LAST LEG IS WHY THAT IS SAYABLE. Escape
+# still ends a running pick and does nothing otherwise; the new button is a
+# door on `rdw::close`, and the Escape binding must never become a third one.
+# `rdw::close` appears in `rdw::build` EXACTLY TWICE — the WM protocol and the
+# button's own -command — so a `bind .rdw <Key-Escape>` that learned to close
+# reds this row by arithmetic, with no golden sentence to reword.
+#
+# ⚠ THE ROW A FUTURE "CLEANUP" WOULD BREAK IS CB3, AND CB6 IS ITS WITNESS.
+# `rdw::close` is a WITHDRAW: `::rdw::blocks` is namespace state and the proc
+# touches it not at all, which is what lets ruling DD-16 edit a block an hour
+# later on a different sheet. A reader who reads `close` as `discard` and adds
+# one `set blocks {}` destroys the artifact the whole feature exists to
+# produce, and NOTHING else in this file would notice. CB3 fences the source on
+# both arms; CB6 presses the real widget and reopens the real window.
+#
+# ⚠ AND `rdw::button close` DOES NOT EXIST, BY DECISION (issue 1382). The
+# command path is `rdw::close` — a public name that predates the button and
+# that the WM protocol already uses — and `rdw::button` is the door for the
+# five controls that need the greying table and a status line. CB4 asserts the
+# refusal, that it changes nothing, and that its sentence no longer DENIES a
+# button the user is looking at: it had done so for `aA` since issue 1368
+# landed, and Close is the second one, which is what made it worth correcting.
+#
+# ⚠ THE GREYING IS ASSERTED WHERE IT IS DECIDED, WHICH IS NOT THE TABLE.
+# `rdw::button_state`'s default arm already answers `normal` for every id
+# nobody asks about, so a row reading `button_state close annotation` would
+# gold a fall-through and fence NOTHING. What actually keeps the button enabled
+# on all three identities is that `rdw::apply_list_state` configures a -state
+# only for what `rdw::_buttons` names, and `close` is not in that table — so
+# CB1 golds the loop and CB5 reads the three live widget states.
+set CB_MSG0 [expr {[info exists ::rdw::statusmsg] ? $::rdw::statusmsg : {}}]
+set CB_BLK0 [expr {[info exists ::rdw::blocks] ? $::rdw::blocks : {}}]
+set CB_BLD  [rw_body ::rdw::build]
+set CB_ALS  [rw_body ::rdw::apply_list_state]
+set CB_CLB  [rw_body ::rdw::close]
+set CB_SRC  [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
+
+## The three real list identities, out of `rdw::_digit_map` and not spelt here.
+set CB_PH {}
+foreach {_d _k} [rw_ans ::rdw::_digit_map] {
+  if {$_k eq {refresh}} continue
+  lappend CB_PH [rw_ans ::rdw::_active_phrase $_k]
+}
+set CB1_SAID 0 ; set CB1_INPHRASE 0
+foreach _p $CB_PH {
+  if {[rw_bad $_p] || $_p eq {}} continue
+  incr CB1_SAID
+  if {[rw_has $_p {Close}]} { set CB1_INPHRASE 1 }
+}
+## `-side bottom` fills the cavity from the bottom UP, so the widget packed
+## FIRST on that side is the LOWEST on screen. Asserted here as an order inside
+## the builder, so the --nogui arm holds it too; CB5 reads the pixels.
+set CB1_ORD [expr {[string first {pack .rdw.b.close -side bottom} $CB_BLD] >= 0
+                   && [string first {pack .rdw.b.close -side bottom} $CB_BLD]
+                    < [string first {pack .rdw.b.fontsize -side bottom} $CB_BLD] ? 1 : 0}]
+check {CB1 THE COLUMN HAS A CLOSE AND IT IS NOT A LIST ACTION: `rdw::build` creates exactly one `.rdw.b.close` labelled Close, commands it with the bare `rdw::close` and packs it `-side bottom` BEFORE `aA` - which is what puts it lowest, because that side fills bottom-up - while `close` appears nowhere in rdw::_buttons, so it never enters the chrome sentence that says which buttons act on this list; and the greying loop now walks that ONE table instead of five literals, which is what leaves this button `normal` on every identity by construction rather than by a button_state row no caller would read} \
+  [list [rw_count [rw_ans ::rdw::_buttons] {close}] \
+        $CB1_INPHRASE $CB1_SAID \
+        [rw_count $CB_BLD {.rdw.b.close}] \
+        [rw_count $CB_BLD {-text {Close}}] \
+        [rw_count $CB_BLD {-command rdw::close}] \
+        [rw_count $CB_BLD {pack .rdw.b.close -side bottom}] \
+        $CB1_ORD \
+        [rw_count $CB_ALS {rdw::_buttons}] \
+        [rw_count $CB_ALS {up down delete add save}] \
+        [rw_count $CB_ALS {.rdw.b.close}]] \
+  [list 0 0 3 2 1 1 1 1 1 0 0]
+
+check {CB2 ONE RULE, TWO DOORS, AND ESCAPE IS NOT THE THIRD: the window manager's WM_DELETE_WINDOW protocol and the button's -command name the SAME proc, `rdw::close` is named exactly twice in the whole builder so nothing else in it can be a teardown, `catch {destroy .rdw}` occurs once in the entire file and it is inside rdw::close, and the toplevel's <Key-Escape> still runs rdw::pick_end and breaks - which is ruling DD-12's asymmetry, the thing a Close button most invites a reader to "tidy away"} \
+  [list [rw_count $CB_BLD {wm protocol .rdw WM_DELETE_WINDOW rdw::close}] \
+        [rw_count $CB_BLD {-command rdw::close}] \
+        [rw_count $CB_BLD {rdw::close}] \
+        [rw_count $CB_BLD {bind .rdw <Key-Escape>}] \
+        [rw_count $CB_BLD {::rdw::pick_end ; break}] \
+        [expr {$CB_SRC eq {NOFILE} ? {NOFILE} : [rw_count $CB_SRC {catch {destroy .rdw}}]}] \
+        [rw_count $CB_CLB {catch {destroy .rdw}}]] \
+  [list 1 1 2 1 1 1 1]
+
+check {CB3 CLOSE IS A WITHDRAW AND THE SOURCE SAYS SO: rdw::close forgets the selection, destroys the toplevel and NAMES `blocks` NOWHERE - it unsets nothing and clears nothing - and rdw::open names it nowhere either, so neither door can lose the dumps.  This is the row a "close should tidy up after itself" edit reds, and it is the only fence between that edit and an hour of the user's design-review material} \
+  [list [rw_count $CB_CLB {blocks}] \
+        [rw_count $CB_CLB {unset}] \
+        [rw_count $CB_CLB {rdw::_forget_selection}] \
+        [rw_count $CB_CLB {catch {destroy .rdw}}] \
+        [rw_count [rw_body ::rdw::open] {blocks}]] \
+  [list 0 0 1 1 0]
+
+## THE COMMAND PATH, AND IT MUST CHANGE NOTHING. `rdw::button` is not this
+## button's door, so the id refuses there - but the refusal may not say the
+## button does not exist, which is what it said before this item and what it
+## had wrongly said about `aA` since issue 1368.
+rw_ans ::rdw::status {}
+set CB4_R1 [rw_ans ::rdw::button close]
+set CB4_M1 [expr {[info exists ::rdw::statusmsg] ? $::rdw::statusmsg : {NOVAR}}]
+rw_ans ::rdw::status {}
+set CB4_R2 [rw_ans ::rdw::button fontsize]
+set CB4_M2 [expr {[info exists ::rdw::statusmsg] ? $::rdw::statusmsg : {NOVAR}}]
+rw_ans ::rdw::status {}
+check {CB4 `rdw::button close` REFUSES, CHANGES NOTHING, AND DOES NOT DENY A BUTTON THE USER CAN SEE: both non-list controls in the column get a sentence that names the id and calls it what it is - not one of this window's LIST buttons - instead of the old "there is no button called", which had been a false statement on a screen the user is reading ever since `aA` landed; neither press raises, neither touches ::rdw::blocks, and neither opens a window} \
+  [list [rw_bad $CB4_R1] [rw_bad $CB4_R2] \
+        [rw_has $CB4_M1 {close}] [rw_has $CB4_M1 {list buttons}] \
+        [rw_has $CB4_M1 {There is no button}] \
+        [rw_has $CB4_M2 {fontsize}] [rw_has $CB4_M2 {list buttons}] \
+        [rw_has $CB4_M2 {There is no button}] \
+        [expr {$CB4_M1 ne $CB4_M2 ? 1 : 0}] \
+        [expr {[info exists ::rdw::blocks] && $::rdw::blocks eq $CB_BLK0 ? 1 : 0}] \
+        [expr {$live_tk ? [rw_w winfo exists .rdw] : 0}]] \
+  [list 0 0 1 1 0 1 1 0 1 1 0]
+
+## ---------------------------------------------------------------------------
+## CB7 — THE MINIMUM SIZE IS A FUNCTION OF THE COLUMN, NOT A CONSTANT BESIDE IT.
+## ⚠ THIS ROW EXISTS BECAUSE ITEM A BROKE THE COLUMN IT ADDED TO. `wm minsize
+## .rdw 520 260` was written for item B3's FIVE-button column and re-judged
+## never. MEASURED on :99 at exactly 520x260, with Close packed and the bare
+## constant still standing: `winfo ismapped .rdw.b.fontsize` was 0 — the text
+## size control the user asked for by name (issue 1368) was UNMAPPED at the
+## window's OWN advertised minimum, reachable by an ordinary drag of the
+## bottom edge — and for the ~30 px above it a 2-to-24 px sliver. `-side
+## bottom` allocates Close FIRST, so the item's own ordering decision chose
+## which of the user's controls to evict.
+##
+## The floor is kept (`rdw::min_floor` still answers B3's 520 260, so the
+## frozen starting point is unchanged) and `rdw::apply_minsize` RAISES it to
+## what the column really requests — the `calc::min_floor` /
+## `calc::apply_minsize` shape this tree already uses for exactly this defect.
+## This row golds the ONE setter and the two call sites; CB9 drives the real
+## window down to whatever they produced and reads the pixels back, which is
+## the leg that would have gone red the day Close landed.
+set CB7_FL  [rw_ans ::rdw::min_floor]
+set CB7_AMS [rw_body ::rdw::apply_minsize]
+set CB7_I1  [string first {rdw::apply_minsize} $CB_BLD]
+set CB7_I2  [string last  {rdw::apply_minsize} $CB_BLD]
+set CB7_IB  [string first {frame .rdw.b} $CB_BLD]
+set CB7_IF  [string first {rdw::_apply_font} $CB_BLD]
+check {CB7 THE MINIMUM FOLLOWS THE COLUMN AND THERE IS EXACTLY ONE PLACE IT IS SET: `wm minsize` appears ONCE in the whole file and that once is inside rdw::apply_minsize, which derives the height from the toplevel's own request with the pane swapped for the button column, so a control added to that column carries the minimum with it; rdw::build names no literal minimum at all and calls the proc TWICE - once before `.rdw.b` exists, which can only set the floor, and once after rdw::_apply_font, which is the call that measures - and rdw::min_floor still answers item B3's own 520 260 so the frozen starting point is unchanged} \
+  [list $CB7_FL \
+        [expr {$CB_SRC eq {NOFILE} ? {NOFILE} : [rw_count $CB_SRC {wm minsize}]}] \
+        [rw_count $CB7_AMS {wm minsize .rdw $w $h}] \
+        [rw_count $CB7_AMS {winfo reqheight .rdw.b}] \
+        [rw_count $CB7_AMS {winfo reqheight .rdw.p}] \
+        [rw_count $CB7_AMS {rdw::min_floor}] \
+        [rw_count $CB_BLD {wm minsize}] \
+        [rw_count $CB_BLD {rdw::apply_minsize}] \
+        [expr {$CB7_I1 >= 0 && $CB7_IB >= 0 && $CB7_I1 < $CB7_IB ? 1 : 0}] \
+        [expr {$CB7_I2 >= 0 && $CB7_IF >= 0 && $CB7_I2 > $CB7_IF ? 1 : 0}]] \
+  [list {520 260} 1 1 1 1 1 0 2 1 1]
+
+## ---------------------------------------------------------------------------
+## CB8 — CLOSE DOES NOT END A RUNNING PICK, AND THAT IS A CONTRACT NOW.
+## The comment beside the button used to say a misclick on it "costs nothing at
+## all". MEASURED on :99 and it is one word too strong: with a pick live, a
+## real `.rdw.b.close invoke` leaves `rdw::pick_running` at 1 and the canvas
+## still seized, because the seize lives on `.drw` and rdw::close touches only
+## `.rdw`. It costs no DUMPS, which is the claim that matters and which CB3 and
+## CB6 fence; the mode survives BY DESIGN — ruling DD-12's asymmetry read the
+## other way round (Escape ends the MODE and never closes the window, so Close
+## closes the WINDOW and never ends the mode), and the two doors on rdw::close
+## have to agree, so it could only be changed inside that proc where it would
+## change the window manager's X too. Stated here so the next reader meets a
+## decision instead of an accident of where the seize is bound. CB10 is the
+## live half.
+check {CB8 CLOSING THE WINDOW DOES NOT END A RUNNING PICK: rdw::close names the pick nowhere - no pick_end, no pick_release, no `pick` at all - because the mode is seized on the CANVAS and this proc destroys only the toplevel, and the mode's documented exit stays where rdw::_pick_seize put it, on the canvas's own <Key-Escape>.  One gesture, one job: Escape ends the mode and never closes the window (DD-12), so Close closes the window and never ends the mode} \
+  [list [rw_count $CB_CLB {pick}] \
+        [rw_count $CB_CLB {rdw::pick_end}] \
+        [rw_has [rw_body ::rdw::_pick_seize] {bind $cv <Key-Escape>}] \
+        [rw_has [rw_body ::rdw::_pick_seize] {rdw::pick_end}] \
+        [rw_has [rw_body ::rdw::pick_end] {rdw::pick_release}]] \
+  [list 0 0 1 1 1]
+
+## ---------------------------------------------------------------------------
+## THE LIVE HALF. Four rows, `live_tk`-gated and deliberately NOT counted by
+## the floor, which is the arm that runs FEWEST rows.
+if {$live_tk} {
+  rw_ans ::rdw::open
+  rw_w update idletasks ; rw_w update
+
+  set CB5_W [list [rw_w winfo exists .rdw.b.close] \
+                  [rw_w winfo class .rdw.b.close] \
+                  [rw_w .rdw.b.close cget -text] \
+                  [rw_w winfo parent .rdw.b.close] \
+                  [rw_w winfo ismapped .rdw.b.close] \
+                  [rw_w dict get [rw_w pack info .rdw.b.close] -side]]
+  set CB5_ST {}
+  foreach kind {annotation summary all} {
+    rw_ans ::rdw::set_list $kind
+    rw_w update idletasks
+    lappend CB5_ST [rw_w .rdw.b.close cget -state]
+  }
+  rw_ans ::rdw::set_list annotation
+  rw_w update idletasks
+  ## The pixels the source order buys: Close below `aA`, `aA` below Save.
+  ## `winfo y` is relative to `.rdw.b`, so this is the column's own stacking.
+  set CB5_LOW [expr {[rw_w winfo y .rdw.b.close] > [rw_w winfo y .rdw.b.fontsize]
+                     && [rw_w winfo y .rdw.b.fontsize] > [rw_w winfo y .rdw.b.save] ? 1 : 0}]
+  set CB5_CMD [rw_w .rdw.b.close cget -command]
+  set CB5_WM  [rw_w wm protocol .rdw WM_DELETE_WINDOW]
+  check {CB5 THE LIVE WIDGET: a mapped Tk Button labelled Close at the foot of the column - below `aA`, which is below Save - `normal` on all three list identities because nothing ever configures its state, and its -command is the SAME STRING the window manager's delete protocol carries, read off the live window rather than off the source} \
+    [list $CB5_W $CB5_ST $CB5_LOW $CB5_CMD \
+          [expr {$CB5_CMD eq $CB5_WM ? 1 : 0}]] \
+    [list {1 Button Close .rdw.b 1 bottom} {normal normal normal} 1 {rdw::close} 1]
+
+  ## CB6 — THE PRESS AND THE SURVIVAL. Two real dumps, a REAL widget press, and
+  ## a reopen. ⚠ THE TWO `rw_has` LEGS ARE NOT DECORATION: without them
+  ## "the pane text is byte-identical" passes when BOTH texts are empty, which
+  ## is exactly the state a `set blocks {}` in rdw::close would leave behind.
+  set CB6_A [rw_block [rw_ansd [dict create {@m.x1.mca} {{id 1.11e-05} {gm 2e-04}}] {} {} 1 ok] \
+                      [rw_ctx {MCA:/x1} {@m.x1.mca} op MCA]]
+  set CB6_B [rw_block [rw_ansd [dict create {@m.x1.mcb} {{id 3.3e-06} {gm 4e-04}}] {} {} 1 ok] \
+                      [rw_ctx {MCB:/x1} {@m.x1.mcb} op MCB]]
+  set ::rdw::blocks {}
+  rw_ans ::rdw::push $CB6_A
+  rw_ans ::rdw::push $CB6_B
+  rw_w update idletasks
+  set CB6_N0 [llength $::rdw::blocks]
+  set CB6_S0 $::rdw::blocks
+  set CB6_T0 [rw_w .rdw.p.t get 1.0 end]
+  rw_w .rdw.b.close invoke
+  rw_w update idletasks ; rw_w update
+  set CB6_GONE [rw_w winfo exists .rdw]
+  set CB6_KEPT [expr {[info exists ::rdw::blocks] && $::rdw::blocks eq $CB6_S0 ? 1 : 0}]
+  rw_ans ::rdw::open
+  rw_w update idletasks ; rw_w update
+  set CB6_T1 [rw_w .rdw.p.t get 1.0 end]
+  check {CB6 THE DUMPS SURVIVE THE CLOSE, DRIVEN AS A USER DRIVES IT: a real `.rdw.b.close invoke` really destroys the toplevel, ::rdw::blocks comes back byte-for-byte identical across it, and a reopen paints the SAME two dumps into a rebuilt pane that carries its own Close again - so Close is a withdraw and never a discard, which is the property ruling DD-16 leans on when it lets a block be edited an hour later on a different sheet} \
+    [list $CB6_N0 [rw_has $CB6_T0 {MCA:/x1}] [rw_has $CB6_T0 {MCB:/x1}] \
+          $CB6_GONE $CB6_KEPT \
+          [rw_w winfo exists .rdw] [rw_w winfo exists .rdw.b.close] \
+          [llength $::rdw::blocks] \
+          [expr {$CB6_T1 eq $CB6_T0 ? 1 : 0}]] \
+    [list 2 1 1 0 1 1 1 2 1]
+
+  ## -------------------------------------------------------------------------
+  ## CB9 — THE COLUMN AT THE WINDOW'S OWN MINIMUM.  ⚠ THIS IS THE ROW THAT
+  ## WOULD HAVE GONE RED THE DAY CLOSE LANDED, and no row in any suite did:
+  ## every earlier measurement of this column was taken at the DEFAULT 893x498,
+  ## where 446 px of cavity hides a 243 px request. Drive the real toplevel
+  ## down to whatever `rdw::apply_minsize` published — never to a number spelt
+  ## here, which would gold the constant this item is removing — and read every
+  ## control in the column back. MEASURED before the repair, at 520x260:
+  ## `.rdw.b.fontsize` ismapped 0. After it, at 520x295: all seven mapped, each
+  ## at its full requested height, and the column's height equal to its own
+  ## request.
+  set CB9_G0 [rw_w wm geometry .rdw]
+  set CB9_MN [rw_w wm minsize .rdw]
+  set CB9_FL [rw_ans ::rdw::min_floor]
+  set CB9_OK [expr {[llength $CB9_MN] == 2 && [llength $CB9_FL] == 2
+                    && [lindex $CB9_MN 0] >= [lindex $CB9_FL 0]
+                    && [lindex $CB9_MN 1] >= [lindex $CB9_FL 1] ? 1 : 0}]
+  ## ⚠ AND A MINIMUM CAN BE WRONG BY BEING TOO BIG.  A derivation that added
+  ## the pane back instead of taking it off answers 701 here, every control is
+  ## trivially mapped, and the leg below is the only one that notices - the
+  ## window would simply refuse to be made small.  The natural first-open
+  ## height is the ceiling: a minimum above it is a window with no room to
+  ## shrink at all.
+  set CB9_SANE [expr {[lindex $CB9_MN 1] <= [rw_w winfo reqheight .rdw] ? 1 : 0}]
+  rw_w wm geometry .rdw [lindex $CB9_MN 0]x[lindex $CB9_MN 1]
+  rw_w update idletasks ; rw_w update
+  set CB9_SHRANK [expr {[rw_w winfo height .rdw] <= [lindex $CB9_MN 1] ? 1 : 0}]
+  set CB9_MAP {} ; set CB9_WHOLE {}
+  foreach _b {up down delete add save fontsize close} {
+    lappend CB9_MAP   [rw_w winfo ismapped .rdw.b.$_b]
+    lappend CB9_WHOLE [expr {[rw_w winfo height .rdw.b.$_b]
+                             >= [rw_w winfo reqheight .rdw.b.$_b] ? 1 : 0}]
+  }
+  set CB9_COL [expr {[rw_w winfo height .rdw.b] >= [rw_w winfo reqheight .rdw.b] ? 1 : 0}]
+  rw_w wm geometry .rdw $CB9_G0
+  rw_w update idletasks ; rw_w update
+  check {CB9 AT THE WINDOW'S OWN ADVERTISED MINIMUM THE WHOLE COLUMN IS STILL THERE: shrink the real toplevel to exactly the `wm minsize` this window published for itself - not to a number this row spells, which would gold the constant item A replaced - and all seven controls are mapped and at their full requested height, the column frame gets everything it asked for, and the published minimum is at or above rdw::min_floor's frozen 520 260 and no higher than the window's own natural first-open height, so it cannot be wrong by being too big either.  Before the repair this row read `0` for `aA` at 520x260: the packer starves whatever `-side bottom` allocated last, and the control the user asked for by name was the one evicted} \
+    [list $CB9_OK $CB9_SANE $CB9_SHRANK $CB9_MAP $CB9_WHOLE $CB9_COL] \
+    [list 1 1 1 {1 1 1 1 1 1 1} {1 1 1 1 1 1 1} 1]
+
+  ## -------------------------------------------------------------------------
+  ## CB10 — THE LIVE HALF OF CB8.  A real pick, a real press on Close, and the
+  ## mode is still live on the canvas afterwards with its own exit intact.
+  set CB10_CV [rw_w xschem get current_win_path]
+  set CB10_FOC [rw_w focus]
+  set CB10_PREV [rw_w bind $CB10_CV <ButtonPress-1>]
+  set CB10_ARM [rw_ans ::rdw::pick_start]
+  set CB10_RUN0 [rw_ans ::rdw::pick_running]
+  set CB10_SEIZED [rw_has [rw_w bind $CB10_CV <ButtonPress-1>] {rdw::pick_click}]
+  rw_w update idletasks
+  rw_w .rdw.b.close invoke
+  rw_w update idletasks ; rw_w update
+  set CB10_GONE [rw_w winfo exists .rdw]
+  set CB10_RUN1 [rw_ans ::rdw::pick_running]
+  set CB10_PRESS [rw_has [rw_w bind $CB10_CV <ButtonPress-1>] {rdw::pick_click}]
+  set CB10_ESC [rw_has [rw_w bind $CB10_CV <Key-Escape>] {rdw::pick_end}]
+  rw_ans ::rdw::pick_end
+  rw_w update idletasks
+  set CB10_RUN2 [rw_ans ::rdw::pick_running]
+  set CB10_REST [expr {[rw_w bind $CB10_CV <ButtonPress-1>] eq $CB10_PREV ? 1 : 0}]
+  catch {focus $CB10_FOC}
+  check {CB10 A PICK OUTLIVES THE CLOSE, DRIVEN AS A USER DRIVES IT: with the mode armed and the canvas really seized, a real `.rdw.b.close invoke` destroys the toplevel and leaves rdw::pick_running at 1 with the canvas's press binding still rdw::pick_click and its Escape still rdw::pick_end - so the mode's one documented exit is intact and the next click reopens this window through rdw::show.  Close costs the user no dumps and no mode; the comment that said it "costs nothing at all" was one word too strong, and this row is what makes the remaining claim checkable} \
+    [list $CB10_ARM $CB10_RUN0 $CB10_SEIZED $CB10_GONE $CB10_RUN1 \
+          $CB10_PRESS $CB10_ESC $CB10_RUN2 $CB10_REST] \
+    [list 1 1 1 0 1 1 1 0 1]
+
+  rw_ans ::rdw::close
+  catch {update idletasks}
+}
+
+## THE SECTION LEAVES THE MODEL AS IT FOUND IT: the store of dumps and the
+## standing status line both go back, so section CL and row S2 see what section
+## FZ left them.
+set ::rdw::blocks $CB_BLK0
+rw_ans ::rdw::status $CB_MSG0
 
 
 # ============================================================================
@@ -8301,6 +9008,842 @@ if {$live_tk} {
   catch {update idletasks}
 }
 rw_ans ::op_param_lists::reset
+
+# ============================================================================
+# SECTION HT — ISSUE 1384: THE SHEET SAYS WHAT THE PICK MODE IS WAITING FOR
+# ============================================================================
+# THE USER'S OWN WORDS: "Add status message in status bar of schematic window
+# for the three RDW print modes 1,2,3 key : Is user is in verb-noun mode,
+# pressed key without instance selected, she is in command mode, and status bar
+# should suggest 'Click on instance for annotation/summary/all OP info in
+# Results Display Window'  And, BTW, if since *that* much space may not be
+# available on the status bar, if user hovers on the visible portion of the
+# message in the status bar, can we do a tooltip that displays the rest?
+# Doable?"
+#
+# ⚠ THE GATE IS COMMAND-MODE ENTRY, RULED BY THE USER (2026-09-07) after they
+# were offered a verb-noun gate and declined it: "If an instance is selected
+# and user presses 1/2/3, only the selected instance is processed.  One does
+# not enter command mode in this case.  If more than one selected, issue a
+# warning in the CIW and refuse."  So the hint is `rdw::key`'s `none` branch
+# and nothing else, and `intuitive_interface` is not read at all.  Rows HT7 and
+# HP1 hold the other two branches from the other side: they must stay SILENT.
+#
+# FIVE ROWS RUN ON BOTH ARMS (HT1..HT4 and HT4b) and are what the floor counts:
+# the three sentences, the slot arithmetic, the headless survival, the
+# single-definition fences and the structure of the synchronous re-assert.
+# TEN are `live_tk`-gated (HT5..HT15) because they want a real status bar, a
+# real `font measure`, a real binding tag and a real tooltip.
+#
+# ⚠ THE ORDER IN THE FILE IS HT5, HT6, HT13, HT7..HT12, HT15, HT14, and that is
+# not tidiness.  HT13 sits beside HT6 because both drive the same motion stream
+# and differ only in what they read (the text, and the two widths); HT15 sits
+# beside HT14 because both are teardown-adjacent -- HT15 leaves a `-width` it
+# must put back, and HT14 opens a tab it must close.
+#
+# ⚠ NO PIXEL CONSTANT IS ASSERTED, AND THE REASON IS A STANDING RED IN THE
+# SIBLING SUITE.  The main window's size is restored PER SCHEMATIC FILE out of
+# the user's `~/.xschem/geometry` (`set_geom`, xschem.tcl:16108), and every
+# xschem exit writes it back (`Tcl_CreateExitHandler` -> `xwin_exit` ->
+# `store_geom`, xinit.c:3199 and :1194) -- so a suite inherits whatever width
+# the last run of anything left behind.  Row C2 of test_rdw_keys_1245.tcl is
+# already red for exactly that reason and it is issue 1385.  Every row below
+# that depends on a width SETS the geometry itself and asserts the two widths
+# really differ, rather than hoping the environment supplies one.
+
+set HT_ANN {Click on instance for annotation OP info in Results Display Window}
+set HT_SUM {Click on instance for summary OP info in Results Display Window}
+set HT_ALL {Click on instance for all OP info in Results Display Window}
+set HT_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
+
+## ---------------------------------------------------------------------------
+## HT1 — THE THREE SENTENCES, WORD FOR WORD, OUT OF ONE TEMPLATE.
+## The identity token IS the adjective the user's three sentences differ in, so
+## a three-arm switch would be three chances to reword one of them and the code
+## is a template.  What makes that safe is the FENCE: `rdw::_list_name` already
+## owns which list names exist, so `refresh` -- a real `rdw::key` argument --
+## and an unknown word answer the EMPTY STRING rather than `Click on instance
+## for refresh OP info`.  The source-count leg is what stops a second spelling
+## being added later for one of the three.
+check {HT1 THE STATUS-BAR SENTENCE IS THE USER'S OWN, ONE PER LIST IDENTITY, AND IT COMES OUT OF ONE TEMPLATE FENCED BY THE PROC THAT OWNS THE LIST NAMES: keys 1/2/3 give exactly `Click on instance for annotation|summary|all OP info in Results Display Window` with OP uppercase, while `refresh` - which is a real rdw::key argument - and any unknown word give the EMPTY STRING instead of a sentence about a list that does not exist, and the sentence has exactly ONE definition in rdw.tcl} \
+  [list [rw_ans ::rdw::_hint_text annotation] \
+        [rw_ans ::rdw::_hint_text summary] \
+        [rw_ans ::rdw::_hint_text all] \
+        [rw_ans ::rdw::_hint_text refresh] \
+        [rw_ans ::rdw::_hint_text {}] \
+        [rw_ans ::rdw::_hint_text bogus] \
+        [expr {$HT_F eq {NOFILE} ? {NOFILE} : [rw_count $HT_F {Click on instance for}]}] \
+        [rw_count [rw_body ::rdw::_hint_text] {rdw::_list_name}]] \
+  [list $HT_ANN $HT_SUM $HT_ALL {} {} {} 1 1]
+
+## ---------------------------------------------------------------------------
+## HT2 — WHICH SLOT, AND WHY IT IS NOT THE WIDE ONE.
+## `.statusbar.10` is xschem's own mode-prompt label (`DRAW WIRE!`,
+## `HIGHLIGHT NET! (click a net or label, ESC to end)`, callback.c:9902-9914)
+## and it is built per TOP-LEVEL (`build_widgets`, xschem.tcl:18736; packed at
+## `pack_widgets`, :16834), so a design in its own window gets its own.
+##
+## ⚠ AN EARLIER SPELLING OF THIS ROW ALSO CLAIMED "and a tab", AND THAT WAS
+## FALSE.  MEASURED on :99 with the shipped `tabbed_interface 1` and one
+## `xschem schematic_in_new_window force`: the tab's `current_win_path` is
+## `.x1.drw`, `winfo exists .x1.drw` is 0 (tabs share the ONE real `.drw`),
+## `xschem get top_path` is EMPTY so C writes the shared `.statusbar.10`, and
+## the string arithmetic answers `.x1.statusbar.10`, a widget that does not
+## exist.  `rdw::_hint_slot` now ASKS the widget hierarchy and keeps the
+## arithmetic only as the fallback for a path that is not a widget -- which
+## `rdw::_hint_sync`'s own `winfo exists` then drops.  Row HT14 drives a real
+## tab; this row holds the arithmetic on both arms, where `.x1.drw` is not a
+## widget on either and the fallback is what answers.
+##
+## ⚠ `.statusbar.1` WAS MEASURED AND REFUSED, and this row is the fence.  It is
+## C's `statusmsg()` field (scheduler.c:65) with a writer that runs on EVERY
+## event and is NOT gated on ui_state (callback.c:10177) -- measured on :99 with
+## a pick live and ui_state 0, one hover motion replaced the sentence with the
+## `mouse = ... path: ...` readout, and a selection change replaced it with
+## select.c's info line.  actions.c:5985 documents the same eating from the
+## other side, and its remedy `statusmsg_hold()` expires after a fixed 5000 ms
+## (scheduler.c:70), which says nothing about how long the user takes to find a
+## device.  The count leg is written so that the ONLY `statusbar.1` in the file
+## is the one inside `statusbar.10`: a real `.statusbar.1` write makes it 2.
+check {HT2 THE HINT GOES IN THE MODE-PROMPT SLOT OF THE CANVAS'S OWN TOP-LEVEL AND NEVER IN THE WIDE STATUS FIELD: rdw::_hint_slot answers .statusbar.10 for the main canvas and .x1.statusbar.10 for a design in its own window, empty for no canvas, every mention of that slot in rdw.tcl is inside that ONE proc, and every `statusbar.1` in the file is the head of a `statusbar.10` and never a write of its own - because that wide field is C's statusmsg() and its every-event coordinate readout would eat the sentence on the first flick of the mouse} \
+  [list [rw_ans ::rdw::_hint_slot .drw] \
+        [rw_ans ::rdw::_hint_slot .x1.drw] \
+        [rw_ans ::rdw::_hint_slot {}] \
+        [expr {$HT_F eq {NOFILE} ? {NOFILE} :
+               [expr {[rw_count $HT_F {statusbar.10}] > 0 &&
+                      [rw_count $HT_F {statusbar.10}] ==
+                      [rw_count [rw_body ::rdw::_hint_slot] {statusbar.10}] ? 1 : 0}]}] \
+        [expr {$HT_F eq {NOFILE} ? {NOFILE} :
+               [expr {[rw_count $HT_F {statusbar.1}] ==
+                      [rw_count $HT_F {statusbar.10}] ? 1 : 0}]}]] \
+  [list .statusbar.10 .x1.statusbar.10 {} 1 1]
+
+## ---------------------------------------------------------------------------
+## HT3 — THE WHOLE HINT SURVIVES --nogui BY ANSWERING, NOT BY RAISING.
+## This file is reached by the UNGUARDED `source` in xschem.tcl, so a Tk command
+## that escaped `rdw::have_tk` would abort startup headless (issue 0663's
+## mechanism).  Every one of the five entry points is driven here, on both arms:
+## on the headless arm they must answer 0 / empty with no display at all, and on
+## the display arm they must be equally safe with no mode running.
+set HT3 {}
+foreach _c {::rdw::_hint_sync ::rdw::_hint_start ::rdw::_hint_stop ::rdw::_hint_pump} {
+  lappend HT3 [rw_ans $_c]
+}
+lappend HT3 [rw_ans ::rdw::_hint_blank {}]
+check {HT3 EVERY DOOR OF THE HINT IS SAFE WITH NO MODE AND, HEADLESS, WITH NO Tk AT ALL: _hint_sync, _hint_start and _hint_pump answer 0 rather than raising or leaving a timer behind, _hint_stop and _hint_blank answer empty, and nothing here reaches a Tk command outside rdw::have_tk - which is what keeps the unguarded source of this file in xschem.tcl from killing --nogui startup} \
+  [list $HT3 [expr {[info exists ::rdw::hint(after)] ? 1 : 0}] \
+        [rw_count [rw_body ::rdw::_hint_sync] {rdw::have_tk}]] \
+  [list {0 0 {} 0 {}} 0 1]
+
+## ---------------------------------------------------------------------------
+## HT4 — ONE PROC DECIDES WHAT THE SLOT SAYS, AND EVERY EXIT IS A DOOR ON IT.
+## Invariant I1.  `rdw::_hint_sync` is the only place that reads the mode, picks
+## the sentence and writes the label; `pick_start` (BOTH of its success paths --
+## the fresh seize and the re-arm-in-place a second list key takes), `pick_end`,
+## `pick_resume` (its rehome AND its drop path) and the pump are doors on it.
+##
+## ⚠ THE TIMER IS NOT AN ALTERNATIVE TO THE SYNCHRONOUS DOORS, IT IS THE
+## BACKSTOP.  `pick_end` blanks the slot in the same call; C's
+## `update_statusbar()` (callback.c:9860) blanks `.statusbar.10` on every canvas
+## event whenever no C ui_state bit is set, and this mode is pure Tcl so none
+## ever is -- and the answer to THAT is a private binding tag on the canvas
+## (`rdw::_hint_attach`), not the timer.  ase::ui::sod_prompt_pump
+## (ase_window.tcl:1880) ships the timer alone for the same class of mode and
+## claims it costs "at most a sub-frame flicker"; measured here it costs 16-40%
+## of the sentence's visible time, which is why this feature has a second door
+## and that one does not.  `rdw::hint_period` still takes ASE's 80 ms unchanged
+## so the two cannot drift.
+check {HT4 STRUCTURAL one proc decides what the slot says and every exit is a door on it: rdw::_hint_sync alone reads the mode, the identity and the sentence - one rdw::pick_running, one rdw::_hint_text, one rdw::_hint_slot - while pick_start names _hint_start on BOTH its success paths, pick_end names _hint_sync AFTER it has unset the record, and pick_resume names it on the rehome AND on the drop path, so no second proc can ever answer the same question differently} \
+  [list [rw_count [rw_body ::rdw::_hint_sync] {rdw::pick_running}] \
+        [rw_count [rw_body ::rdw::_hint_sync] {rdw::_hint_text}] \
+        [rw_count [rw_body ::rdw::_hint_sync] {rdw::_hint_slot}] \
+        [rw_count [rw_body ::rdw::pick_start]  {rdw::_hint_start}] \
+        [rw_count [rw_body ::rdw::pick_end]    {rdw::_hint_sync}] \
+        [rw_count [rw_body ::rdw::pick_resume] {rdw::_hint_sync}] \
+        [rw_count [rw_body ::rdw::_hint_pump]  {rdw::_hint_sync}] \
+        [rw_count [rw_body ::rdw::_hint_pump]  {rdw::hint_period}] \
+        [expr {$HT_F eq {NOFILE} ? {NOFILE} : [rw_count $HT_F {rdw::_hint_text}]}] \
+        [expr {[string first {array unset pick} [rw_body ::rdw::pick_end]] <
+               [string first {rdw::_hint_sync} [rw_body ::rdw::pick_end]] ? 1 : 0}] \
+        [rw_count [rw_body ::rdw::_hint_sync] {rdw::_hint_attach}] \
+        [rw_count [rw_body ::rdw::_hint_sync] {rdw::_hint_detach}]] \
+  [list 1 1 1 2 1 2 1 1 2 1 1 1]
+
+## ---------------------------------------------------------------------------
+## HT4b — THE SYNCHRONOUS DOOR, STRUCTURALLY, ON BOTH ARMS.
+## The 80 ms timer alone loses to the motion stream (rows HT6 and HT13 measure
+## it), so the sentence is re-asserted from a PRIVATE BINDING TAG inserted after
+## the canvas's own tag: C blanks at the top of `callback()` (callback.c:10093)
+## from a script `.drw`'s own binding invoked, so a later binding tag runs in the
+## same invocation and the blank never reaches a relayout.
+##
+## ⚠ WHY A TAG AND NOT `bind $cv <Motion> +...`: `rdw::_pick_seize` latches four
+## of this canvas's binding scripts VERBATIM and row V6 asserts the restore is
+## byte-identical, so an append is not removable without rewriting a script the
+## seize is holding.  A tag is ONE `bindtags` write each way -- which is what
+## the `bindtags`-count leg fences: if a third place ever writes `bindtags`,
+## the two records of what was attached can disagree, and that is invariant I1
+## one widget out.
+##
+## ⚠ AND THE FOUR SEIZED SEQUENCES NEVER REACH THE TAG, BY CONSTRUCTION: every
+## one of `_pick_seize`'s scripts ends in `break`, which stops the remaining
+## binding tags for that event.  That is the standing reason the timer is kept,
+## so the `break` count is a leg here and not a comment.
+check {HT4b STRUCTURAL THE SYNCHRONOUS RE-ASSERT IS ONE TAG, ONE SCRIPT AND ONE EVENT LIST, AND IT REFUSES SAFELY WITH NOTHING TO ATTACH TO: _hint_attach and _hint_detach answer 0 for an empty and for a non-existent canvas and on the headless arm, the tag's only script anywhere is rdw::_hint_sync, the event list has exactly one definition and only the attach reads it, `bindtags` is written from those two procs and nowhere else, the tag name is not a widget path so it can never be mistaken for one, and all four seized sequences end in `break` - which is why the tag is never reached for them and the backstop timer still has a job} \
+  [list [rw_ans ::rdw::_hint_attach {}] \
+        [rw_ans ::rdw::_hint_detach {}] \
+        [rw_ans ::rdw::_hint_attach .nosuchcanvas] \
+        [rw_ans ::rdw::_hint_detach .nosuchcanvas] \
+        [rw_count [rw_body ::rdw::_hint_attach] {rdw::_hint_sync}] \
+        [expr {$HT_F eq {NOFILE} ? {NOFILE} : [rw_count $HT_F {rdw::_hint_events}]}] \
+        [rw_count [rw_body ::rdw::_hint_attach] {rdw::_hint_events}] \
+        [rw_count [rw_body ::rdw::_hint_detach] {rdw::_hint_events}] \
+        [expr {$HT_F eq {NOFILE} ? {NOFILE} :
+               [expr {[rw_count $HT_F {bindtags}] ==
+                      [rw_count [rw_body ::rdw::_hint_attach] {bindtags}] +
+                      [rw_count [rw_body ::rdw::_hint_detach] {bindtags}] ? 1 : 0}]}] \
+        [expr {[string index [rw_ans ::rdw::_hint_tag] 0] eq {.} ? 0 : 1}] \
+        [rw_count [rw_body ::rdw::_pick_seize] {break}]] \
+  [list 0 0 0 0 1 2 1 0 1 1 4]
+
+## ---------------------------------------------------------------------------
+## HT5..HT10 — THE LIVE HALF.  A real status bar, a real `font measure` and a
+## real tooltip, so `live_tk` only and deliberately uncounted by the floor.
+if {$live_tk} {
+  ## THE SECTION OWNS THE MAIN WINDOW'S GEOMETRY AND PUTS IT BACK.  It has to
+  ## set one -- see the section preamble on issue 1385 -- and it must not leave
+  ## it moved, because `xwin_exit` stores it for whatever file is current.
+  set HT_GEOM0 [rw_w wm geometry .]
+  set HT_KEEP  $::rdw::listkind
+  set HT_BLK0  $::rdw::blocks
+  ## A sheet with TWO instances, for the `many` branch.  Built here rather than
+  ## re-using cmos_inv.sch on purpose: this suite must not leave the SHIPPED
+  ## example as the current file, or its geometry is what gets stored.
+  set HT_DIR [file join $scratch ht1384]
+  file mkdir $HT_DIR
+  set HT_SYM [file join $HT_DIR ht.sym]
+  set HT_SCH [file join $HT_DIR ht.sch]
+  bs_mksym $HT_SYM nw_dev
+  set _fd [open $HT_SCH w]
+  puts $_fd "v {xschem version=3.4.5 file_version=1.2}"
+  puts $_fd "G {}"
+  puts $_fd "V {}"
+  puts $_fd "S {}"
+  puts $_fd "E {}"
+  puts $_fd "C \{$HT_SYM\} 300 -300 0 0 \{name=M1\}"
+  puts $_fd "C \{$HT_SYM\} 600 -300 0 0 \{name=M2\}"
+  close $_fd
+  rw_w xschem load $HT_SCH
+  rw_w update idletasks
+
+  set HT_SLOT [rw_ans ::rdw::_hint_slot [rw_w xschem get current_win_path]]
+  ## `-when now` delivers a binding SYNCHRONOUSLY and runs no `after` timer, so
+  ## a leg taken straight after it sees C's blank and not the pump's re-assert.
+  proc ht_hover {{n 6}} {
+    for {set i 0} {$i < $n} {incr i} {
+      rw_w event generate .drw <Motion> -x [expr {40 + $i * 11}] -y [expr {40 + $i * 7}] -when now
+    }
+  }
+  ## Two full pump periods plus slack, in real time.
+  proc ht_settle {{n 10}} {
+    for {set i 0} {$i < $n} {incr i} { catch {update} ; after 30 }
+  }
+  proc ht_txt  {} { global HT_SLOT ; return [rw_w $HT_SLOT cget -text] }
+  proc ht_st   {} { global HT_SLOT ; return [rw_w $HT_SLOT cget -state] }
+  proc ht_tip  {} {
+    global HT_SLOT
+    set b [rw_w bind $HT_SLOT <Enter>]
+    return [expr {[string first {balloon_show} $b] >= 0 ? 1 : 0}]
+  }
+  ## The string the tip would actually SHOW, dug out of the baked <Enter>
+  ## script -- which is the whole point of the re-arm (row HT8).
+  proc ht_tiptext {} {
+    global HT_SLOT
+    set b [rw_w bind $HT_SLOT <Enter>]
+    if {[catch {llength $b}]} { return NO-TIP }
+    if {[lindex $b 2] ne {balloon_show}} { return NO-TIP }
+    ## ⚠ TWO LEVELS OF QUOTING COME OFF, AND THAT IS NOT A BUG.  MEASURED: the
+    ## binding `balloon` writes reads `after 1000   balloon_show %W {{the
+    ## sentence}} 1`, because `[list $help]` is wrapped by an outer `[list]`.
+    ## `after ms script ...` CONCATs its trailing words, which strips exactly
+    ## one of them, so `balloon_show` is really handed the clean sentence --
+    ## driven through the real <Enter> and compared with `string equal`, both
+    ## for this hint and for the aA button.  This reader takes the same two
+    ## levels off so the row compares the sentence and not the quoting.
+    return [lindex [lindex $b 4] 0]
+  }
+  ## ⚠ THE TIP IS ASSERTED AS AN AGREEMENT, NOT AS A CONSTANT, AND THAT IS A
+  ## MEASUREMENT.  Whether a given sentence is clipped at a given window width
+  ## depends on the SERVER's font: on :99 (DejaVu, 1920x1080) all three
+  ## sentences are clipped at 700 px, and on :0 (Xwayland) the shortest of them
+  ## -- `all`, 61 characters against 66 -- FITS, so a row that spelled `1` here
+  ## went red on the third of its four legs with nothing wrong.  The contract
+  ## is `armed if and only if the label's OWN CURRENT TEXT is clipped`, and
+  ## that is what this asks; a blank label is never clipped, so it also states
+  ## `after the clear there is no tip`.  Row HT9 fences the two ends of the
+  ## same contract at two widths it sets itself.
+  ## ⚠ AND IT CONVERGES, BOUNDED, BECAUSE THE ARM IS A PUMP DECISION AND THE
+  ## WIDTH IS A WINDOW MANAGER'S.  The pump re-decides every 80 ms; on :0
+  ## (Xwayland) one geometry request yields THREE <Configure> events against
+  ## one under Xvfb, so a single read can land between the last decision and
+  ## the width it was taken at.  Up to 600 ms of agreement is the contract --
+  ## `armed within the pump's period` -- and a genuinely broken arm never
+  ## agrees and still answers 0.  Only the UP states use this; the CLEAR is
+  ## synchronous and is read with no pumping at all (ht_state_down).
+  proc ht_tipok {} {
+    global HT_SLOT
+    for {set i 0} {$i < 20} {incr i} {
+      set t [ht_txt]
+      set want 0
+      if {[string trim $t] ne {}} { set want [rw_ans ::label_clipped $HT_SLOT $t] }
+      if {[rw_bad $want]} { return BAD-CLIP }
+      if {[ht_tip] == $want} { return 1 }
+      catch {update} ; after 30
+    }
+    return 0
+  }
+  proc ht_pumping {} { return [expr {[info exists ::rdw::hint(after)] ? 1 : 0}] }
+  proc ht_recorded {} {
+    if {![info exists ::rdw::hint(slot)]} { return NO-SLOT }
+    return $::rdw::hint(slot)
+  }
+  proc ht_pending {} {
+    global HT_SLOT
+    set n 0
+    foreach id [after info] {
+      if {[catch {lindex [after info $id] 0} scr]} continue
+      if {[lindex $scr 0] eq {balloon_show} && [lindex $scr 1] eq $HT_SLOT} { incr n }
+    }
+    return $n
+  }
+  ## Is the mode's private binding tag on the main canvas right now?  The tag
+  ## is asked for by NAME from the proc that owns it, so this reader cannot
+  ## drift from the code the way a literal would.
+  proc ht_tagged {{cv .drw}} {
+    set t [rw_ans ::rdw::_hint_tag]
+    if {[rw_bad $t]} { return BAD-TAG }
+    if {![rw_w winfo exists $cv]} { return NO-CANVAS }
+    return [expr {[lsearch -exact [rw_w bindtags $cv] $t] >= 0 ? 1 : 0}]
+  }
+  ## THE TOOLTIP AS THE USER MEETS IT: a real toplevel `$slot.balloon` with a
+  ## real label in it, or 0.  Answers the STRING it is showing so a tip that
+  ## renders the previous mode's sentence cannot pass as a tip.
+  proc ht_balloon {} {
+    global HT_SLOT
+    if {![rw_w winfo exists $HT_SLOT.balloon]} { return 0 }
+    set t {}
+    catch {set t [rw_w $HT_SLOT.balloon.txt cget -text]}
+    return $t
+  }
+  ## THE WHOLE GESTURE, AND NOTHING SYNTHETIC IN IT.  The pointer can only reach
+  ## the status bar FROM the canvas, so the sweep is part of the gesture and not
+  ## scene-setting: it is what blanks the label on the way past, and skipping it
+  ## is exactly how a row can be green while the tip is unreachable.  Then a
+  ## real warp on to the label, then the REAL <Enter> Tk generates from the
+  ## motion, then the REAL `balloon` delay -- no `balloon_show` call of our own.
+  proc ht_hover_tip {} {
+    global HT_SLOT
+    catch {destroy $HT_SLOT.balloon}
+    for {set i 0} {$i < 25} {incr i} {
+      rw_w event generate .drw <Motion> -warp 1 \
+        -x [expr {60 + $i * 9}] -y [expr {60 + $i * 5}]
+      catch {update} ; after 12
+    }
+    rw_w event generate $HT_SLOT <Motion> -warp 1 \
+      -x [expr {[rw_w winfo width $HT_SLOT] / 2}] \
+      -y [expr {[rw_w winfo height $HT_SLOT] / 2}]
+    catch {update}
+    ## `balloon`'s own delay is 1000 ms (xschem.tcl) and is NOT shortened here:
+    ## the row's subject is the tip the user actually gets.
+    for {set i 0} {$i < 55} {incr i} { catch {update} ; after 30 }
+    return [ht_balloon]
+  }
+  proc ht_park {} {
+    catch {rw_w event generate . <Motion> -warp 1 \
+             -x [expr {[rw_w winfo screenwidth .] - [rw_w winfo rootx .] - 2}] \
+             -y [expr {[rw_w winfo screenheight .] - [rw_w winfo rooty .] - 2}]}
+    catch {update}
+  }
+  proc ht_reset {} {
+    rw_ans ::rdw::pick_end
+    set ::rdw::blocks {}
+    catch {xschem unselect_all}
+    ht_settle 4
+  }
+
+  ## -------------------------------------------------------------------------
+  ## HT5 — THE HINT ARRIVES, IN THE MODE SLOT, AND THE WIDE FIELD IS UNTOUCHED.
+  ## `-state active` is what turns the label green, and it is what C sets for
+  ## every one of its own mode prompts (callback.c:4575, :9902).  The
+  ## `.statusbar.1` leg is the fence on HT2's argument from the live side: if
+  ## the hint had gone in the wide field this row would see it move.
+  ht_reset
+  rw_w wm geometry . 1200x761
+  ht_settle 6
+  set HT5_PRE  [list [ht_txt] [ht_st] [ht_tip] [ht_pumping] [ht_recorded]]
+  set HT5_SB1  [rw_w .statusbar.1 cget -text]
+  rw_ans ::rdw::key annotation
+  ht_settle 6
+  set HT5_POST [list [ht_txt] [ht_st] [ht_pumping] [ht_recorded]]
+  set HT5_SB1B [rw_w .statusbar.1 cget -text]
+  check {HT5 A KEY PRESSED WITH NOTHING SELECTED PUTS THE USER'S SENTENCE ON THE SHEET'S OWN MODE SLOT: .statusbar.10 goes from a blank normal label to the annotation sentence with -state active - the green C itself uses for DRAW WIRE! and HIGHLIGHT NET! - the hint records which slot it wrote so it can blank that one and no other, the re-assert timer is armed, and the WIDE status field beside it is not written at all, which is HT2's argument measured from the live side} \
+    [list $HT5_PRE $HT5_POST [expr {$HT5_SB1 eq $HT5_SB1B ? 1 : 0}] \
+          [rw_ans ::rdw::pick_running]] \
+    [list [list { } normal 0 0 NO-SLOT] [list $HT_ANN active 1 $HT_SLOT] 1 1]
+
+  ## -------------------------------------------------------------------------
+  ## HT6 — THE SYNCHRONOUS RE-ASSERT, DRIVEN AS AN A/B IN ONE PROCESS.
+  ## C's `update_statusbar()` (callback.c:9860) resets .statusbar.10 to `{ }`
+  ## on every canvas event whenever no C ui_state draw/hilight bit is set, and
+  ## this is a pure-Tcl mode so none ever is.  Every motion below is delivered
+  ## `-when now` and no `update` runs between the motions and the read, so NO
+  ## timer can have fired: what leg B reads is the binding tag's work and
+  ## nothing else's.
+  ##
+  ## ⚠ THE FIRST SPELLING OF THIS ROW ASSERTED THE OPPOSITE OF LEG B -- that
+  ## eight motions leave the label EMPTY and the 80 ms timer puts it back -- and
+  ## it was green, because that was all the feature did.  MEASURED with a motion
+  ## timer on `.drw` and the slot sampled every 10 ms, 200 samples: the sentence
+  ## was on screen 16-40% of the time, and the slot's width swung 8 <-> 471 px
+  ## at ~12 Hz because it is packed `-side left` with no `-fill x`.  A row that
+  ## is happy with a prompt nobody can read is a row about a variable.  Leg A
+  ## keeps the old measurement as the CONTRAST: take the tag off and C's blank
+  ## stands, which is what makes leg B a statement about the tag.
+  ht_reset
+  rw_ans ::rdw::key annotation ; ht_settle 6
+  rw_ans ::rdw::_hint_detach .drw
+  ht_hover 8
+  set HT6_A [list [expr {[string trim [ht_txt]] eq {} ? 1 : 0}] \
+                  [rw_ans ::rdw::_hint_attach .drw]]
+  ht_hover 8
+  set HT6_B [list [ht_txt] [rw_ans ::rdw::pick_running] [ht_pumping]]
+  ## and the timer is still the backstop: it puts the tag back by itself if
+  ## something takes it off, which is the same contract as the slot's text.
+  rw_ans ::rdw::_hint_detach .drw
+  ht_settle 8
+  set HT6_C [ht_tagged]
+  check {HT6 THE SENTENCE SURVIVES WHAT C BLANKS BECAUSE THE RE-ASSERT RUNS IN THE SAME BINDING INVOCATION C BLANKED IN, AND THE ROW PROVES BOTH HALVES IN ONE PROCESS: with the private binding tag taken off the canvas eight real hover motions delivered synchronously leave .statusbar.10 EMPTY - that is C, on every canvas event, this mode being pure Tcl - and with the tag back the same eight motions leave the user's sentence STANDING with no timer having run at all; and a tag removed by another hand is put back by the backstop within its own period, not believed away} \
+    [list $HT6_A $HT6_B $HT6_C] \
+    [list [list 1 1] [list $HT_ANN 1 1] 1]
+
+  ## -------------------------------------------------------------------------
+  ## HT13 — THE COST THE USER SEES, AND IT IS A STEP AND NOT AN OSCILLATION.
+  ## `.statusbar.10` is packed `-side left` with NO `-fill x` (xschem.tcl:16834)
+  ## so its width follows its TEXT, and `.statusbar.1` -- the coordinate readout
+  ## the user is aiming with -- is the one packed `-fill x` after it and pays
+  ## for whatever the slot takes.  While the timer was the only door that cost
+  ## was a 12 Hz SWING: measured 8 <-> 471 px on the slot and 218 <-> 275 px on
+  ## the readout, for as long as the pointer moved.
+  ##
+  ## ⚠ THE ROW ASSERTS AGREEMENT, NOT PIXELS.  The widths depend on the font and
+  ## on a geometry this suite does not own (issue 1385), so what is asserted is
+  ## that each label reports exactly ONE distinct width across the whole motion
+  ## stream and that the sentence is on the label in every sample.  A swing of
+  ## any size fails it; a different server's pixel numbers do not.  The stream
+  ## runs through the REAL event loop, so the backstop timer is live throughout
+  ## and its 80 ms gaps would show as a second width and a blank sample.
+  ht_reset
+  rw_ans ::rdw::key annotation ; ht_settle 6
+  array unset HT13_W10 ; array unset HT13_W1
+  set HT13_BLANK 0 ; set HT13_N 0
+  for {set _i 0} {$_i < 60} {incr _i} {
+    rw_w event generate .drw <Motion> -x [expr {80 + ($_i % 40) * 7}] -y 120
+    catch {update}
+    incr HT13_N
+    if {[string trim [ht_txt]] eq {}} { incr HT13_BLANK }
+    set HT13_W10([rw_w winfo width $HT_SLOT]) 1
+    set HT13_W1([rw_w winfo width .statusbar.1]) 1
+    after 8
+  }
+  check {HT13 THE EVICTION THE HINT COSTS IS PAID ONCE AND NOT TWELVE TIMES A SECOND: through sixty real canvas motions driven at the pointer rate with the event loop live, .statusbar.10 reports exactly ONE distinct width and .statusbar.1 - the coordinate readout that pays for it - reports exactly one too, and not one of the sixty samples catches the label blank.  Before the synchronous door the same stream swung the slot 8 to 471 px and the readout 218 to 275 at about 12 Hz, which is the whole of what the user would have seen while doing the one thing the sentence asks} \
+    [list [llength [array names HT13_W10]] [llength [array names HT13_W1]] \
+          $HT13_BLANK $HT13_N [rw_ans ::rdw::pick_running]] \
+    [list 1 1 0 60 1]
+
+  ## -------------------------------------------------------------------------
+  ## HT7 — THE OTHER TWO BRANCHES SAY NOTHING ON THE SHEET (the user's ruling).
+  ## "If an instance is selected and user presses 1/2/3, only the selected
+  ## instance is processed.  One does not enter command mode in this case.  If
+  ## more than one selected, issue a warning in the CIW and refuse."  Both
+  ## branches were driven at HEAD before this feature was written and already
+  ## behaved that way; what this row adds is that neither of them now writes
+  ## the status bar, and that the `one` branch really DID dump (without which
+  ## the silence leg would pass on a key that did nothing at all).
+  ht_reset
+  rw_w xschem unselect_all
+  rw_w xschem select instance M1
+  set HT7_SEL1 [rw_w xschem get lastsel]
+  rw_ans ::rdw::key annotation
+  ht_settle 6
+  set HT7_ONE [list [ht_txt] [ht_st] [ht_tip] [ht_pumping] [rw_ans ::rdw::pick_running] \
+                    [expr {[llength $::rdw::blocks] >= 1 ? 1 : 0}]]
+  rw_ans ::rdw::close
+  ht_reset
+  rw_w xschem unselect_all
+  rw_w xschem select instance M1
+  rw_w xschem select instance M2
+  set HT7_SEL2 [rw_w xschem get lastsel]
+  set HT7_LK0 $::rdw::listkind
+  rw_ans ::rdw::key summary
+  ht_settle 6
+  set HT7_MANY [list [ht_txt] [ht_st] [ht_tip] [ht_pumping] [rw_ans ::rdw::pick_running] \
+                     [llength $::rdw::blocks] [expr {$::rdw::listkind eq $HT7_LK0 ? 1 : 0}]]
+  rw_w xschem unselect_all
+  check {HT7 THE HINT IS GATED ON COMMAND-MODE ENTRY AND ON NOTHING ELSE, WHICH IS THE USER'S OWN RULING: with ONE instance selected the key dumps that instance and enters no mode, so the status bar stays blank and no timer is armed; with TWO selected the key refuses - no dump, no list change - and the status bar stays blank there too.  A hint on either branch would be a prompt to click for a click that is not wanted} \
+    [list $HT7_SEL1 $HT7_ONE $HT7_SEL2 $HT7_MANY] \
+    [list 1 [list { } normal 0 0 0 1] 2 [list { } normal 0 0 0 0 1]]
+
+  ## -------------------------------------------------------------------------
+  ## HT8 — THE RE-ARM, WHICH IS THE TRAP `balloon` SETS FOR EVERY CALLER.
+  ## `balloon` BAKES the help string into <Enter> at bind time, so a label whose
+  ## text changes needs the binding re-made -- and re-making it is not enough on
+  ## its own: an <Enter> that already fired leaves an `after 1000 balloon_show
+  ## <w> {the OLD sentence} 1` in flight that `balloon`'s own <Leave> cannot
+  ## cancel once the string has moved.  This row presses 2 over a live 1-pick at
+  ## a width where the tip IS armed, and asserts the slot, the BAKED string and
+  ## the timer queue all moved together.
+  ht_reset
+  ## 600 px and not 700: the margin has to hold on a server whose font is not
+  ## this one's.  At 700 px on :0 the SHORTEST of the three sentences already
+  ## fits (see ht_tipok), and a precondition that is only just true is a row
+  ## that will go red for the environment.  Leg 1 asserts the clip rather than
+  ## assuming it.
+  rw_w wm geometry . 600x761
+  ht_settle 6
+  rw_ans ::rdw::key annotation
+  ht_settle 6
+  set HT8_A [list [rw_ans ::label_clipped $HT_SLOT $HT_ANN] [ht_txt] [ht_tip] [ht_tiptext]]
+  ## A real <Enter> puts a show for the OLD sentence in the queue.
+  rw_w event generate $HT_SLOT <Enter> -x 5 -y 5 -when now
+  set HT8_Q0 [ht_pending]
+  rw_ans ::rdw::key summary
+  ht_settle 6
+  set HT8_B [list [rw_ans ::label_clipped $HT_SLOT $HT_SUM] [ht_txt] [ht_tip] [ht_tiptext]]
+  set HT8_Q1 [ht_pending]
+  rw_w event generate $HT_SLOT <Leave> -x 5 -y 5 -when now
+  check {HT8 THE TIP IS RE-ARMED ON EVERY TEXT CHANGE, AND THE OLD SENTENCE'S PENDING SHOW IS CANCELLED WITH IT: balloon bakes its string into <Enter> at bind time, so pressing 2 over a live 1-pick must move the label, the BAKED string and the timer queue together - a re-arm that only re-bound would pop `annotation` one second later over a bar that now says `summary`, which is a tooltip lying about the mode the user is in} \
+    [list $HT8_A $HT8_Q0 $HT8_B $HT8_Q1] \
+    [list [list 1 $HT_ANN 1 $HT_ANN] 1 [list 1 $HT_SUM 1 $HT_SUM] 0]
+
+  ## -------------------------------------------------------------------------
+  ## HT9 — THE TIP IS ARMED ONLY WHEN THE TEXT IS REALLY CUT OFF.
+  ## A tooltip repeating text the reader can already see in full is noise, so
+  ## the arm is `font measure` against the label's own usable width.
+  ##
+  ## ⚠ THE DISCRIMINATION IS DRIVEN WITH TWO TEXTS AT ONE WIDTH, NOT ONE TEXT
+  ## AT TWO WIDTHS, AND THAT IS A MEASUREMENT.  The first spelling resized the
+  ## main window 1200 -> 600 and asserted the two slot widths differed; on :0
+  ## (Xwayland) `wm geometry .` came back with the SAME width both times and the
+  ## row went red at its own precondition with nothing wrong -- the same
+  ## environment-coupling issue 1385 is about, self-inflicted.  A one-character
+  ## string fits in any label and a 300-character one fits in none, on any
+  ## server and in any font, so the predicate, the arm and the disarm are all
+  ## driven here without asking a window manager for anything.  The wide/narrow
+  ## MAIN WINDOW measurement is real and is recorded in issue 1384 (the tip
+  ## appears below ~815 px on :99); it is a fact about a font, not a contract.
+  ht_reset
+  rw_ans ::rdw::key annotation
+  ht_settle 6
+  set HT9_LONG [string repeat {the sentence that cannot possibly fit } 8]
+  set HT9_P [list [rw_ans ::label_clipped $HT_SLOT {x}] \
+                  [rw_ans ::label_clipped $HT_SLOT $HT9_LONG]]
+  ## The ARM follows the predicate, both ways, and the disarm really removes
+  ## the binding rather than leaving a stale one behind.
+  set HT9_A0 [list [rw_ans ::balloon_clipped $HT_SLOT {x} 1] [ht_tip]]
+  set HT9_A1 [list [rw_ans ::balloon_clipped $HT_SLOT $HT9_LONG 1] [ht_tip]]
+  ## `balloon_show` renders the string it is HANDED -- called directly, with the
+  ## pointer warped on to the widget first because its own first line refuses
+  ## anywhere else (FZ11's technique).
+  ##
+  ## ⚠ THIS LEG IS ABOUT `balloon_show`, NOT ABOUT THE TOOLTIP, AND THE ROW NOW
+  ## SAYS SO.  Its first spelling claimed the string rendered "through the real
+  ## <Enter> and the real balloon_show" while calling `balloon_show` itself --
+  ## no <Enter>, no 1000 ms delay, no arrival from the canvas.  It was green
+  ## while the tooltip was UNREACHABLE by the only gesture that reaches it.  Row
+  ## HT12 drives the gesture; this row is the unit underneath it, and the two
+  ## sentences no longer overlap.
+  catch {destroy $HT_SLOT.balloon}
+  rw_w event generate $HT_SLOT <Motion> -warp 1 \
+    -x [expr {[winfo width $HT_SLOT] / 2}] -y [expr {[winfo height $HT_SLOT] / 2}]
+  rw_w update
+  rw_w balloon_show $HT_SLOT $HT9_LONG 1
+  rw_w update
+  set HT9_SHOWN [expr {[winfo exists $HT_SLOT.balloon] ?
+                       [expr {[rw_w $HT_SLOT.balloon.txt cget -text] eq $HT9_LONG ? 1 : 0}]
+                       : {NO-BALLOON}}]
+  catch {destroy $HT_SLOT.balloon}
+  rw_ans ::balloon_off $HT_SLOT
+  set HT9_OFF [list [ht_tip] [ht_pending]]
+  ## and the live hint's own arm still agrees with the predicate afterwards
+  ht_settle 6
+  set HT9_BACK [ht_tipok]
+  check {HT9 THE TOOLTIP IS ARMED ONLY WHERE IT IS OWED, DRIVEN WITH A STRING THAT FITS IN ANY LABEL AND ONE THAT FITS IN NONE: label_clipped says 0 for `x` and 1 for a 300-character sentence in the same widget at the same width, balloon_clipped arms a tip for exactly the second of them and for neither the first, balloon_show renders that whole string when it is called with it, balloon_off takes both the binding and any pending show away again, and the live hint's own arm still agrees with the predicate when the backstop next looks - which is the ARM half of the contract, the SHOWING half being row HT12's} \
+    [list $HT9_P $HT9_A0 $HT9_A1 $HT9_SHOWN $HT9_OFF $HT9_BACK] \
+    [list {0 1} {0 0} {1 1} 1 {0 0} 1]
+
+  ## -------------------------------------------------------------------------
+  ## HT10 — EVERY EXIT FROM THE MODE CLEARS IT.  A stale `Click on instance`
+  ## after the pick has ended is worse than no hint: it is an instruction for a
+  ## click that will do nothing.  All four doors are driven -- the command
+  ## `pick_end`, a real ESC on the CANVAS (where the seize binds it), a real
+  ## ESC on `.rdw` (ruling DD-12's second door, issue 1308) and `pick_resume`'s
+  ## DROP path, the one exit that is not a `pick_end` at all.
+  ##
+  ## ⚠ THE DROP PATH IS REACHED BY MAKING THE CANVAS UNREACHABLE, which is what
+  ## closing the window under a suspended mode does; `.drw` itself cannot be
+  ## destroyed inside a running suite.  Every leg is the same five facts: the
+  ## label, its state, the tip binding, the timer and the recorded slot.
+  proc ht_state_up   {} { return [list [ht_txt] [ht_st] [ht_tipok] [ht_pumping] [ht_recorded] [ht_tagged]] }
+  ## No convergence and no `update` here: the clear is a SYNCHRONOUS door and
+  ## the row's whole claim is that it does not need the backstop.
+  proc ht_state_down {} { return [list [ht_txt] [ht_st] [ht_tip]   [ht_pumping] [ht_recorded] [ht_tagged]] }
+  ## ⚠ THE SIXTH FACT IS THE BINDING TAG, AND IT IS HERE AND NOT IN A ROW OF ITS
+  ## OWN ON PURPOSE.  The tag is a write on a widget the seize also writes; an
+  ## exit that blanked the label but left the tag would leave `rdw::_hint_sync`
+  ## running on every canvas motion for the rest of the session, on a canvas
+  ## with no mode -- invisible, and exactly the class of residue this section's
+  ## other five facts exist to catch.
+  set HT_CLEAR [list { } normal 0 0 NO-SLOT 0]
+  ## ⚠ AT A WIDTH WHERE THE TIP IS ARMED, DELIBERATELY.  The clear has to take
+  ## the <Enter> binding with it, not merely the text: a tip left behind would
+  ## explain a sentence that is no longer on the label, on a widget that is
+  ## C's `DRAW WIRE!` slot the rest of the time.  Asserting the UP state with
+  ## the tip at 0 would have fenced only half the clear.
+  rw_w wm geometry . 600x761
+  ht_settle 6
+  ht_reset
+  rw_ans ::rdw::key annotation ; ht_settle 6
+  set HT10_UP1 [ht_state_up]
+  rw_ans ::rdw::pick_end
+  set HT10_A [ht_state_down]                  ;# no settle: the door is synchronous
+  ht_reset
+  rw_ans ::rdw::key summary ; ht_settle 6
+  set HT10_UP2 [ht_state_up]
+  rw_w focus -force .drw
+  rw_w event generate .drw <Key-Escape> -when now
+  set HT10_B [ht_state_down]
+  ht_reset
+  rw_ans ::rdw::key all ; ht_settle 6
+  rw_ans ::rdw::open ; ht_settle 4
+  set HT10_UP3 [ht_state_up]
+  rw_w focus -force .rdw
+  rw_w event generate .rdw <Key-Escape> -when now
+  set HT10_C [ht_state_down]
+  rw_ans ::rdw::close
+  ht_reset
+  rw_ans ::rdw::key annotation ; ht_settle 6
+  set HT10_UP4 [ht_state_up]
+  rw_ans ::rdw::pick_suspend
+  set ::rdw::pick(canvas) .nosuchcanvas
+  rw_ans ::rdw::pick_resume {}
+  set HT10_D [ht_state_down]
+  ht_reset
+  check {HT10 EVERY EXIT FROM THE PICK MODE TAKES THE HINT WITH IT, AND THREE OF THE FOUR DO IT SYNCHRONOUSLY: the label, its state, the tooltip binding, the backstop timer, the recorded slot AND the private binding tag on the canvas all go back to where they started after rdw::pick_end, after a real ESC on the canvas where the seize binds it, after a real ESC on the RESULTS window - ruling DD-12's second door - and after pick_resume's drop path, the one exit that is not a pick_end.  Each is asserted UP first, so a row that cleared nothing because nothing was ever shown cannot pass} \
+    [list $HT10_UP1 $HT10_A $HT10_UP2 $HT10_B $HT10_UP3 $HT10_C $HT10_UP4 $HT10_D] \
+    [list [list $HT_ANN active 1 1 $HT_SLOT 1] $HT_CLEAR \
+          [list $HT_SUM active 1 1 $HT_SLOT 1] $HT_CLEAR \
+          [list $HT_ALL active 1 1 $HT_SLOT 1] $HT_CLEAR \
+          [list $HT_ANN active 1 1 $HT_SLOT 1] $HT_CLEAR]
+  ## (the third leg of each six is `ht_tipok`, the agreement flag, so these
+  ## goldens are the same on a server that clips all three sentences and on one
+  ## that clips only two.)
+
+  ## -------------------------------------------------------------------------
+  ## HT11 — THE CLEAR THAT IS REACHED BY A STATE AND NOT BY AN EXIT.
+  ## `rdw::_hint_sync` blanks in two places: once for a slot that MOVED, once
+  ## for a sentence that no longer exists.  An audit neutered the second and the
+  ## whole suite stayed green, because every row above drives an EXIT -- and on
+  ## an exit `$slot` becomes {} and the first blank has already fired.  The case
+  ## only the second covers is a LIVE mode whose `::rdw::listkind` names a list
+  ## `rdw::_list_name` has no words for: `hint(slot)` still equals `$slot`, so
+  ## nothing above it fires, and without it the PREVIOUS list's sentence stands
+  ## on the sheet under a mode that no longer means it.
+  ##
+  ## ⚠ `refresh` IS NOT INVENTED FOR THIS ROW.  It is a real `rdw::key`
+  ## argument and a real value of `::rdw::listkind`, which is why row HT1 makes
+  ## `rdw::_hint_text` answer the empty string for it rather than
+  ## `Click on instance for refresh OP info`.  This row is the other end of that
+  ## same decision: an identity the sentence has no words for takes the sentence
+  ## OFF, and does not end the mode, which is still the user's to leave with ESC.
+  ht_reset
+  rw_ans ::rdw::key annotation ; ht_settle 6
+  set HT11_UP [list [ht_txt] [ht_tagged] [ht_pumping]]
+  set HT11_K0 $::rdw::listkind
+  set ::rdw::listkind refresh
+  set HT11_R [rw_ans ::rdw::_hint_sync]      ;# synchronous: no settle
+  set HT11_DOWN [list [ht_txt] [ht_st] [ht_tip] [ht_pumping] [ht_recorded] [ht_tagged]]
+  set HT11_STILL [rw_ans ::rdw::pick_running]
+  set ::rdw::listkind $HT11_K0
+  ht_reset
+  check {HT11 A LIVE MODE WHOSE LIST IDENTITY HAS NO SENTENCE TAKES THE SENTENCE OFF THE SHEET AND KEEPS THE MODE: with an annotation pick running, moving ::rdw::listkind to `refresh` - a real rdw::key argument that rdw::_list_name deliberately has no words for - makes rdw::_hint_sync answer 0 and blank the slot, drop the tooltip, stop the backstop, forget the recorded slot and take the binding tag off the canvas, all in the same call and with the pick still RUNNING.  This is the one clear no exit reaches, and neutering it used to leave every row in this suite green} \
+    [list $HT11_UP $HT11_R $HT11_DOWN $HT11_STILL] \
+    [list [list $HT_ANN 1 1] 0 $HT_CLEAR 1]
+
+  ## -------------------------------------------------------------------------
+  ## HT12 — THE TOOLTIP AS THE USER MEETS IT, END TO END, BOTH WAYS.
+  ## "if user hovers on the visible portion of the message in the status bar,
+  ## can we do a tooltip that displays the rest?" -- the second half of the
+  ## request, and the half no row above this one drives.
+  ##
+  ## ⚠ THE CANVAS SWEEP IS PART OF THE GESTURE, NOT SCENE-SETTING.  The status
+  ## bar can only be reached FROM the canvas, and the trip past it is what
+  ## blanks the label.  MEASURED before the synchronous door existed: identical
+  ## gesture, 3/3 runs, `winfo containing` said `.statusbar.10`, the <Enter>
+  ## binding was correct, the sentence was on the label -- and NO balloon was
+  ## ever created, because the slot had collapsed to 8 px on the way past and
+  ## the regrow re-armed the tip, cancelling the `after 1000 balloon_show` the
+  ## <Enter> had queued with the pointer already inside.  A row that warps
+  ## straight on to the label, or calls `balloon_show` itself, cannot see that.
+  ## Nothing here is synthesised except the pointer's own movement: no <Enter>
+  ## is generated, no delay is shortened, and the assertion is a real toplevel.
+  ##
+  ## ⚠ AND THE NEGATIVE IS DRIVEN BY ENDING THE MODE, NOT BY WIDENING THE
+  ## WINDOW, AND THAT IS A MEASUREMENT.  "No tip when the sentence FITS" is
+  ## already row HT9's, driven with two texts at one width because a window
+  ## manager is not obliged to honour a resize -- on :0 (Xwayland) `wm geometry`
+  ## came back with the SAME slot width at 1200 and at 600, which is what redded
+  ## HT9's first spelling.  So this row asks for exactly ONE width, the 600 px
+  ## row HT8 already depends on, and takes its negative from the contract that
+  ## cannot be argued with an environment: after the mode ENDS, the identical
+  ## gesture on the identical label must produce nothing at all.  A tip left
+  ## behind there would explain a sentence that is no longer on the widget, on
+  ## C's own `DRAW WIRE!` slot.
+  ##
+  ## ⚠ AND THE WIDTH IS THE WINDOW'S, NOT `-width` ON THE LABEL.  Pinning the
+  ## label's requested width would clip the sentence just as well AND would
+  ## remove the collapse -- which is the mechanism the defect needed, so the row
+  ## would pass against the code it exists to catch.
+  ht_reset
+  rw_w wm geometry . 600x761
+  ht_settle 6
+  rw_ans ::rdw::key annotation ; ht_settle 6
+  set HT12_CLIP [rw_ans ::label_clipped $HT_SLOT $HT_ANN]
+  set HT12_SHOWN [ht_hover_tip]
+  ht_park
+  ht_settle 4
+  set HT12_LIVE [rw_ans ::rdw::pick_running]
+  rw_ans ::rdw::pick_end
+  ht_settle 4
+  set HT12_AFTER [list [ht_hover_tip] [ht_tip] [ht_pending]]
+  ht_park
+  ht_reset
+  check {HT12 THE USER'S OWN GESTURE PRODUCES THE USER'S OWN TOOLTIP, AND THE MODE ENDING TAKES IT AWAY: with the pick live at a width where the sentence is measurably cut off, twenty-five real canvas motions followed by a real warp on to the status bar and the real 1000 ms balloon delay - no synthetic <Enter>, no direct balloon_show, no shortened timer - put a real toplevel on screen carrying the WHOLE sentence, and the pick is still running afterwards because a hover is not an exit; after ESC the identical gesture on the identical label produces no balloon, no <Enter> binding and no pending show.  The canvas sweep is the load-bearing half: the status bar can only be reached FROM the canvas, and the trip past it is what used to collapse the label to 8 px and cancel the show the arrival had queued} \
+    [list $HT12_CLIP $HT12_SHOWN $HT12_LIVE $HT12_AFTER] \
+    [list 1 $HT_ANN 1 [list 0 0 0]]
+
+  ## -------------------------------------------------------------------------
+  ## HT15 — A RE-DECISION MUST NOT COST THE USER A TIP THEY ARE WAITING FOR.
+  ## `balloon` bakes its string into <Enter> at bind time, so the arm has to be
+  ## re-taken when something it depends on moves -- and every re-take goes
+  ## through `balloon_clipped`, which begins with `balloon_off`, which CANCELS
+  ## the `after 1000 balloon_show` a pointer already on the label has queued.
+  ## With the pointer inside, no second <Enter> ever comes, so a re-arm taken
+  ## for no reason is a tooltip the user never gets.
+  ##
+  ## ⚠ THIS IS THE MECHANISM THAT MADE THE TOOLTIP UNREACHABLE, and it is fenced
+  ## HERE rather than in HT12 because HT12's collapse-and-regrow no longer
+  ## happens: the cache key is the clipped VERDICT and not `winfo width`, so the
+  ## width may move as much as it likes while the answer stands still.
+  ##
+  ## ⚠ AND THE WIDTH IS MOVED WITH `-width` ON THE LABEL, NOT WITH THE WINDOW.
+  ## A window manager is not obliged to honour `wm geometry` -- on :0 the same
+  ## request returned the same width twice, which is what redded HT9's first
+  ## spelling -- and a row whose precondition is a resize is a row about a
+  ## compositor.  Two requested widths far below the sentence keep the verdict
+  ## at 1 on any server and in any font, which is exactly the case under test.
+  ht_reset
+  rw_w wm geometry . 600x761
+  ht_settle 6
+  rw_ans ::rdw::key annotation ; ht_settle 6
+  catch {destroy $HT_SLOT.balloon}
+  rw_w event generate $HT_SLOT <Motion> -warp 1 \
+    -x [expr {[rw_w winfo width $HT_SLOT] / 2}] \
+    -y [expr {[rw_w winfo height $HT_SLOT] / 2}]
+  catch {update}
+  ## no synthetic <Enter>: the warp above is a real crossing and Tk sends one.
+  set HT15_Q0 [ht_pending]
+  ## the width moves and the verdict does not
+  rw_w $HT_SLOT configure -width 20
+  ht_settle 3
+  set HT15_A [list [rw_w winfo width $HT_SLOT] \
+                   [rw_ans ::label_clipped $HT_SLOT $HT_ANN] [ht_pending]]
+  rw_w $HT_SLOT configure -width 30
+  ht_settle 3
+  set HT15_B [list [rw_w winfo width $HT_SLOT] \
+                   [rw_ans ::label_clipped $HT_SLOT $HT_ANN] [ht_pending]]
+  set HT15_MOVED [expr {[lindex $HT15_A 0] != [lindex $HT15_B 0] ? 1 : 0}]
+  ## and the tip the pointer was waiting for still arrives
+  for {set _i 0} {$_i < 45} {incr _i} { catch {update} ; after 30 }
+  set HT15_SHOWN [ht_balloon]
+  catch {destroy $HT_SLOT.balloon}
+  rw_w $HT_SLOT configure -width 0
+  ht_park
+  ht_reset
+  check {HT15 A RE-DECISION THAT CHANGES NOTHING MUST NOT CANCEL A TIP THE POINTER IS ALREADY WAITING FOR: with the pointer resting on a clipped sentence and a show queued, moving the label's requested width twice - two different pixel widths, the clipped verdict 1 at both - leaves the queued show ALIVE through every re-assert and the whole sentence really appears after the balloon's own delay.  The arm is cached on the VERDICT and not on the pixels, because balloon_clipped begins with balloon_off and a pointer that never left will never send a second <Enter> to re-queue what a pointless re-arm threw away} \
+    [list $HT15_Q0 $HT15_A $HT15_B $HT15_MOVED $HT15_SHOWN] \
+    [list 1 [list [lindex $HT15_A 0] 1 1] [list [lindex $HT15_B 0] 1 1] 1 $HT_ANN]
+
+  ## -------------------------------------------------------------------------
+  ## HT14 — A REAL TAB, WHICH IS THE CASE HT2's FIRST SPELLING GOT WRONG.
+  ## That row said the slot arithmetic was "right for a tab too, because the
+  ## tabbed interface shares one [status bar]".  Sharing the bar is exactly what
+  ## makes it wrong: the CANVAS path is not shared with it.  This row drives a
+  ## real tab and asserts the four facts, so the claim can never be re-derived
+  ## from the comment again.
+  ##
+  ## ⚠ AND IT ALSO PINS A HOLE THAT IS NOT THIS FEATURE'S: `rdw::pick_start`
+  ## asks `winfo exists [xschem get current_win_path]`, which is 0 in a tab, so
+  ## 1/2/3 with nothing selected does NOTHING in a tab and says nothing, not
+  ## even in the CIW.  Issue 1387.  The row asserts the SILENCE that follows
+  ## from it -- no sentence on any bar, no timer, no tag, no recorded slot --
+  ## so the day 1387 is fixed by giving the seize the real canvas widget, this
+  ## row goes red and whoever fixes it is told the hint has to follow.  Fixing
+  ## it that way also makes `rdw::_hint_slot` right with no tab arm at all,
+  ## which is why there is not one.
+  ht_reset
+  set HT14_OPEN [rw_ans xschem schematic_in_new_window force]
+  ht_settle 8
+  set HT14_CV [rw_w xschem get current_win_path]
+  set HT14_FACTS [list [rw_w winfo exists $HT14_CV] \
+                       [rw_w xschem get top_path] \
+                       [rw_ans ::rdw::_hint_slot $HT14_CV] \
+                       [rw_w winfo exists [rw_ans ::rdw::_hint_slot $HT14_CV]]]
+  set HT14_START [rw_ans ::rdw::pick_start]
+  ht_settle 6
+  set HT14_QUIET [list [ht_txt] [ht_st] [ht_pumping] [ht_recorded] [ht_tagged]]
+  rw_ans ::rdw::pick_end
+  set HT14_CLOSE [rw_ans xschem new_schematic destroy $HT14_CV]
+  ht_settle 8
+  set HT14_BACK [list [rw_w xschem get current_win_path] [llength [rw_w xschem windows]]]
+  ht_reset
+  check {HT14 IN A TAB THE CANVAS PATH IS NOT A WIDGET, THE STATUS BAR IS THE SHARED ONE, AND THE PICK MODE SAYS NOTHING ANYWHERE: a real second tab reports current_win_path .x1.drw with winfo exists 0 - tabs share the one real .drw - and an EMPTY top_path, which is the prefix C itself writes .statusbar.10 with, so the string arithmetic answers a widget that does not exist; rdw::pick_start refuses there (issue 1387, a hole in the seize and not in the hint), and the refusal is TOTAL - no sentence on the shared bar, no backstop timer, no recorded slot and no binding tag - and the tab closes back to the main canvas} \
+    [list $HT14_OPEN $HT14_FACTS $HT14_START $HT14_QUIET $HT14_CLOSE $HT14_BACK] \
+    [list 1 [list 0 {} .x1.statusbar.10 0] 0 [list { } normal 0 NO-SLOT 0] 0 [list .drw 1]]
+
+  ## THE SECTION LEAVES THE PROCESS AS IT FOUND IT: no mode, no hint, the store
+  ## and the list identity back, the main window back at the geometry it was
+  ## handed -- which `xwin_exit` will store for whatever file is current.
+  rw_ans ::rdw::pick_end
+  rw_ans ::rdw::close
+  set ::rdw::blocks $HT_BLK0
+  rw_ans ::rdw::set_list $HT_KEEP
+  rw_w xschem unselect_all
+  if {$HT_GEOM0 ne {} && ![rw_bad $HT_GEOM0]} { rw_w wm geometry . $HT_GEOM0 }
+  ## ⚠ AND THE POINTER IS PARKED, WHICH IS NOT TIDINESS -- IT IS A RED THIS
+  ## SECTION WOULD OTHERWISE CAUSE IN THE NEXT RUN.  Row HT9 warps the pointer
+  ## on to `.statusbar.10` because `balloon_show` refuses to draw anywhere else
+  ## (FZ11's technique), and the X pointer OUTLIVES the process on a shared
+  ## display.  MEASURED: after a run that left the pointer on `.rdw.b.fontsize`
+  ## the NEXT run's row FZ7 read that button's state as `active` instead of
+  ## `normal` and went red with nothing whatever changed in the tree -- the
+  ## same class of cross-run leak as issue 1385's, one mechanism along, and
+  ## FZ11 / FZ17 / FZ18 park nothing.  The corner of the screen is under no
+  ## window of this application.
+  catch {event generate . <Motion> -warp 1 \
+           -x [expr {[winfo screenwidth .] - [winfo rootx .] - 2}] \
+           -y [expr {[winfo screenheight .] - [winfo rooty .] - 2}]}
+  ht_settle 4
+}
 
 set S1_F [expr {[file isfile $RW_FILE] ? [rw_nocomment [rw_slurp $RW_FILE]] : {NOFILE}}]
 check {S1 STRUCTURAL the forbidden doors: rdw.tcl reaches the seam ONLY through ase::backend_hook, never by the backend proc's name, and names none of `xschem raw value` / ase::sim_capabilities / blanket_op_save / ase::theme (op_param_lists:: moved to row BT22 when item B5 wired the store)} \
@@ -8576,7 +10119,79 @@ else { set ::ev_precision $RW_EVP_SAVE }
 ## the one number in this item the user has not ruled on) and re-spelling moves
 ## no count.  A floor is raised when rows are added and NEVER lowered to make a
 ## run pass.
-set RW_FLOOR 186
+## ⚠ RAISED 186 -> 187 BY THE MULTI-ROW PRESS (issue 1356's ruling).  SIX rows
+## were added -- RE12 (a rebuild never trades real numbers for a refusal),
+## BT37, BT38, BT39, BT40 and BT41 -- and exactly ONE of them, RE12, runs on
+## the --nogui arm; the other five drive a real `sel` tag on a real Text widget
+## and live inside this file's `live_tk` block, so they are deliberately
+## uncounted here.  MEASURED: --nogui 198 checks, `:99` 241.
+## ⚠ RAISED 187 -> 191 BY THE CLOSE BUTTON (issue 1382, item A of the RDW UX
+## batch).  SIX rows were added in section CB and FOUR of them run on the
+## --nogui arm: CB1 (the widget in the builder, its place at the foot of the
+## column, its absence from `rdw::_buttons`, and the greying loop now walking
+## that one table), CB2 (one rule two doors - the WM protocol and the button's
+## -command name the same proc, `rdw::close` is named exactly twice in the
+## whole builder, and Escape still ends the pick rather than the window, which
+## is ruling DD-12's asymmetry), CB3 (the withdraw contract at source: close
+## names `blocks` nowhere, and neither does open) and CB4 (`rdw::button close`
+## refuses, changes nothing, and no longer denies a button the user can see).
+## CB5 and CB6 need a real widget - the three live -states, the column's
+## stacking, a real `.rdw.b.close invoke` and a reopen that repaints the same
+## two dumps - and are `live_tk`-gated, deliberately uncounted.  MEASURED:
+## --nogui 202 checks, `:99` 247.  A floor is raised when rows are added and
+## NEVER lowered to make a run pass.
+## ⚠ AND RAISED 191 -> 193 BY THE REPAIR OF 1382, WHICH IS THE SAME ISSUE
+## FENCING THE DAMAGE ITS OWN FIRST PASS DID.  Close made the column request
+## 243 px against the 208 px `wm minsize .rdw 520 260` leaves it, and at the
+## window's OWN advertised minimum `winfo ismapped .rdw.b.fontsize` was 0 --
+## issue 1368's control, evicted, on a minimum written for item B3's five
+## buttons and never re-judged.  Every earlier measurement of this column was
+## taken at the DEFAULT 893x498, where nothing shows.  TWO both-arm rows: CB7
+## (the minimum is set in exactly one place, derives from the column, and
+## rdw::build names no literal) and CB8 (closing the window does not end a
+## running pick, which is the other half of a comment that claimed a misclick
+## on Close "costs nothing at all" -- it costs no DUMPS, and the mode outlives
+## it by design).  CB9 (the seven controls read back at the window's own
+## minimum, the row that would have gone red the day Close landed) and CB10
+## (the live pick surviving a real press) need a display and are
+## `live_tk`-gated, deliberately uncounted.  MEASURED: --nogui 204 checks,
+## `:99` 251.  A floor is raised when rows are added and NEVER lowered to make
+## a run pass.
+## ⚠ AND RAISED 193 -> 197 BY ISSUE 1384, IN THE SAME COMMIT AS THE FOUR
+## BOTH-ARM ROWS OF SECTION HT: HT1 (the user's three sentences out of one
+## template, fenced by the proc that owns the list names), HT2 (the slot is
+## `.statusbar.10` per top-level and NEVER C's wide `statusmsg()` field), HT3
+## (every door of the hint answers rather than raising with no Tk at all, which
+## is what keeps this file's unguarded `source` from killing --nogui startup)
+## and HT4 (one proc decides what the slot says and every exit is a door on
+## it).  HT5..HT10 are `live_tk`-gated and deliberately uncounted: they want a
+## real status bar, a real `font measure` and a real tooltip.  Row FZ4 is
+## RE-SPELLED by the same commit rather than added - its tooltip leg moves from
+## a bare `::balloon` count of 1 to the three calls BY NAME - so it does not
+## move the count.  A floor is raised when rows are added and NEVER lowered to
+## make a run pass.
+## ⚠ AND RAISED 197 -> 198 BY 1384's REPAIR PASS, which adds ONE both-arm row -
+## HT4b, the structure of the synchronous re-assert: one tag, one script, one
+## event list, `bindtags` written from two procs and nowhere else, and the four
+## seized sequences ending in `break`, which is why the backstop timer still has
+## a job.  FIVE more rows are `live_tk`-gated and uncounted: HT11 (the clear
+## reached by a state and not by an exit - an audit neutered that line and the
+## whole suite stayed green), HT12 (the tooltip through the user's OWN gesture,
+## canvas sweep and real 1000 ms delay included - the half that was measured
+## UNREACHABLE while HT9 was green), HT13 (the slot's width is a step and not a
+## 12 Hz swing), HT14 (a real tab, where HT2's first spelling was measured
+## backwards) and HT15 (a re-decision that changes nothing must not cancel a tip
+## the pointer is waiting for).  Rows HT2, HT4, HT6, HT9 and HT10 are RE-SPELLED
+## by the same pass, not added, so they do not move the count.  MEASURED after
+## it: --nogui 209 checks, `:99` 267.
+##
+## ⚠ AND EVERY ONE OF THOSE ROWS WAS SABOTAGED BEFORE IT WAS BELIEVED.  Taking
+## the binding tag out reds HT6, HT13, HT10, HT11 and (in the keys suite) HP1;
+## putting the tip's cache key back on `winfo width` reds HT15; doing BOTH -- the
+## state this feature actually shipped in -- reds those six AND HT12, the user's
+## gesture.  Each half alone leaves the tooltip working, which is why neither
+## half is fenced by HT12 on its own and both have a row of their own.
+set RW_FLOOR 198
 set RW_RAN [expr {$npass + $fail}]
 if {$RW_RAN < $RW_FLOOR} {
   puts "FAIL: RWFLOOR the suite ran only $RW_RAN checks, below its floor of\

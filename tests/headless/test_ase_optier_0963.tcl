@@ -77,6 +77,21 @@ set here [file normalize [file dirname [info script]]]
 set repo [file normalize [file join $here .. ..]]
 source [file join $here scratch.tcl]
 set scratch [test_scratch optier0963]
+
+## ISOLATION FROM WHOEVER'S ~/.xschem/ase_simulators IS LIVE (issue 1377).
+test_sim_registry_isolate     ;# issue 1377: the registry below is OURS, not ~/.xschem's
+## ISOLATED AS A PRECAUTION, NOT ON A CONVICTION -- SAY SO OR THE NEXT READER
+## WILL BELIEVE THE WRONG THING. The 1377 sweep saw this suite read 1 FAILED (X7)
+## under a registry naming a WORKING program while reading ALL PASS (102) under
+## both the developer's HOME and an empty one. That single failure DID NOT
+## REPRODUCE: the unisolated file was re-run three more times under the same
+## hostile registry and read ALL PASS (102) every time, so X7 is a FLAKE and this
+## suite is NOT one of the eleven the sweep convicted. The line stays because X7
+## drives a real ngspice and reads vectors back by name, so a registered entry is
+## in a position to steer it -- but nothing here is evidence that it ever did.
+## ⚠ THIS SUITE NEEDS `--nogui`; its GUI arm hangs for ever (issue 1375).
+check "ISO1377 the suite runs against an empty simulator registry, not the one in ~/.xschem" \
+  [test_sim_registry_state] {0 {} {} path}
 set ASETCL [file join $repo src ase.tcl]
 set OPTCL  [file join $repo src op_annot.tcl]
 

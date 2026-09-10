@@ -3,8 +3,20 @@
 # "Dialog style"):
 #   H1     ase::open_state trailing ro arg -> session attr `readonly`
 #          (every open sets it; a plain reopen clears it)
-#   H2     ase::ui::save_as_needs_confirm (D8): readonly+same-target /
-#          plain same-target / unwritable-file same-target / different target
+#   H2     ase::ui::save_as_needs_confirm (D8, UNCHANGED by the D13 overrule):
+#          readonly+same-target / plain same-target / unwritable-file
+#          same-target / a target this session does not own -- both the
+#          unresolvable one and an EXISTING sibling, which is the row the old
+#          fourth-row name only pretended to be
+#   H2b    ase::ui::save_as_overwrites_other (S-2..S-6), the SECOND door the
+#          user's 2026-09-09 overrule of D13 added: a DIFFERENT EXISTING state
+#          -> 1, this session's own -> 0, a missing target -> 0, an UNTITLED
+#          session against an existing target -> 1 (S-3); the two predicates
+#          are mutually exclusive on every target; and the predicate is PURE --
+#          it creates nothing and writes nothing
+#   H2c/d  the two overwrite SENTENCES, both minted in the lbl_* family (S-7):
+#          the new one interpolates the l/c/v it was given, the read-only one
+#          is the shipped string byte for byte, embedded newline included
 #   H3     ase::ui::do_save_state_as creates a MISSING view through
 #          library_new_view and writes this session's serialization (D9)
 #   H4     ase::ui::do_load_state_from imports content into THIS session,
@@ -19,7 +31,9 @@
 #          the explicit OFF and writes `{}` -- the ON default -- back on, issue
 #          0927); Simulation Options add/delete; Save-As
 #          prefill / new-view create / same-target clean save; read-only
-#          same-target confirm gate; Load State browser (opens defaulted to
+#          same-target confirm gate; G8b the DIFFERENT-EXISTING-state confirm
+#          gate driven through the real menu -- the row the silent-clobber
+#          defect would have failed; Load State browser (opens defaulted to
 #          the session's own Library/Cell with the View column filled and no
 #          View preselected -- G9a; a Library change clears the stale status
 #          -- G9b; an unknown cell degrades one column only -- G9c; a bare OK
@@ -318,7 +332,27 @@ check "H1 ro-open sets the session readonly attr" \
 check "H1 plain reopen returns 1" [ase::open_state aselib nfet_clean ngspice_state1] 1
 check "H1 plain reopen clears it" [ase::session_getattr $key readonly] 0
 
-# --- H2: save_as_needs_confirm predicate (D8/D13) ----------------------------
+# --- H2: save_as_needs_confirm predicate (D8) --------------------------------
+# ⚠ D13 IS RETIRED, AND THE USER RETIRED IT (2026-09-09). D13 read "overwriting
+# a DIFFERENT existing view needs NO confirm in v1 -- the spec's only confirm
+# trigger is read-only + same-target", and it described the shipped window
+# accurately: measured that day on the live binary with session `ngspice_state1`
+# open and its sibling view `debug_st1` present and writable,
+# `save_as_needs_confirm` answered **0** for `debug_st1` -- so typing an
+# existing sibling view into the Save-As form destroyed it with no warning at
+# all. The user's ruling, verbatim: "Just confirm if overwriting an existing
+# state." Undo was explicitly NOT asked for; a confirm was.
+#
+# THIS PREDICATE IS UNCHANGED BY THAT (batch decision S-1,
+# doc/claude/ase_l_ux_batch/DECISIONS.md). It still answers exactly "the target
+# IS my own file AND that file is effectively read-only", and the four rows
+# below still pin it, byte for byte. The NEW door is
+# `ase::ui::save_as_overwrites_other` -- section H2b.
+#
+# What the overrule DID change here is a NAME (S-9). The fourth row used to be
+# called "H2 different target needs no confirm even readonly" -- a promise about
+# the WINDOW, and the window no longer makes it. Renamed to name the PREDICATE
+# and its value. Its assertion is untouched.
 ase::session_setattr $key readonly 1
 check "H2 needs_confirm: readonly + same target" \
   [ase::ui::save_as_needs_confirm $key aselib nfet_clean ngspice_state1] 1
@@ -330,9 +364,125 @@ check "H2 unwritable file same target" \
   [ase::ui::save_as_needs_confirm $key aselib nfet_clean ngspice_state1] 1
 file attributes $spath -permissions 0644
 ase::session_setattr $key readonly 1
-check "H2 different target needs no confirm even readonly" \
+check "H2 needs_confirm: 0 for an unresolvable target, readonly or not" \
   [ase::ui::save_as_needs_confirm $key aselib nfet_clean ngspice_state9] 0
+# ...and S-1's REAL pin, which the row above only looked like. `ngspice_state9`
+# does not exist, so that call returns at the unresolvable guard and never
+# reaches the own-vs-other comparison at all. `ngspice_stateB` DOES exist, is
+# NOT this session's file, and the session is read-only-flagged besides: still
+# 0. Widening save_as_needs_confirm to swallow the new case -- the thing S-1
+# forbids -- turns THIS row red and no other.
+check "H2 needs_confirm: 0 for an EXISTING target this session does not own, readonly or not" \
+  [ase::ui::save_as_needs_confirm $key aselib nfet_clean ngspice_stateB] 0
 ase::session_setattr $key readonly 0
+
+# --- H2b: save_as_overwrites_other predicate (S-2 .. S-6) --------------------
+# The second door, added 2026-09-09 when the user overruled D13: 1 iff the
+# resolved target EXISTS and is NOT this session's own state file, else 0.
+# `ngspice_stateB` is the fixture's second, DIFFERING state view (seeded above
+# through library_new_view for the H4/G9 import legs) -- an existing file this
+# session does not own, which is precisely the case that used to be destroyed
+# in silence. `ngspice_state9` is never created by this fixture.
+set fh [::open $bpath r]; set h2b_before [read $fh]; close $fh
+check "H2b overwrites_other: a DIFFERENT, EXISTING state -> 1 (S-2)" \
+  [ase::ui::save_as_overwrites_other $key aselib nfet_clean ngspice_stateB] 1
+check "H2b overwrites_other: this session's OWN state -> 0 (S-4, that is what Save means)" \
+  [ase::ui::save_as_overwrites_other $key aselib nfet_clean ngspice_state1] 0
+check "H2b overwrites_other: a target that does not exist -> 0 (S-5, creating is not overwriting)" \
+  [ase::ui::save_as_overwrites_other $key aselib nfet_clean ngspice_state9] 0
+# read-only is the OTHER door's business and must not leak into this one
+ase::session_setattr $key readonly 1
+check "H2b overwrites_other: read-only does not change any of the three answers" \
+  [list [ase::ui::save_as_overwrites_other $key aselib nfet_clean ngspice_stateB] \
+        [ase::ui::save_as_overwrites_other $key aselib nfet_clean ngspice_state1] \
+        [ase::ui::save_as_overwrites_other $key aselib nfet_clean ngspice_state9]] \
+  {1 0 0}
+# S-2's load-bearing claim: the two doors are mutually exclusive BY
+# CONSTRUCTION (one arm needs target == own, the other target != own), so
+# save_state_ok can chain them and never has to compose a sentence out of two
+# reasons. Measured as a pair per target, in the ONE session state where both
+# could plausibly fire -- read-only:
+#   own -> {1 0}   different+existing -> {0 1}   missing -> {0 0}   never {1 1}
+set h2b_pairs {}
+foreach h2b_v {ngspice_state1 ngspice_stateB ngspice_state9} {
+  lappend h2b_pairs [list \
+    [ase::ui::save_as_needs_confirm    $key aselib nfet_clean $h2b_v] \
+    [ase::ui::save_as_overwrites_other $key aselib nfet_clean $h2b_v]]
+}
+check "H2b the two doors are mutually exclusive on every target (never both 1)" \
+  $h2b_pairs {{1 0} {0 1} {0 0}}
+ase::session_setattr $key readonly 0
+
+# S-3: an UNTITLED session owns NO file -- `ase::session_path` returns {}, issue
+# 0141's marker -- so EVERY existing target is somebody else's, including the
+# one this fixture's titled session is sitting on. That is the case where a
+# clobber is most likely and least expected, so it is the case that must ask.
+# The suite had no untitled session, so make one the way Tools > Launch ASE-L
+# does: ase::new_session (src/ase.tcl:9840) registers under the untitled
+# metaview, a key of its own, and is closed again below so no later leg inherits
+# a second session on this design.
+set uk [ase::new_session aselib nfet_clean schematic]
+# ...and flagged read-only, deliberately: without the flag the last row of this
+# group could not go red at all. `save_as_needs_confirm` only ever returns 1 on
+# a readonly attr or an unwritable file, so an unflagged untitled session would
+# answer 0 whether or not the proc still bails on `own eq {}` -- a green row
+# measuring nothing. Flagged, dropping that bail turns it red and nothing else.
+ase::session_setattr $uk readonly 1
+check "H2b the untitled session really has no own file" [ase::session_path $uk] {}
+check "H2b overwrites_other: UNTITLED + an EXISTING target -> 1 (S-3)" \
+  [ase::ui::save_as_overwrites_other $uk aselib nfet_clean ngspice_state1] 1
+check "H2b overwrites_other: UNTITLED + a target that does not exist -> 0 (S-5 holds untitled too)" \
+  [ase::ui::save_as_overwrites_other $uk aselib nfet_clean ngspice_state9] 0
+check "H2b needs_confirm stays 0 for a read-only-flagged UNTITLED session (no own file to be read-only)" \
+  [ase::ui::save_as_needs_confirm $uk aselib nfet_clean ngspice_state1] 0
+ase::session_close $uk
+
+# PURITY, asserted rather than assumed: save_as_overwrites_other is called from
+# an OK handler that has NOT yet decided to do anything. Probing a view that
+# does not exist must not create it (contrast ase::rundir, which mkdirs and
+# moves a process-global), and the sibling it just answered about must be
+# byte-identical afterwards.
+set fh [::open $bpath r]; set h2b_after [read $fh]; close $fh
+check_true "H2b the predicate created nothing and wrote nothing" [expr {
+  [xschem cellview_path aselib/nfet_clean ngspice_state9] eq {} &&
+  [lsearch -exact [xschem cell_views aselib nfet_clean] ngspice_state9] < 0 &&
+  $h2b_after eq $h2b_before}]
+
+# --- H2c/H2d: the two overwrite sentences (S-7) ------------------------------
+# Both live in the lbl_* family (src/ase_window.tcl:5578) so that neither is a
+# magic string inside save_state_ok -- the save_all_report_discard drift of
+# issue 0661 is what that family exists to prevent. Asserted THROUGH the procs;
+# every other row in this suite that needs one of these sentences reads it from
+# the proc too, so the literal is typed in exactly one place: here.
+check "H2c lbl_overwrite_state is the ratified sentence" \
+  [ase::ui::lbl_overwrite_state aselib nfet_clean ngspice_stateB] \
+  {State aselib/nfet_clean/ngspice_stateB exists. Overwrite?}
+# ...and it really INTERPOLATES all three arguments rather than naming a fixed
+# target: substituting the fixture's l/c/v out of one rendering must reproduce
+# the rendering taken with placeholder arguments. A proc that dropped, swapped
+# or hardcoded any of the three fails here; a proc that interpolated nothing at
+# all fails the row above.
+check "H2c lbl_overwrite_state interpolates the lib/cell/view it was given" \
+  [ase::ui::lbl_overwrite_state L C V] \
+  [string map {aselib L nfet_clean C ngspice_stateB V} \
+     [ase::ui::lbl_overwrite_state aselib nfet_clean ngspice_stateB]]
+# The read-only sentence was MOVED into the family, not rewritten: it is the
+# string that shipped, byte for byte, embedded newline included. The mint was
+# meant to change zero pixels on the arm it did not come to change, and this
+# row is what says so.
+check "H2d lbl_overwrite_readonly is the SHIPPED read-only sentence, unchanged" \
+  [ase::ui::lbl_overwrite_readonly aselib nfet_clean ngspice_state1] \
+  "The state aselib/nfet_clean/ngspice_state1 was opened read-only.\nOverwrite it?"
+check "H2d ...and its embedded newline survived the move (two lines, not one)" \
+  [llength [split [ase::ui::lbl_overwrite_readonly aselib nfet_clean ngspice_state1] \n]] 2
+# same structural interpolation test as H2c, for the same reason: a sentence
+# that hardcoded one of its three components would render IDENTICALLY under the
+# row above (which feeds it the very values it hardcoded) and only shows up when
+# the arguments change.
+check "H2d ...and it interpolates its lib/cell/view too" \
+  [ase::ui::lbl_overwrite_readonly L C V] \
+  [string map {aselib L nfet_clean C ngspice_state1 V} \
+     [ase::ui::lbl_overwrite_readonly aselib nfet_clean ngspice_state1]]
 
 # --- H3: do_save_state_as creates a missing view (D9) ------------------------
 set r3 [ase::ui::do_save_state_as $key aselib nfet_clean ngspice_state2]
@@ -718,6 +868,156 @@ if {[info exists ::has_x] && [info commands winfo] ne {}} {
     [string match {*Vgs value 1.44*} $sdata]
   check "G8 session clean after the confirmed save" [ase::session_dirty $key] 0
   ase::session_setattr $key readonly 0
+
+  # G8b: THE ROW THE SILENT-CLOBBER DEFECT WOULD HAVE FAILED (S-2).
+  # Save State is always a Save-As, so OK can land on a file that is already
+  # somebody's state. Until 2026-09-09 it just wrote: measured on the live
+  # binary, `save_as_needs_confirm` answered 0 for an existing sibling view and
+  # there was no second door, so an existing state was destroyed with no
+  # warning. Now `save_as_overwrites_other` answers 1 and OK raises the confirm
+  # FIRST. Driven through the REAL menu entry and the REAL form, not the worker:
+  # the defect lived in the OK handler, and a worker-level row would have been
+  # green through all of it.
+  #
+  # A DEDICATED victim view, seeded here rather than reusing `ngspice_stateB`:
+  # stateB is the G9 import fixture and this row's entire subject is a file that
+  # must NOT change, so a regression here must not also redden G9 for a reason
+  # that is not G9's. `library_new_view` is the same real creation backend the
+  # fixture uses; its content is then made distinct from this session's, so a
+  # write of ANY kind moves the bytes.
+  library_new_view aselib nfet_clean ngspice_stateV ngspice_state1
+  set vpath [file normalize [xschem cellview_path aselib/nfet_clean ngspice_stateV]]
+  # THE ANTI-VACUITY GUARD, and it is not decoration. The H2 row renamed above
+  # spent months called "a different target needs no confirm" while pointing at
+  # `ngspice_state9`, a view this fixture never creates -- so it was measuring
+  # the unresolvable-target guard, and it would have stayed green through the
+  # entire defect. A row about overwriting an existing state is worth nothing
+  # unless the state exists, is not this session's own, and holds something this
+  # session would not write.
+  check_true "G8b the victim state exists and is not this session's own file" [expr {
+    $vpath ne {} && [file exists $vpath] &&
+    $vpath ne [file normalize [ase::session_path $key]]}]
+  if {[file exists $vpath]} {
+    set stV [ase::state_load $vpath]
+    dict set stV variables {{name Vgs value 0.11} {name Vds value 0.22}}
+    ase::state_save $vpath $stV
+  }
+  # every read of the victim goes through this, so a red row above degrades the
+  # rows below to reds of their own instead of aborting the GUI block
+  proc g8b_read {} {
+    global vpath
+    set c {}
+    catch {set fh [::open $vpath r]; set c [read $fh]; close $fh}
+    return $c
+  }
+  set vbefore [g8b_read]
+  check_true "G8b ...and it holds something this session would NOT write" [expr {
+    $vbefore ne {} && ![string match {*Vgs value 1.44*} $vbefore]}]
+  $top.mb.session invoke {Save State}
+  update
+  # the form re-opens on the SESSION's own identity, never on whatever was
+  # typed into it last -- so the overwrite below is a thing the user has to type
+  # on purpose, and this row is what says the retype is real rather than a
+  # leftover
+  check "G8b the re-opened Save-As is prefilled with the session's own l/c/v" \
+    [list [$top.saveas.lib get] [$top.saveas.cell get] [$top.saveas.view get]] \
+    {aselib nfet_clean ngspice_state1}
+  $top.saveas.view delete 0 end
+  $top.saveas.view insert 0 ngspice_stateV
+  $top.saveas.btns.proceed invoke
+  update
+  check_true "G8b OK onto a DIFFERENT EXISTING state raises the confirm" \
+    [winfo exists $top.confirm]
+  # One title for both arms, and the sentence READ FROM THE MINT rather than
+  # retyped here -- a drift between the two would be issue 0661 all over again.
+  # Both reads are caught into {}: when the confirm is missing (which is exactly
+  # what the pre-2026-09-09 window did) these rows must go red one by one, not
+  # abort the whole GUI block into a single UNEXPECTED ERROR that says nothing
+  # about which promise broke.
+  set g8b_title {}; catch {set g8b_title [wm title $top.confirm]}
+  set g8b_msg   {}; catch {set g8b_msg [$top.confirm.msg cget -text]}
+  check "G8b the confirm is titled Overwrite State" $g8b_title {Overwrite State}
+  check "G8b the confirm names the state it is about to destroy" $g8b_msg \
+    [ase::ui::lbl_overwrite_state aselib nfet_clean ngspice_stateV]
+  check "G8b the target is byte-identical while the confirm is up" [g8b_read] $vbefore
+  # Cancel: nothing written, and the Save-As form STAYS UP so the user can
+  # retype the view they meant (that is also what keeps save_state_modal's
+  # tkwait from returning a false completion on the quit path)
+  catch {$top.confirm.btns.cancel invoke}
+  update
+  check_true "G8b Cancel dismisses the confirm" \
+    [expr {![winfo exists $top.confirm]}]
+  check "G8b Cancel wrote NOTHING: the target is still byte-identical" [g8b_read] $vbefore
+  check_true "G8b Cancel leaves the Save-As form up to retype in" \
+    [winfo exists $top.saveas]
+  # CLEANUP, caught: a red row above can leave the form already gone, and an
+  # error on the teardown would abort the whole GUI block into one UNEXPECTED
+  # ERROR -- which is how a precise red turns into an unreadable run.
+  catch {$top.saveas.btns.cancel invoke}
+  update
+  check_true "G8b the abandoned Save-As is gone and the session is untouched" [expr {
+    ![winfo exists $top.saveas] && [ase::session_dirty $key] == 0}]
+
+  # --- G8c: THE GATE MUST BE REAL FOR THE KEYBOARD TOO -----------------------
+  # Both rows below are regressions found by this item's own adversary AFTER
+  # the confirm shipped, i.e. the gate existed and was still bypassable.
+  #
+  # G8c-1 <Return>. `save_state_dialog` binds <Return> on all three fields, so
+  # "type the view name, press Return" is the sanctioned submit; `ase::ui::confirm`
+  # then focuses OK and binds <Return> to confirm_ok. Composed, the SAME key
+  # raises the popup and fires it. `ase::ui::confirm_safe_default` puts focus on
+  # Cancel and points <Return> at the dismissal instead. Escape already did.
+  proc g8c_raise {} {
+    uplevel 1 {
+      catch {destroy $top.confirm}
+      $top.mb.session invoke {Save State}
+      for {set i 0} {$i < 100} {incr i} {
+        update ; if {[winfo exists $top.saveas]} break ; settle 20 }
+      $top.saveas.view delete 0 end
+      $top.saveas.view insert 0 ngspice_stateV
+      $top.saveas.btns.proceed invoke
+      for {set i 0} {$i < 100} {incr i} {
+        update ; if {[winfo exists $top.confirm]} break ; settle 20 }
+    }
+  }
+  g8c_raise
+  check_true "G8c the confirm is up again" [winfo exists $top.confirm]
+  check "G8c focus rests on Cancel, not on the destructive button"     [focus -displayof $top.confirm] $top.confirm.btns.cancel
+  check "G8c <Return> on the confirm is the DISMISSAL, not the write"     [bind $top.confirm <Return>] [list destroy $top.confirm]
+  event generate $top.confirm <Return>
+  update
+  check_true "G8c ...and pressing it dismissed rather than wrote"     [expr {![winfo exists $top.confirm]}]
+  check "G8c Return wrote NOTHING: the target is still byte-identical" [g8b_read] $vbefore
+
+  # G8c-2 the ORPHAN. Escape on the Save-As form is the documented item-10
+  # dismissal. It used to destroy the form and leave the confirm alive, so a
+  # user who backed out of the dialog was left with a live destructive button
+  # aimed at their file. `ase::ui::confirm_owned_by` binds the form's <Destroy>.
+  g8c_raise
+  check_true "G8c the confirm is up for the orphan check" [winfo exists $top.confirm]
+  # focus -force first: the confirm holds the keyboard, and a generated Key
+  # event is routed by focus. Without it the ESC lands nowhere and the row
+  # would pass for the wrong reason (no orphan because no dismissal).
+  focus -force $top.saveas
+  update
+  event generate $top.saveas <Key-Escape>
+  update
+  check_true "G8c ESC dismissed the form" [expr {![winfo exists $top.saveas]}]
+  check_true "G8c ESC on the FORM takes the confirm with it (no orphan)" \
+    [expr {![winfo exists $top.confirm]}]
+  check "G8c the orphan path wrote NOTHING either" [g8b_read] $vbefore
+
+  # G8c-3 re-opening the form must not leave a confirm naming the OLD target.
+  # `dialog_frame` destroys the previous form, which fires the same <Destroy>.
+  g8c_raise
+  check_true "G8c the confirm is up for the re-open check" [winfo exists $top.confirm]
+  $top.mb.session invoke {Save State}
+  for {set i 0} {$i < 100} {incr i} {
+    update ; if {[winfo exists $top.saveas]} break ; settle 20 }
+  check_true "G8c re-opening the form drops the stale confirm"     [expr {![winfo exists $top.confirm]}]
+  catch {$top.saveas.btns.cancel invoke}
+  update
+  check "G8c the whole G8c block wrote NOTHING to the victim" [g8b_read] $vbefore
 
   # G9: Session > Load State — browser filtered to simulation-state views,
   # import + dirty, and the dirty-prompt-first gate

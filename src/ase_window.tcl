@@ -31,7 +31,10 @@
 # State: <view>`; the v2 menu tree; NO log pane — a run opens a live-follow
 # log toplevel instead (Ctrl-W closes, Simulation > Log reopens). Palette +
 # named fonts are centralized in ase::theme / ase::ui::apply_theme (USER-
-# LOCKED colors; no ASE widget left on Tk defaults).
+# LOCKED colors; no ASE widget left on Tk defaults). The four type roles —
+# AseEntryFont data, AseBodyFont chrome, AseLabelFont headings, AseMonoFont
+# machine text — are DERIVED from TkDefaultFont/TkFixedFont and name no family
+# (issue 1398); the size knob is `ase_font_size`.
 #
 # Editing model (UI v2 "Panes", item 06): exactly THREE panes — Design
 # Variables, Analyses, Outputs — each a ttk::treeview column table that is a
@@ -102,6 +105,16 @@ namespace eval ase::ui {
   # (simnames/simrow, plus simns — the -n checkbutton's variable, issue 1371).
   # Cleaned on dialog proceed/cancel AND in close.
   variable dlg;     array set dlg {}
+  # issue 1398. cbopt: which toplevels have had their ttk::combobox popdown
+  # option-database entries added (once per window; the entries are additive and
+  # are never removed, so adding them twice is waste, not a bug).
+  # colpolicy: per-treeview {columns headings policy}, so retune_columns can
+  # re-derive a width the way build_pane first derived it.
+  # colfont: the AseEntryFont/AseLabelFont metric the widths were last derived
+  # AT, per toplevel — the guard that stops a retune undoing a dragged column.
+  variable cbopt;     array set cbopt {}
+  variable colpolicy; array set colpolicy {}
+  variable colfont;   array set colfont {}
   # simuse(key): the Simulators dialog's "which one is in force" combobox
   # variable (issue 0937). Session-keyed for the same reason `annot` is: two
   # ASE-L windows can be open at once, and Tk resolves a -textvariable in the
@@ -140,11 +153,17 @@ namespace eval ase::ui {
 # any other window in the application looks.
 #
 # ⚠ That is the whole reason it exists separately from ase::theme. ase::theme
-# does `option add *TCombobox*Listbox.font AseEntryFont`, which is
-# PROCESS-GLOBAL and reaches the popdown of every ttk::combobox in xschem (33
-# call sites, 15 of them in xschem.tcl) — including comboboxes created before
-# the call, because the popdown listbox is built lazily. A caller that only
-# wants to know what colour a panel is must not pay that. The Calculator's
+# RECONFIGURES four named fonts (issue 1398 — it used to `font create` three,
+# guarded, which is why a size knob could never have reached an open window)
+# and it configures the shared ttk styles. A caller that only wants to know
+# what colour a panel is must not pay a font-changed cascade for it — and the
+# per-widget colour reads inside ase::ui::_theme_widget come through HERE for
+# the same reason. Until 1398 ase::theme also did a bare
+# `option add *TCombobox*Listbox.font AseEntryFont`, PROCESS-GLOBAL, reaching
+# the popdown of every ttk::combobox in xschem (33 call sites, 15 of them in
+# xschem.tcl) including ones created before the call, because the popdown
+# listbox is built lazily; that entry is now scoped per ASE window in
+# ase::ui::_combobox_popdown_font. The Calculator's
 # calc::color reads this proc for exactly that reason
 # (doc/claude/specs/calculator.md R113); ase::theme itself returns
 # `[ase::palette $name]` so there is one definition, not two.
@@ -173,25 +192,187 @@ proc ase::palette {{name {}}} {
   return $pal
 }
 
-# The central ASE look: named fonts (created once — the
-# references/copy_current_cell_dialog.tcl idiom), the combobox listbox font +
-# white-field style, and the locked palette applied to the shared styles.
-# Returns the whole palette dict, or one color when `name` is given.
+# One derived hover/trough step off a palette colour: ±40 of 255, with the
+# direction flipped on a dark ground so the step exists at both ends. A
+# deliberate COPY of rdw::_shade_step (rdw.tcl:2499-2515) and its rdw::_rgb255
+# (:2456) rather than a call: ase_window.tcl must not require rdw.tcl to have
+# been sourced. (NOT, as an earlier draft of the plan claimed, because
+# test_rdw_window_1245.tcl:9849 would red — that check constrains rdw.tcl's own
+# literals, not this file's; PLAN.md §0.6.)
+#
+# Why it exists at all: the Button/Menu arms of apply_theme set -background to
+# the palette's panel and left -activebackground at Tk's stock #f8f8f8, which
+# is 1.05:1 against #f2f2f2 — theming ASE-L DESTROYED a hover step stock Tk
+# had. On the shipped palette this returns #cacaca: 1.46:1 against the panel,
+# with black text on it at 12.81:1. Issue 1398.
+#
+# An unparseable colour returns itself, so the worst case is no hover step
+# rather than a wrong colour or a throw.
+proc ase::shade {c} {
+  set rgb {}
+  if {[regexp {^#([0-9a-fA-F]{6})$} $c -> h]} {
+    for {set i 0} {$i < 3} {incr i} {
+      set v 0
+      if {[scan [string range $h [expr {$i * 2}] [expr {$i * 2 + 1}]] %x v] != 1} {
+        return $c
+      }
+      lappend rgb $v
+    }
+  } elseif {[llength [info commands winfo]]} {
+    catch {
+      set raw [winfo rgb . $c]
+      if {[llength $raw] == 3} {
+        foreach v $raw { lappend rgb [expr {int($v / 257.0 + 0.5)}] }
+      }
+    }
+  }
+  if {[llength $rgb] != 3} { return $c }
+  lassign $rgb r g b
+  set d [expr {0.30 * $r + 0.59 * $g + 0.11 * $b > 96 ? -40 : 40}]
+  set out {}
+  foreach v $rgb {
+    set n [expr {$v + $d}]
+    if {$n < 0} { set n 0 }
+    if {$n > 255} { set n 255 }
+    lappend out $n
+  }
+  return [format {#%02x%02x%02x} {*}$out]
+}
+
+# ---------------------------------------------------------------------------
+# THE TYPE ROLES, Tk HALF — ISSUE 1398. Nothing below may be reached without a
+# display: `--nogui` has no `font` command AT ALL, measured, which is the same
+# trap rdw.tcl:2553 records for every other Tk command.
+
+# Create-or-RECONFIGURE one named font. `font create` RAISES on a name that
+# already exists, which is why ase::theme guarded each of its three fonts with
+# an lsearch — and why a size knob would have been dead on arrival: the guard
+# meant a size change could never reach a window that was already open.
+# slickprop::_mkfont (property_form.tcl:340) and rdw::_font (rdw.tcl:2589) are
+# the two shapes already in this tree; this is theirs.
+#
+# ⚠ THE NO-OP GUARD IS LOAD-BEARING, NOT TIDY. ase::theme is reached from
+# ase::ui::apply_theme, and ase::ui::populate (:1597 below) runs that on EVERY
+# state mutation across ~53 widgets. A `font configure` that writes the same
+# spec back still fires Tk's font-changed cascade to every widget carrying the
+# font, so an unguarded reconfigure turns each repopulate into a relayout
+# storm. Comparing first makes the steady state free and keeps the knob live.
+proc ase::_mkfont {name spec weight} {
+  if {$spec eq {}} { return }
+  set want [dict merge $spec [dict create -weight $weight -slant roman \
+                                          -underline 0 -overstrike 0]]
+  if {[lsearch -exact [font names] $name] < 0} {
+    if {[catch {font create $name}]} { return }
+  } elseif {![catch {font configure $name} have] && $have eq $want} {
+    return
+  }
+  catch {font configure $name {*}$want}
+}
+
+# The user's ASE-L text size in points, or {} for "follow TkDefaultFont".
+# Declared as `set_ne ase_font_size 0` in src/xschem.tcl beside its two
+# siblings ciw_font_size and rdw_font_size.
+#
+# Read on every ase::theme call rather than once, so it is ORDER-INDEPENDENT:
+# an xschemrc that sets it after this file is sourced still lands, and because
+# ase::_mkfont RECONFIGURES, re-calling ase::theme rescales every open ASE
+# window and dialog with no widget walk at all.
+#
+# ⚠ AN OUT-OF-BAND VALUE IS REFUSED, NOT CLAMPED. ciw_font (ciw.tcl:391) and
+# rdw::font_size (rdw.tcl:2313) both refuse; a clamp turns a typo into a silent
+# new setting the user never chose and can only discover by measuring glyphs.
+proc ase::font_size {} {
+  if {![info exists ::ase_font_size]} { return {} }
+  set n $::ase_font_size
+  if {![string is integer -strict $n] || $n == 0} { return {} }
+  if {$n < 6 || $n > 32} { return {} }
+  # ⚠ CANONICAL INTEGER, NOT THE RAW STRING. `string is integer -strict` accepts
+  # ` 8 `, `+8` and `0x10`; handing any of those back defeats ase::_mkfont's
+  # no-op guard for the life of the process, because Tk normalises the stored
+  # spec and `$have eq $want` can then never be true — four font configures on
+  # every ase::theme call, and ase::ui::populate calls it on every mutation.
+  # Measured 2026-09-09 by this item's adversary. This cannot change WHICH
+  # values are accepted; the band test above has already run.
+  return [expr {$n + 0}]
+}
+
+# The central ASE look: the four named fonts DERIVED from the system faces, the
+# combobox field style + state map, and the locked palette applied to the
+# shared styles. Returns the whole palette dict, or one color when `name` is
+# given.
 #
 # ⚠ NOT a pure reader — see ase::palette. Call THIS when widgets are about to
 # be created or themed; call ase::palette when only a colour is wanted.
 proc ase::theme {{name {}}} {
-  if {[lsearch -exact [font names] AseLabelFont] < 0} {
-    font create AseLabelFont -family Arial -size 10 -weight bold
+  # --- THE FOUR TYPE ROLES, DERIVED. No family literal anywhere. Issue 1398.
+  #
+  # This window asked for Arial 10 bold and Courier 13. NEITHER FAMILY IS
+  # INSTALLED here — `fc-match Arial` -> Nimbus Sans, `fc-match Courier` ->
+  # Nimbus Mono PS — so Tk substituted silently and ASE-L became the only
+  # window in the application not in the system face: the RDW, the Calculator,
+  # the Library Manager, the CIW and the property form all render in DejaVu.
+  # ASE-L's OWN menubar was Nimbus too, because the Menu arm of apply_theme
+  # paints it — it was not the exception, it was part of the same fault, and
+  # it was the only BOLD menubar in the process.
+  #
+  # ⚠ `font configure`, NOT `font actual`. `configure` answers the spec AS
+  # SPELLED, so a TkDefaultFont an xschemrc spelled in PIXELS is copied
+  # verbatim; `actual` normalises pixels to POINTS behind the user's back and
+  # the copy then drifts the moment `tk scaling` moves. MEASURED on :99 with
+  # the base at `-size -14`: the `configure` copy is 18 px linespace at scaling
+  # 1.39 and 18 px at 2.0, tracking the base exactly, while the `actual` copy
+  # is 17 px and then 24 px — 33% adrift, from a spelling the user chose.
+  # rdw.tcl:2562 records the same trap from the other side.
+  #
+  # ⚠ ONE SIZE, SEPARATED BY WEIGHT. The old ladder was 10 bold over 13
+  # regular — headings THREE POINTS SMALLER than the rows they head — and
+  # apply_theme put the bold font on 52 of the window's 53 fonted widgets
+  # (measured, the one exception being the temperature entry), so nothing in
+  # the window could be emphasised because everything already was. Bold is now
+  # spent on labelframe titles and column headings and on nothing else.
+  #
+  # ⚠ AseLabelFont KEEPS ITS NAME AND KEEPS ITS BOLD, and only loses its job.
+  # src/wave_viewer.tcl carries it on widgets outside this window's theming
+  # walk (:9036, :9052, :9075, :9425, :10498), so inverting the name to regular
+  # would silently un-bold them. AseBodyFont is the one new name and takes
+  # everything the bold font used to paint.
+  if {[llength [info commands font]]} {        ;# --nogui has no `font` at all
+    set uispec {}
+    set mospec {}
+    catch {set uispec [font configure TkDefaultFont]}
+    catch {set mospec [font configure TkFixedFont]}
+    set want [ase::font_size]
+    if {$want ne {} && $uispec ne {}} { dict set uispec -size $want }
+    if {$want ne {} && $mospec ne {}} { dict set mospec -size $want }
+    ase::_mkfont AseEntryFont $uispec normal   ;# DATA: cells, entries, combos
+    ase::_mkfont AseBodyFont  $uispec normal   ;# CHROME: menus, buttons, prose
+    ase::_mkfont AseLabelFont $uispec bold     ;# HEADINGS ONLY: titles+columns
+    ase::_mkfont AseMonoFont  $mospec normal   ;# MACHINE TEXT: the log
   }
-  if {[lsearch -exact [font names] AseEntryFont] < 0} {
-    font create AseEntryFont -family Arial -size 13
+  # ⚠ THE COMBOBOX POPDOWN FONT IS NO LONGER SET HERE. It used to be a global
+  # `option add *TCombobox*Listbox.font AseEntryFont`, which permanently changed
+  # the dropdown font of EVERY combobox in xschem the moment a bench was
+  # opened. It is now scoped per ASE window — see
+  # ase::ui::_combobox_popdown_font below, which also records why the obvious
+  # narrowing does not work.
+  #
+  # ⚠ THE COMBOBOX STATE MAP IS THE POINT, not the base -fieldbackground.
+  # ttk's own `map TCombobox -fieldbackground {readonly #d9d9d9 disabled
+  # #d9d9d9}` is inherited by every derived style, so declaring only the base
+  # colour still painted BOTH readonly comboboxes the palette's own DISABLED
+  # grey — including "Use this one:" in the Simulators dialog, the control
+  # that decides which binary runs. The Calculator measured and fixed this
+  # identical trap (test_calc_skeleton.tcl:1271-1292); ASE-L never got it.
+  # Locked palette values only, and `map` REPLACES rather than merges, so the
+  # disabled half is re-declared alongside.
+  catch {
+    ttk::style configure Ase.TCombobox \
+      -fieldbackground [ase::palette table] -foreground [ase::palette fieldfg]
+    ttk::style map Ase.TCombobox \
+      -fieldbackground [list readonly [ase::palette table] \
+                             disabled [ase::palette disabledbg]] \
+      -foreground [list disabled [ase::palette disabledfg]]
   }
-  if {[lsearch -exact [font names] AseMonoFont] < 0} {
-    font create AseMonoFont -family Courier -size 13
-  }
-  option add *TCombobox*Listbox.font AseEntryFont
-  catch {ttk::style configure Ase.TCombobox -fieldbackground [ase::palette table]}
   # pane tables (UI v2): white rows in the entry font, the USER-LOCKED
   # header-strip color on the column headings.
   # The -foreground and the state map are declared rather than inherited: they
@@ -211,44 +392,200 @@ proc ase::theme {{name {}}} {
                         selected [ase::palette selectbg]] \
       -foreground [list disabled [ase::palette disabledfg] \
                         selected [ase::palette selectfg]]
+    # the heading's -foreground is DECLARED for the same reason the rows' is:
+    # unowned, it comes from whatever `dark_gui_colorscheme` last wrote into
+    # the option database. Its value is the measured `default`-theme default,
+    # so nothing moved on the light palette (issue 1398).
     ttk::style configure Ase.Treeview.Heading -font AseLabelFont \
-      -background [ase::palette header]
+      -background [ase::palette header] -foreground [ase::palette fieldfg]
   }
   return [ase::palette $name]
+}
+
+# The popdown LISTBOX of a ttk::combobox has no -font option: ttk builds it
+# LAZILY on the first post and it takes its font from the OPTION DATABASE. So
+# the option database is the only lever, and ase::theme used to pull it with a
+# bare `option add *TCombobox*Listbox.font AseEntryFont` — an unqualified
+# pattern that permanently changed the dropdown font of every combobox in
+# xschem (33 constructor sites, including ones that already existed) the moment
+# a bench was opened. test_calc_skeleton.tcl:120-137 records that leak in prose.
+#
+# ⚠ AND THE OBVIOUS NARROWING DOES NOT WORK. MEASURED on :99 against a real
+# `.ase9.simdlg.use.popdown.f.l` and a control combobox outside the window:
+#
+#     *TCombobox*Listbox.font       ase HIT    other HIT    <- the shipped leak
+#     *ase*TCombobox*Listbox.font   ase miss   other miss   <- matches NOTHING:
+#                                        the path component is `ase9`, not
+#                                        `ase`, and option components match
+#                                        WHOLE, never by prefix
+#     .ase9*Listbox.font            ase miss   other miss   <- a LEADING dot
+#                                        makes an empty first component
+#     *ase9*Listbox.font            ase HIT    other miss   <- the one that works
+#
+# So the pattern is built from the window's own `.aseN` component. `option add`
+# is additive and is never removed, so re-adding it on every repopulate would
+# grow the option database for the life of the process: one entry per ASE
+# window, recorded in `cbopt`, and never again.
+proc ase::ui::_combobox_popdown_font {w} {
+  variable cbopt
+  # ⚠ THE SCOPE IS THE TOPLEVEL WE WERE HANDED, NOT AN `aseN` NAME. This proc
+  # first matched only `ase[0-9]+`, but ase::ui::apply_theme is called on FIVE
+  # waveform-viewer trees (src/wave_viewer.tcl:9252, 16233, 16683, 16983,
+  # 17066) whose toplevels are `wvN`. Those comboboxes got AseEntryFont on the
+  # ENTRY and left their popdown on the ambient font, so with ::ase_font_size
+  # set the control scaled and its own dropdown did not. Measured 2026-09-09.
+  # Keying on the toplevel keeps the per-window scoping that replaced the old
+  # process-global `option add *TCombobox*Listbox.font` — which reached all 33
+  # ttk::combobox call sites in xschem — while covering every tree that is
+  # actually themed.
+  # ⚠ THE ROOT COMPONENT, NOT `winfo toplevel`. Every ASE-L dialog IS a
+  # toplevel (`.ase4.simdlg`), so `winfo toplevel` answers `.ase4.simdlg` and
+  # the pattern would carry a dot in the middle — `*ase4.simdlg*Listbox.font`,
+  # which matches nothing. Measured: it left the ASE-L window's own comboboxes
+  # with an unstyled popdown, i.e. it broke the case the old `ase[0-9]+` scan
+  # got right. The first path component is `ase4` for the window AND for every
+  # dialog under it, and `wv3` for a waveform-viewer tree.
+  set root [lindex [split [string trimleft $w .] .] 0]
+  if {$root eq {} || [info exists cbopt($root)]} { return }
+  set cbopt($root) 1
+  # The popdown LIST is a separate widget from the field. Owning the field's
+  # background (Ase.TCombobox -fieldbackground) and not the list's left a white
+  # field above a grey80 list — they matched before this batch, both grey.
+  catch {option add *$root*Listbox.font AseEntryFont}
+  catch {option add *$root*Listbox.background [ase::palette table]}
+  catch {option add *$root*Listbox.foreground [ase::palette fieldfg]}
 }
 
 # Recursively re-skin an ASE widget tree: every widget class the ASE window
 # uses gets the locked palette + a named font — no stock-Tk leftovers. The
 # shared `textwindow` viewer (Netlist > Display) deliberately stays stock:
 # restyling it would restyle every non-ASE use.
+#
+# ⚠ THE FONTS AND SHARED STYLES ARE BUILT ONCE PER WALK, NOT ONCE PER WIDGET.
+# ase::theme is not a pure reader (its own header says so) and, since issue
+# 1398, it RECONFIGURES four named fonts instead of create-guarding three. The
+# per-widget colour reads below therefore go through ase::palette, which is
+# pure; the one ase::theme call is here.
 proc ase::ui::apply_theme {w} {
+  catch {ase::theme}
+  ase::ui::_theme_widget $w
+  # the fonts may just have moved under the columns; retune_columns is a no-op
+  # unless they actually did
+  catch {ase::ui::retune_columns [winfo toplevel $w]}
+}
+
+# The recursion. Split out of apply_theme so ase::theme runs once per walk.
+#
+# ⚠ EVERY ARM THAT WRITES A BACKGROUND NOW WRITES A FOREGROUND (issue 1398).
+# Without one, xschem's shipped `dark_gui_colorscheme 1` (src/xschem.tcl:19078,
+# `option add *foreground white startupFile`) won every widget ASE-L painted:
+# MEASURED live, 58 widgets at 1.119:1 — the whole action strip, the whole
+# status bar, every menu and every cascade — and the temperature entry at
+# 1.000:1, white on its own #ffffff, literally invisible. Owning the foreground
+# is the WHOLE of that fix. It is NOT a new colour: on the shipped light
+# palette fieldfg is #000000, which is what every classic widget already
+# rendered, so this moves zero pixels there. ase::palette stays USER-LOCKED.
+proc ase::ui::_theme_widget {w} {
+  # ⚠ A LIVE TOOLTIP IS NOT OURS. ::balloon (src/xschem.tcl:14948-14958) builds
+  # `<parent>.balloon` as a CHILD toplevel with -background black and a
+  # lightyellow label, and ase::ui::populate ends in apply_theme on every state
+  # mutation — so a tooltip that happened to be on screen when a row changed
+  # was repainted to panel grey with its border gone, in place, while the user
+  # was reading it.
+  if {[string match {*.balloon} $w]} { return }
+  set pal   [ase::palette]
+  set panel [dict get $pal panel]
+  set table [dict get $pal table]
+  set fg    [dict get $pal fieldfg]
+  set dis   [dict get $pal disabledfg]
+  set hot   [ase::shade $panel]
   set cls [winfo class $w]
   switch -- $cls {
-    Toplevel - Frame - Labelframe - Menu - Button - Label - Checkbutton {
-      catch {$w configure -background [ase::theme panel]}
-      catch {$w configure -font AseLabelFont}
-      if {$cls eq {Labelframe}} {
-        catch {$w configure -foreground [ase::theme accent]}
-      }
+    Toplevel - Frame {
+      catch {$w configure -background $panel}
+    }
+    Labelframe {
+      # ⚠ THE ACCENT IS THE ONLY -foreground THIS ARM MAY WRITE. The three pane
+      # titles are the window's one accent surface and test_ase_window.tcl:551
+      # pins them at #8b0000; a generic fieldfg written after it would red that
+      # check and flatten the only grouping cue the window has.
+      catch {$w configure -background $panel -font AseLabelFont \
+                          -foreground [dict get $pal accent]}
+    }
+    Menu {
+      catch {$w configure -background $panel -foreground $fg \
+                          -activebackground $hot -activeforeground $fg \
+                          -disabledforeground $dis -font AseBodyFont}
+    }
+    Button - Checkbutton - Radiobutton {
+      # Radiobutton is new here: Choose Analyses' four type pills were stock
+      # #d9d9d9 against a #f2f2f2 window because no arm claimed them.
+      catch {$w configure -background $panel -foreground $fg \
+                          -activebackground $hot -activeforeground $fg \
+                          -disabledforeground $dis -font AseBodyFont}
+      # The indicator box is a third colour and only two of the three classes
+      # have it, so it gets its own catch: ONE unknown option voids the WHOLE
+      # configure call, which would silently leave a Button unthemed.
+      catch {$w configure -selectcolor $table}
+    }
+    Label {
+      catch {$w configure -background $panel -foreground $fg -font AseBodyFont}
     }
     Entry {
-      catch {$w configure -background [ase::theme table] -font AseEntryFont}
+      # -insertbackground is a foreground too: the dark scheme's
+      # `option add *insertBackground white` put a white caret in the white
+      # temperature field, so even the cursor was invisible.
+      # ⚠ AND -readonlybackground AND -disabledbackground. A Tk Entry in
+      # `readonly` or `disabled` state paints with THOSE, not with -background,
+      # so owning only -background and -foreground made the dark scheme WORSE
+      # than it was: measured 2026-09-09, the Simulators row editor's readonly
+      # Name: field went from 12.635:1 (white on grey20, inherited) to
+      # 1.662:1 — black text on the option database's near-black ground —
+      # in the very scheme this arm exists to fix. Both values are already in
+      # the locked palette; no new colour is minted here.
+      #
+      # ⚠ READONLY TAKES `disabledbg`, NOT `table`. A readonly Entry that is the
+      # same white as an editable one has lost the only thing that said it was
+      # not editable — and the shipped light scheme drew it grey (the ambient
+      # `option add *readonlyBackground grey70`). disabledbg keeps the
+      # affordance, keeps it identical in both schemes, and reads 14.17:1
+      # against fieldfg. The Simulators row editor's `Name:` field is the one
+      # widget in ASE-L this decides.
+      catch {$w configure -background $table -foreground $fg \
+                          -readonlybackground [dict get $pal disabledbg] \
+                          -disabledbackground [dict get $pal disabledbg] \
+                          -disabledforeground $dis -insertbackground $fg \
+                          -selectbackground [dict get $pal selectbg] \
+                          -selectforeground [dict get $pal selectfg] \
+                          -font AseEntryFont}
+    }
+    Listbox {
+      # Load State's three lib/cell/view browsers (:6150). They were stock
+      # apart from the two options set at construction, so the selection they
+      # draw came from the ambient theme rather than the locked palette.
+      catch {$w configure -background $table -foreground $fg \
+                          -disabledforeground $dis \
+                          -selectbackground [dict get $pal selectbg] \
+                          -selectforeground [dict get $pal selectfg] \
+                          -font AseEntryFont}
     }
     Text {
-      catch {$w configure -background [ase::theme table] -font AseMonoFont}
+      catch {$w configure -background $table -foreground $fg \
+                          -insertbackground $fg -font AseMonoFont}
     }
     TCombobox {
       catch {$w configure -font AseEntryFont -style Ase.TCombobox}
+      ase::ui::_combobox_popdown_font $w
     }
     Treeview {
       # ttk widgets ignore -background/-font configure: style-based theming
       catch {$w configure -style Ase.Treeview}
     }
     Scrollbar {
-      catch {$w configure -background [ase::theme panel]}
+      catch {$w configure -background $panel}
     }
   }
-  foreach c [winfo children $w] { ase::ui::apply_theme $c }
+  foreach c [winfo children $w] { ase::ui::_theme_widget $c }
 }
 
 # The toplevel of the session `key`, or {} (the ase::open_state raise seam and
@@ -294,6 +631,19 @@ proc ase::ui::open {key lib cell view} {
   ## pair left the bar naming ngspice-ver50 while ase::sim_label already
   ## answered the new entry -- a name on the bar for a simulator that would NOT
   ## run, until the run itself healed it.
+  ##
+  ## 1395: AND AS OF THAT ISSUE THAT DOOR ALSO PERSISTS. `ase::sim_register`
+  ## and `ase::sim_unregister` write the saved list themselves (ase::sim_touch),
+  ## so the CIW pair above now survives the restart it always promised -- the
+  ## dialog is no longer the only door that reaches disk.
+  ##
+  ## ⚠ AND THE CHOICE HALF OF THAT DOOR DOES NOT, DELIBERATELY. `ase::sim_select`
+  ## writes nothing: the user's ruling is that *which* registered simulator is
+  ## the one to use is part of the ASE-L state, so it DIRTIES the session and
+  ## waits for an explicit save. Registering is environment and lands at once;
+  ## choosing is state and is saved with the bench. The dialog's own combobox
+  ## goes through ase::ui::simdlg_use, which sets the state key and never the
+  ## file.
   ##
   ## ⚠ NO ARGUMENT. The registry is process-global and this hook has no session
   ## to name, so it repaints EVERY open bar. Same single-slot discipline as
@@ -417,9 +767,12 @@ proc ase::ui::ask_save_close {key} {
 
 # Run Save State (Save-As) MODALLY for the close/quit paths: show the modeless
 # save_state_dialog, block until it is dismissed, and report whether the save
-# COMPLETED (1) or was cancelled (0). No grab (the RO-overwrite confirm is a
-# nested child). Completion is flagged by do_save_state_as via
-# dlg($key,saveas_result).
+# COMPLETED (1) or was cancelled (0). No grab (the overwrite confirm is a nested
+# child — since 2026-09-09 that is EITHER the read-only confirm or the new
+# "this state exists" one, save_state_ok :6481; both are the same modeless
+# ase::ui::confirm and both leave THIS dialog up, so the tkwait below still
+# ends only on a completed save or a dismissed form). Completion is flagged by
+# do_save_state_as via dlg($key,saveas_result).
 proc ase::ui::save_state_modal {key} {
   variable wins; variable dlg
   if {![dict exists $wins $key]} { return 0 }
@@ -518,8 +871,11 @@ proc ase::ui::build {key top} {
     -command [list ase::ui::simulators_dialog $key]
 
   menu $top.mb.analyses -tearoff 0
-  $top.mb add cascade -label Analyses -menu $top.mb.analyses
-  $top.mb.analyses add command -label "Choose\u2026" \
+  $top.mb add cascade -label [ase::ui::lbl_analyses] -menu $top.mb.analyses
+  # ⚠ LABELS FROM THE CONSTANTS, NOT TYPED HERE (issue 1391). The `OP,TR`
+  # strip button's tooltip is `ase::ui::menu_path_choose_analyses`, composed
+  # from these two; typing either string twice is how the 0661 drift happened.
+  $top.mb.analyses add command -label [ase::ui::lbl_choose] \
     -command [list ase::ui::choose_analyses $key]
 
   menu $top.mb.variables -tearoff 0
@@ -548,18 +904,23 @@ proc ase::ui::build {key top} {
     -command [list ase::ui::save_all_dialog $key]
 
   menu $top.mb.sim -tearoff 0
-  $top.mb add cascade -label Simulation -menu $top.mb.sim
+  $top.mb add cascade -label [ase::ui::lbl_simulation] -menu $top.mb.sim
   menu $top.mb.sim.netlist -tearoff 0
   $top.mb.sim.netlist add command -label Recreate \
     -command [list ase::ui::do_netlist_recreate $key]
   $top.mb.sim.netlist add command -label Display \
     -command [list ase::ui::view_netlist $key]
   $top.mb.sim add cascade -label Netlist -menu $top.mb.sim.netlist
-  $top.mb.sim add command -label {Netlist and Run} \
+  # ⚠ THESE THREE LABELS ARE READ BY MORE THAN THIS MENU (issue 1391). The
+  # `N&>` / `>` / `!` strip buttons tip from the composed paths, and issue
+  # 1389's second-launch refusal names `[ase::ui::menu_path_stop]` as the way
+  # out. Rename an entry here and the tip and the refusal follow it.
+  $top.mb.sim add command -label [ase::ui::lbl_netlist_and_run] \
     -command [list ase::ui::do_run $key]
-  $top.mb.sim add command -label Run \
+  $top.mb.sim add command -label [ase::ui::lbl_run] \
     -command [list ase::ui::do_run_existing $key]
-  $top.mb.sim add command -label Stop -command [list ase::ui::do_stop $key]
+  $top.mb.sim add command -label [ase::ui::lbl_stop] \
+    -command [list ase::ui::do_stop $key]
   $top.mb.sim add command -label Log -command [list ase::ui::show_log $key]
   $top.mb.sim add command -label "Options\u2026" \
     -command [list ase::ui::sim_options_dialog $key]
@@ -681,8 +1042,8 @@ proc ase::ui::build {key top} {
   # forbids. Which raw the window reports is answered live at open time
   # (calc::results_source), not by whoever opened it.
   menu $top.mb.tools -tearoff 0
-  $top.mb add cascade -label Tools -menu $top.mb.tools
-  $top.mb.tools add command -label {Waveform Viewer} \
+  $top.mb add cascade -label [ase::ui::lbl_tools] -menu $top.mb.tools
+  $top.mb.tools add command -label [ase::ui::lbl_waveform_viewer] \
     -command [list ase::ui::open_viewer $key]
   $top.mb.tools add command -label Calculator -command calc::open
 
@@ -690,8 +1051,23 @@ proc ase::ui::build {key top} {
   # key `temperature`, commit-validated numeric -> `.temp <T>` in the deck)
   frame $top.tb
   entry $top.tb.temp -width 7
+  # ⚠ THE TIP IS ARMED BEFORE THE TWO BINDS, AND THE FocusOut BIND IS `+`
+  # (issue 1391). `balloon` (xschem.tcl:14826) does a PLAIN `bind` on <Enter>,
+  # <Leave> and <FocusOut>, so whichever of the two is written second wins the
+  # FocusOut slot outright. MEASURED on :99 before this was written: arming the
+  # tip after the bind left
+  #     <FocusOut> = after cancel balloon_show %W {...} 1; destroy %W.balloon
+  # and `ase::ui::temp_commit` was simply gone -- a temperature typed and then
+  # clicked away from would never reach the deck, with nothing said. So the
+  # balloon goes first and the commit APPENDS. Order here is load-bearing;
+  # W1s3 reads the composed script back off the live widget and reds if either
+  # half is missing.
+  #
+  # This entry is the only widget in the window carrying no word of its own --
+  # the `°C` label beside it gives the unit, not the subject.
+  catch {::balloon $top.tb.temp [ase::ui::lbl_sim_temperature] 1 0 300}
   bind $top.tb.temp <Return>   [list ase::ui::temp_commit $key]
-  bind $top.tb.temp <FocusOut> [list ase::ui::temp_commit $key]
+  bind $top.tb.temp <FocusOut> +[list ase::ui::temp_commit $key]
   label $top.tb.degc -text "\u00b0C"
   pack $top.tb.temp -side left -padx {6 2} -pady 2
   pack $top.tb.degc -side left
@@ -746,6 +1122,30 @@ proc ase::ui::build {key top} {
        -side top -padx 2 -pady 1
   pack $top.strip -side right -fill y
 
+  # --- 1391: EVERY STRIP BUTTON GETS A TIP, FROM ONE TABLE --------------------
+  # Eight glyphs and not one word between them; `N&>` and `~` are not guessable
+  # and never were. The strings come from `ase::ui::strip_tips` (~:5477) so the
+  # FIVE with a menubar twin tip with the twin's own label, composed. Five,
+  # not four: `OP,TR` is `Analyses > Choose…` and is twinned like the rest.
+  #
+  # ⚠ ONE LOOP, NOT EIGHT CALLS. The suite asserts that EVERY child of
+  # $top.strip carries a tip, so a ninth button added without a `strip_tips`
+  # entry reds W1s2 rather than shipping bare -- which a hand-written list of
+  # eight calls could not do.
+  #
+  # ⚠ `catch`, like rdw.tcl:3226: `balloon` is pure Tk and the headless suites
+  # drive these procs with no display at all.
+  # ⚠ 300 ms, matching rdw.tcl:3226 rather than the 1000 ms default the rest of
+  # the tree takes. That figure is the user's "as soon as user hovers over it"
+  # and is still UNRATIFIED -- rule debt 1368; this inherits it rather than
+  # opening a second question.
+  # ⚠ INSTANCE <Enter> ONLY. MEASURED on :99: `bind Button <Enter>` is still
+  # `tk::ButtonEnter %W` after the call, so the buttons keep their hover
+  # highlight -- a class binding is not what `balloon` replaces.
+  foreach {sfx tip} [ase::ui::strip_tips] {
+    catch {::balloon $top.strip.$sfx $tip 1 0 300}
+  }
+
   # UI v2 body: EXACTLY three panes (spec "Panes") — Design Variables (left,
   # full height), Analyses (right top), Outputs (right bottom); each a
   # ttk::treeview column table (pure view — no inline editing, no +/-)
@@ -760,13 +1160,32 @@ proc ase::ui::build {key top} {
   grid columnconfigure $top.body 1 -weight 2
   grid rowconfigure $top.body 0 -weight 1
   grid rowconfigure $top.body 1 -weight 1
+  # COLUMN POLICY (issue 1398), one `{glyphs stretch anchor}` triple per column
+  # instead of the pixel constant that used to sit here. The width is that many
+  # `0`s of the DATA font, floored at the column's own heading ink in the
+  # HEADING font — see ase::ui::colw, which also records why this cannot ship
+  # without the derived fonts above it.
+  #
+  # ⚠ EXACTLY ONE STRETCHY COLUMN PER TABLE, and it is the content column.
+  # ttk hands slack out in ABSOLUTE PIXELS across every -stretch 1 column and
+  # clamps on the way down at -minwidth, but never gives the clamped pixels
+  # back on the way up — so the old all-stretch tables RATCHETED. Measured on
+  # the shipped code, four drag cycles at 798 px moved `#` from 32 px to 60 px
+  # permanently, bled `Type` 63 -> 59, and took `Save Options` from 90 to 87,
+  # i.e. that heading clipped for the rest of the session after ONE drag.
+  #
+  # ⚠ -anchor center on the three flag columns. `Enable` was 63 px of column
+  # for a 16 px glyph pinned to the left edge; centring it is what makes
+  # Stage 5's checkbox hit-band a band and not a guess.
   ase::ui::build_pane $key $top vars {name value} {Name Value} \
-    {name 140 value 120}
+    {name {14 0 w} value {13 1 w}}
   ase::ui::build_pane $key $top ana {num type enable args} \
-    [list # Type Enable Arguments] {num 30 type 60 enable 60 args 260}
+    [list # Type Enable Arguments] \
+    {num {3 0 e} type {6 0 w} enable {3 0 center} args {28 1 w}}
   ase::ui::build_pane $key $top outs {name value plot save saveopts} \
     [list Name Value Plot Save {Save Options}] \
-    {name 120 value 110 plot 50 save 50 saveopts 90}
+    [list name {12 0 w} value {11 1 w} plot {3 0 center} save {3 0 center} \
+          saveopts {10 0 w}]
   pack $top.body -side top -fill both -expand 1
 
   ase::ui::apply_theme $top
@@ -780,18 +1199,124 @@ proc ase::ui::build {key top} {
 # menu. Item ids are the row's 0-based index into the pane's state list
 # (repopulate after every mutation keeps them dense), so identify/selection
 # results address the state directly.
-proc ase::ui::build_pane {key top pane columns headings widths} {
+# A column's width: `n` glyphs of the DATA font, never below its own heading's
+# ink in the HEADING font. This is what stops `Enable` rendering `Enabl` and
+# `Save Options` rendering `Save Option`. Called with n == 0 it answers the
+# heading floor alone, which is the column's -minwidth. Issue 1398.
+#
+# ⚠ THIS IS WHY THE COLUMN POLICY CANNOT SHIP WITHOUT THE DERIVED FONTS, and
+# vice versa. Pixel constants against POINT font sizes break at every
+# `tk scaling`: measured live on the shipped code at scaling 2.0, `Enable`
+# needed 65 px in a 63 px column, `Save` 46 in 50 and `Save Options` 128 in 90
+# — 72 after four resize cycles. And the derived bold is WIDER than the
+# substituted one, so the font change ALONE would have made `Save Options` clip
+# worse than it already did in its 90 px column.
+#
+# The +16 is ttk's own heading padding, both sides, on the `default` theme.
+# With no display (`--nogui`) there is no `font` command at all, so the glyph
+# falls back to a plain number and the pane still builds.
+proc ase::ui::colw {n head} {
+  set g 0
+  set h 0
+  catch {set g [font measure AseEntryFont 0]}
+  catch {set h [font measure AseLabelFont $head]}
+  if {$g < 1} { set g 9 }
+  set w [expr {$n * $g}]
+  set h [expr {$h + 16}]
+  return [expr {$w > $h ? $w : $h}]
+}
+
+# Show the horizontal scrollbar only while there is something off-screen.
+#
+# ⚠ THIS EXISTS BECAUSE ISSUE 1398's COLUMN POLICY CAN OVERFLOW THE PANE.
+# The shipped code gave every column -stretch 1, so a narrow window shrank them
+# all and clipped the text in place — ugly, but every column stayed reachable.
+# Deriving the widths and pinning the narrow ones (-stretch 0) fixes the resize
+# ratchet and trades it for a real overflow: measured 2026-09-09, the Outputs
+# pane's `Save Options` column leaves the viewport below 740 px of window width
+# and at 560x360 thirty per cent of the pane is off-screen with no way to reach
+# it. A horizontal bar is the reach. It also closes a defect that pre-dates this
+# batch — build_pane never had one, so clipped content was simply gone.
+#
+# The `need != shown` guard is load-bearing, not tidiness: mapping a scrollbar
+# changes the treeview's width, which fires -xscrollcommand again. Acting only
+# on a CHANGE of state ends the cascade after one step.
+proc ase::ui::pane_hscroll {pf first last} {
+  catch {$pf.hsb set $first $last}
+  if {![winfo exists $pf.hsb]} { return }
+  set need  [expr {$first > 0.0 || $last < 1.0}]
+  set shown [expr {[lsearch -exact [grid slaves $pf] $pf.hsb] >= 0}]
+  if {$need && !$shown}  { catch {grid $pf.hsb} }
+  if {!$need && $shown}  { catch {grid remove $pf.hsb} }
+}
+
+# Re-derive every pane's column widths when — and ONLY when — the data font's
+# size has actually moved under them.
+#
+# ⚠ THE LIVE ::ase_font_size PATH RESCALED THE FONTS AND LEFT THE COLUMNS.
+# Measured 2026-09-09 through the real user gesture (open the window, set the
+# knob, edit a variable so ase::ui::populate runs): AseEntryFont 10 -> 16,
+# rowheight 21 -> 31, and SIX OF ELEVEN HEADINGS CLIPPED, because -width and
+# -minwidth were both still the ink of a 10 pt face. The floor that is supposed
+# to stop `Enable` rendering `Enabl` was itself stale.
+#
+# ⚠ AND ONLY ON A CHANGE. apply_theme runs on every state mutation, so
+# re-applying widths unconditionally would silently undo a column the user had
+# dragged, on every checkbox click. The guard is the font size the widths were
+# last derived AT, per window.
+proc ase::ui::retune_columns {top} {
+  variable colpolicy
+  variable colfont
+  set sz 0
+  catch {set sz [font actual AseEntryFont -size]}
+  catch {set sz [list $sz [font measure AseLabelFont 0]]}
+  if {[info exists colfont($top)] && $colfont($top) eq $sz} { return }
+  set colfont($top) $sz
+  foreach pane {vars ana outs} {
+    set tv $top.body.$pane.tv
+    if {![winfo exists $tv] || ![info exists colpolicy($tv)]} { continue }
+    lassign $colpolicy($tv) columns headings policy
+    foreach c $columns h $headings {
+      lassign [dict get $policy $c] glyphs stretch anchor
+      catch {$tv column $c -width [ase::ui::colw $glyphs $h] \
+                           -minwidth [ase::ui::colw 0 $h]}
+    }
+  }
+}
+
+proc ase::ui::build_pane {key top pane columns headings policy} {
+  variable colpolicy
   set pf $top.body.$pane
   ttk::treeview $pf.tv -columns $columns -show headings \
     -selectmode extended -height 8 -style Ase.Treeview \
     -yscrollcommand [list $pf.sb set]
   foreach c $columns h $headings {
+    lassign [dict get $policy $c] glyphs stretch anchor
     $pf.tv heading $c -text $h
-    $pf.tv column $c -width [dict get $widths $c] -anchor w -stretch 1
+    # -minwidth is the heading's own ink: the column can be dragged narrow but
+    # never narrower than the word that names it. The shipped code declared no
+    # -minwidth at all and took ttk's 20 px default.
+    $pf.tv column $c -width [ase::ui::colw $glyphs $h] \
+                     -minwidth [ase::ui::colw 0 $h] \
+                     -anchor $anchor -stretch $stretch
   }
-  scrollbar $pf.sb -orient vertical -command [list $pf.tv yview]
-  pack $pf.sb -side right -fill y
-  pack $pf.tv -side left -fill both -expand 1
+  # kept so ase::ui::retune_columns can re-derive these when the knob moves
+  set colpolicy($pf.tv) [list $columns $headings $policy]
+  scrollbar $pf.sb  -orient vertical   -command [list $pf.tv yview]
+  scrollbar $pf.hsb -orient horizontal -command [list $pf.tv xview]
+  $pf.tv configure -xscrollcommand [list ase::ui::pane_hscroll $pf]
+  # ⚠ GRID, NOT PACK, AND THE REASON IS THE HORIZONTAL BAR. `grid remove`
+  # remembers the cell, so the bar can appear and vanish without re-deriving a
+  # layout; the pack equivalent has to re-pack inside an -xscrollcommand
+  # callback, which is a geometry feedback loop. The three widget PATHS are
+  # unchanged ($pf.tv, $pf.sb, and the new $pf.hsb), which is what the suites
+  # address.
+  grid $pf.tv  -row 0 -column 0 -sticky nsew
+  grid $pf.sb  -row 0 -column 1 -sticky ns
+  grid $pf.hsb -row 1 -column 0 -sticky ew
+  grid remove $pf.hsb
+  grid rowconfigure    $pf 0 -weight 1
+  grid columnconfigure $pf 0 -weight 1
   # multi-select within ONE pane: selecting here clears the other panes
   bind $pf.tv <<TreeviewSelect>> [list ase::ui::pane_selected $key $pane]
   # checkbox cells: a click on an Enable/Plot/Save cell flips the flag and
@@ -2102,7 +2627,8 @@ proc ase::ui::dialog_buttons {w row okcmd cancelcmd} {
 proc ase::ui::add_variable_dialog {key} {
   variable wins
   if {![dict exists $wins $key]} { return }
-  set w [ase::ui::dialog_frame [dict get $wins $key].addvar {Add Variable}]
+  set w [ase::ui::dialog_frame [dict get $wins $key].addvar \
+           [ase::ui::lbl_add_variable]]
   set ne [ase::ui::dialog_row $w 0 Name: name]
   set ve [ase::ui::dialog_row $w 1 Value: value]
   ase::ui::dialog_buttons $w 2 [list ase::ui::add_variable_ok $key] \
@@ -2215,8 +2741,10 @@ proc ase::ui::output_editor {key idx} {
   } else {
     set idx -1
   }
+  # ⚠ THE ADD TITLE IS THE `-->` STRIP BUTTON'S TOOLTIP (issue 1391): the tip
+  # names the window the click produces, so the two are one string.
   set w [ase::ui::dialog_frame [dict get $wins $key].edout \
-           [expr {$idx >= 0 ? {Edit Output} : {Add Output}}]]
+           [expr {$idx >= 0 ? {Edit Output} : [ase::ui::lbl_add_output]}]]
   set edrow($key,out) $idx
   set ne [ase::ui::dialog_row $w 0 Name: name]
   set xe [ase::ui::dialog_row $w 1 Expression: expr]
@@ -4186,7 +4714,7 @@ proc ase::ui::rsel_dblclick {key which} {
 # ---------------------------------------------------------------------------
 # R404's balloon: THE FULL PATH, on the row under the pointer.
 #
-# `balloon` (src/xschem.tcl:14917) is the tree's ONE tooltip mechanism and it
+# `balloon` (src/xschem.tcl:14826) is the tree's ONE tooltip mechanism and it
 # BAKES its string into a widget's <Enter> binding at attach time, so it cannot
 # carry a PER-ROW string. The renderer underneath it, `balloon_show`, can --
 # it takes the text as an argument -- so this is that renderer driven from a
@@ -4365,8 +4893,13 @@ proc ase::ui::rsel_build_list {key w which} {
     -style Ase.Treeview -yscrollcommand [list $f.sb set]
   $f.tv heading mark -text {}
   $f.tv heading result -text {Result}
-  $f.tv column mark -width 22 -anchor center -stretch 0
-  $f.tv column result -width 320 -anchor w -stretch 1
+  # already the right SHAPE before issue 1398 — one fixed flag column, one
+  # stretchy content column — so all it needed was the two pixel constants
+  # derived from the font and a -minwidth on each.
+  $f.tv column mark -width [ase::ui::colw 2 {}] \
+                    -minwidth [ase::ui::colw 2 {}] -anchor center -stretch 0
+  $f.tv column result -width [ase::ui::colw 34 Result] \
+                      -minwidth [ase::ui::colw 0 Result] -anchor w -stretch 1
   scrollbar $f.sb -orient vertical -command [list $f.tv yview]
   pack $f.sb -side right -fill y
   pack $f.tv -side left -fill both -expand 1
@@ -4954,10 +5487,18 @@ proc ase::ui::sim_options_dialog {key} {
 # forgot itself, because nothing in the tree called the writer.
 #
 # ONE WRITER, TWO FRONT DOORS. Everything below drives the SAME procs the CIW
-# route drives -- ase::sim_register / sim_unregister / sim_select / sim_list /
-# sim_status / sim_entry_why -- and saves through ase::sim_write_conf. No
-# validation, no path resolution and no persistence is re-implemented here; a
-# second copy of any of them is how the two doors would start disagreeing.
+# route drives -- ase::sim_register / sim_unregister / sim_entry / sim_list /
+# sim_status / sim_entry_why. No validation, no path resolution and no
+# persistence is re-implemented here; a second copy of any of them is how the
+# two doors would start disagreeing.
+#
+# AND AS OF ISSUE 1395 THERE IS NO PERSISTENCE HERE AT ALL, not even one line.
+# The write lives on the mutation (ase::sim_register / sim_unregister call
+# ase::sim_touch), which is what makes the OTHER door stick too; see the
+# tombstone where ase::ui::simdlg_commit used to be. The in-force combobox
+# writes to the SESSION rather than to the file, because which simulator is the
+# one to use is ASE-L state and the user must save it on purpose --
+# ase::ui::simdlg_use carries the ruling in full.
 #
 # AND NO SENTENCE IS WRITTEN HERE. Ruling D5-4: every user-facing sentence
 # about a simulator is minted in ase::sim_why (src/ase.tcl) and only RENDERED
@@ -5005,9 +5546,18 @@ proc ase::ui::simulators_dialog {key} {
   ttk::treeview $w.tv -columns {name path problem} -show headings \
     -selectmode browse -height 8 -style Ase.Treeview \
     -yscrollcommand [list $w.sb set]
-  foreach c {name path problem} h {Name Program Problem} width {140 300 420} {
+  # Column policy (issue 1398). Measured on the shipped dialog: 420 px of
+  # `Problem` — a column that is empty whenever the registry is healthy — while
+  # the ngspice path it sits beside measured 370 px in a 300 px `Program`. The
+  # room goes to the one column anybody reads, and Program is the only stretchy
+  # one, so the three no longer ratchet against each other on a drag.
+  foreach c {name path problem} h {Name Program Problem} \
+          policy {{14 0 w} {36 1 w} {26 0 w}} {
+    lassign $policy glyphs stretch anchor
     $w.tv heading $c -text $h
-    $w.tv column $c -width $width -anchor w -stretch 1
+    $w.tv column $c -width [ase::ui::colw $glyphs $h] \
+                    -minwidth [ase::ui::colw 0 $h] \
+                    -anchor $anchor -stretch $stretch
   }
   scrollbar $w.sb -orient vertical -command [list $w.tv yview]
   label $w.usel -text {Use this one:} -anchor w
@@ -5079,8 +5629,28 @@ proc ase::ui::simdlg_fill {key} {
   set dlg($key,simnames) $names
   set none [ase::ui::simdlg_none_label]
   $w.use configure -values [linsert $names 0 $none]
-  set sel [ase::sim_selected]
-  if {$sel eq {}} { set simuse($key) $none } else { set simuse($key) $sel }
+  ## 1395: THE COMBOBOX SHOWS THIS SESSION'S CHOICE, NOT THE PROCESS-GLOBAL ONE.
+  ## ase::sim_selected answers what is in force RIGHT NOW, which is one answer
+  ## for every open window; the choice is per-session state (the user's ruling
+  ## -- it dirties, it is saved with the bench, it is prompted for on quit) and
+  ## this dialog belongs to exactly one session. Reading the global here would
+  ## show window two's pick in window one's dialog, and would show it again
+  ## after the pick was abandoned unsaved.
+  ##
+  ## A SESSION THAT HAS EXPRESSED NO CHOICE SHOWS THE INSTALLATION DEFAULT, not
+  ## a blank: the blank line in this combobox is the "none of mine" one, and a
+  ## bench that has never been asked would then read as a deliberate PATH
+  ## choice everywhere a default is registered. ase::sim_choice_of and
+  ## ase::sim_default_choice are the only readers of the encoding; no value of
+  ## the state key is ever spelled here (an entry genuinely called `none` is
+  ## why).
+  set choice [ase::sim_choice_of [ase::session_state $key]]
+  if {[lindex $choice 0] eq {unset}} { set choice [ase::sim_default_choice] }
+  if {[lindex $choice 0] eq {entry}} {
+    set simuse($key) [lindex $choice 1]
+  } else {
+    set simuse($key) $none
+  }
   ase::ui::simdlg_status $key
   ## 1370: AND THE BOTTOM BAR OF EVERY OPEN SESSION FOLLOWS, from HERE and not
   ## from the five gestures. Add, Edit, Remove and both arms of the "Use this
@@ -5126,15 +5696,26 @@ proc ase::ui::simdlg_status {key {msg {}}} {
   }
 }
 
-# SAVE, THROUGH THE ONE WRITER. Not "also save": ase::sim_write_conf is the
-# whole of what this dialog does about persistence, and it reports its own
-# failure through ase::sim_say, which is what leaves a sentence for the
-# gesture that called it to show. `key` is unused on purpose -- the registry
-# is process-global -- and is carried so every gesture below reads the same.
-proc ase::ui::simdlg_commit {key} {
-  catch {ase::sim_write_conf}
-  return
-}
+# THERE IS NO simdlg_commit ANY MORE, AND ITS ABSENCE IS THE FIX (issue 1395).
+# It used to be this dialog's one line about persistence -- `catch
+# {ase::sim_write_conf}` after Add, Edit, Remove and both arms of the combobox
+# -- and it was the ONLY caller of the writer in the whole tree. That is what
+# made the dialog the only door that stuck: the same registration typed into
+# the Command window, which is how this user's own entry was first made, was
+# gone at the next start (src/ase_window.tcl:288).
+#
+# THE WRITE MOVED TO THE MUTATION. ase::sim_register and ase::sim_unregister
+# call ase::sim_touch themselves now, origin-gated so the reader of the saved
+# list cannot rewrite the file it is sourcing. Every door persists, including
+# the ones nobody has written yet, and this file's own rule at the head of the
+# section -- no persistence is re-implemented here -- finally has nothing to
+# except. A second write from the gesture would be a second writer of the
+# user's file for one gesture: the same bytes twice on the good path, and on a
+# failing path a second sentence about a save that already reported itself
+# (row S8 of tests/headless/test_ase_simreg_0931.tcl pins that count at one).
+#
+# AND THE CHOICE DOES NOT REACH DISK AT ALL. ase::ui::simdlg_use sets the
+# session's state key; see its own header.
 
 # The name of the row the user clicked, or {} with the status line telling
 # them to click one. Two buttons need it, so the sentence is written once.
@@ -5594,7 +6175,9 @@ proc ase::ui::simdlg_ok {key} {
   array unset dlg $key,simrow
   array unset dlg $key,simns
   destroy $w
-  ase::ui::simdlg_commit $key
+  ## NO WRITE HERE (1395): ase::sim_register has already saved the list, and
+  ## the sentence a failed save leaves is still inside this gesture's
+  ## sim_said_clear / sim_said bracket, which spans the register call.
   ase::ui::simdlg_fill $key
   set said [ase::sim_said]
   if {$said ne {}} { ase::ui::simdlg_status $key $said }
@@ -5621,27 +6204,73 @@ proc ase::ui::simdlg_remove {key} {
     ase::ui::simdlg_status $key [ase::ui::simdlg_plain $err]
     return
   }
-  ase::ui::simdlg_commit $key
+  ## NO WRITE HERE (1395): ase::sim_unregister has already saved the list.
   ase::ui::simdlg_fill $key
   set said [ase::sim_said]
   if {$said ne {}} { ase::ui::simdlg_status $key $said }
 }
 
-# The in-force combobox. "None of mine" clears the choice, which is a choice
-# like any other and is written down as one (issue 0932): without that, the
-# next start puts the first entry back in force and the gesture is undone.
+# The in-force combobox. "None of mine" is a choice like any other -- without
+# recording it the next start silently puts the first entry back in charge and
+# the gesture is undone (issue 0932).
+#
+# ⚠ THIS GESTURE WRITES NOTHING TO DISK, AND THAT IS THE USER'S RULING, NOT AN
+# OVERSIGHT (issue 1395). Verbatim, 2026-09-08: *whether* a registered
+# simulator "gets assigned as 'the one to use' is an option that is part of the
+# ASE-L state. If changed, that results in dirtiness. User must explicitly save
+# and, if user initiates an Xschem shutdown, then she must get a warning and a
+# prompt to save." Before this, the pick went straight to
+# ~/.xschem/ase_simulators with no save gesture behind it -- from a window the
+# user might be about to abandon, and overwriting the installation default with
+# one bench's opinion. REGISTERING is environment and lands at once
+# (ase::sim_register calls ase::sim_touch); CHOOSING is state and waits.
+#
+# SO THE PICK GOES THREE PLACES AND NO FURTHER:
+#   1. the session's own state, through ase::sim_choice_set -- which is what
+#      makes ase::session_dirty answer 1, the title grow its marker and the
+#      quit sweep stop and ask;
+#   2. ase::session_update, the one write path the panes share, whose notify
+#      is what repaints both of those;
+#   3. ase::sim_apply_choice, so what is IN FORCE this instant agrees with what
+#      the user just picked -- the bottom bar and the next run read that, and a
+#      dialog whose combobox and whose bar disagreed would be issue 1370 again.
+#
+# `key` IS LOAD-BEARING NOW. It always named the session whose widgets are
+# being refreshed; as of 1395 it also names the session whose state is being
+# changed, which is why the choice can differ between two open windows while
+# the registry cannot.
+#
+# NO ENCODING IS SPELLED HERE. ase::sim_choice_set is the only writer of the
+# state key, for the reason its header gives: a dialog that stored the bare
+# name would work for every entry except one called `none`.
 proc ase::ui::simdlg_use {key} {
   variable simuse
   set v {}
   if {[info exists simuse($key)]} { set v $simuse($key) }
   ase::sim_said_clear
-  if {$v eq [ase::ui::simdlg_none_label]} { set v {} }
-  if {[catch {ase::sim_select $v} err]} {
+  if {$v eq [ase::ui::simdlg_none_label] || $v eq {}} {
+    set st [ase::sim_choice_set [ase::session_state $key] path]
+  } elseif {[ase::sim_entry $v] eq {}} {
+    ## A NAME NOBODY HAS REGISTERED. The widget goes back to showing the truth
+    ## and the session's choice is left alone -- storing it would dirty the
+    ## bench with a pick that cannot run and would then show it back as the
+    ## truth. THE REFUSAL IS THE REGISTRY'S OWN WORDS: ase::sim_apply_choice
+    ## never raises, so the sentence is asked of ase::sim_select, which refuses
+    ## exactly this and changes nothing while doing it (ruling D5-4 -- no
+    ## sentence is minted in this file).
+    set err {}
+    catch {ase::sim_select $v} err
     ase::ui::simdlg_fill $key
     ase::ui::simdlg_status $key [ase::ui::simdlg_plain $err]
     return
+  } else {
+    set st [ase::sim_choice_set [ase::session_state $key] entry $v]
   }
-  ase::ui::simdlg_commit $key
+  ase::session_update $key $st
+  ## ON $st, NOT ON THE SESSION: ase::session_update answers 0 for a key it does
+  ## not know, and applying the session's state then would put the OLD choice in
+  ## force while the widget showed the new one.
+  ase::sim_apply_choice $st
   ase::ui::simdlg_fill $key
   set said [ase::sim_said]
   if {$said ne {}} { ase::ui::simdlg_status $key $said }
@@ -5672,9 +6301,16 @@ proc ase::ui::listdlg_open {key which title} {
   set cols [dict get $cfg cols]
   ttk::treeview $w.tv -columns $cols -show headings -selectmode extended \
     -height 8 -style Ase.Treeview -yscrollcommand [list $w.sb set]
+  # Column policy (issue 1398). Both configured tables are two columns whose
+  # FIRST holds the long value — a model-file path, a simulation-option name —
+  # so the first stretches and the rest are fixed at their own content width.
+  set first 1
   foreach c $cols h [dict get $cfg heads] {
     $w.tv heading $c -text $h
-    $w.tv column $c -width 170 -anchor w -stretch 1
+    $w.tv column $c -width [ase::ui::colw 20 $h] \
+                    -minwidth [ase::ui::colw 0 $h] \
+                    -anchor w -stretch $first
+    set first 0
   }
   scrollbar $w.sb -orient vertical -command [list $w.tv yview]
   frame $w.btns
@@ -5861,7 +6497,7 @@ proc ase::ui::listdlg_delete {key which} {
 # pass.
 #
 # ⚠ "ONE SOURCE" IS NOT YET TRUE OF THE WHOLE FILE, and the heading overclaimed
-# until this line was added. `ase::ui::save_all_report_discard` (below, ~:3016)
+# until this line was added. `ase::ui::save_all_report_discard` (below)
 # STILL hardcodes both labels and both spellings have already DRIFTED -- measured
 # in one process: the nudge prints `Outputs > Save All… > Save device OP
 # parameters (gm, gds, vth, ...)` while the discard prints `Outputs > Save All`
@@ -5878,6 +6514,139 @@ proc ase::ui::lbl_save_op_params {} { return {Save device OP parameters (gm, gds
 # menu path; nothing else in the path may contain a `>`.
 proc ase::ui::remedy_op_params_menu {} {
   return "[ase::ui::lbl_outputs] > [ase::ui::lbl_save_all] > [ase::ui::lbl_save_op_params]"
+}
+
+# --- 1391: THE ACTION-STRIP LABELS, SAME SECTION, SAME REASON ----------------
+# The right vertical strip (`ase::ui::build`, ~:749) is EIGHT glyph buttons --
+# `OP,TR = --> X N&> > ! ~` -- and until this issue not one of them carried a
+# tooltip.
+#
+# ⚠ NOT the first tip in this file, and the plan for this issue said it was.
+# MEASURED: `ase::ui::rsel_tip` (~:3724) has driven `balloon_show` from a
+# <Motion> handler since R404, for the per-row full path in Results > Select.
+# That one is per-ROW so it cannot use `balloon`, which bakes ONE string in at
+# attach time; these eight are per-BUTTON and fixed, which is exactly the shape
+# `balloon` is for. Two shapes, two call sites, no second mechanism.
+#
+# FIVE of the eight have a menubar twin -- counted off the shipped table,
+# not off the brief, which listed three: `OP,TR` is `Analyses > Choose…`. A tip
+# written by hand would have
+# been a SECOND description of an action the menu already names, and the drift
+# the block above records
+# (`Outputs > Save All` vs `Outputs > Save All… > Save device OP parameters
+# (gm, gds, vth, ...)`, string match 0, issue 0661) would have been rebuilt one
+# widget over.
+#
+# So the twinned five are minted HERE, the menubar is BUILT from these procs,
+# and the tip is the composed menu path -- the tip and the entry are the same
+# string and cannot drift because they are the same string.
+#
+# ⚠ ISSUE 1389 (the run guard) READS `menu_path_stop`. Its refusal has to name
+# the way out of a refused second launch, and the way out is the Stop entry the
+# user can actually see. Renaming that entry moves the refusal with it; that is
+# the whole point of the mint and the reason item B landed before item A.
+#
+# ⚠ THE ROWS THAT KEEP THESE HONEST are W1s1/W1s2 in
+# tests/headless/test_ase_window.tcl: each tip is read back off the LIVE widget
+# (`bind $b <Enter>`) and compared to the constant AND to a literal golden, the
+# W1t discipline -- a constant-compared-to-constant tautology cannot pass.
+proc ase::ui::lbl_analyses         {} { return {Analyses} }
+proc ase::ui::lbl_choose           {} { return "Choose\u2026" }
+proc ase::ui::lbl_simulation       {} { return {Simulation} }
+proc ase::ui::lbl_netlist_and_run  {} { return {Netlist and Run} }
+proc ase::ui::lbl_run              {} { return {Run} }
+proc ase::ui::lbl_stop             {} { return {Stop} }
+proc ase::ui::lbl_tools            {} { return {Tools} }
+proc ase::ui::lbl_waveform_viewer  {} { return {Waveform Viewer} }
+
+# The THREE strip buttons with no menubar twin (`=`, `-->`, `X`), plus the
+# temperature entry, which is not a strip button at all -- four constants, three
+# of them tips on the strip. `=` and `-->` open a dialog, so
+# the constant is the dialog's own `wm title` and the tip names the window the
+# click produces (built at :1684 / :1800). `X` opens nothing and `OP,TR`'s
+# dialog is titled `Choose Analyses` while its menu entry reads `Choose…` --
+# that second spelling is SHIPPED and pre-dates this issue; it is recorded in
+# doc/claude/issues/1391-*.md and deliberately NOT renamed here, because a
+# ratified dialog title is not this issue's to change.
+proc ase::ui::lbl_add_variable     {} { return {Add Variable} }
+proc ase::ui::lbl_add_output       {} { return {Add Output} }
+proc ase::ui::lbl_delete_selection {} { return {Delete Selection} }
+proc ase::ui::lbl_sim_temperature  {} { return {Simulation temperature} }
+
+# --- THE TWO OVERWRITE SENTENCES (batch ase_l_ux, decision S-7) --------------
+# `Session > Save State` is ALWAYS a Save-As (:6357), so OK can land on a file
+# that is already somebody's state. There are TWO reasons to stop and ask, and
+# until 2026-09-09 only the first of them existed at all:
+#   * the target is MY OWN file and it is read-only -> save_as_needs_confirm
+#   * the target is SOMEBODY ELSE'S existing state  -> save_as_overwrites_other
+# (:6422 and :6471; the chain that asks them is save_state_ok, :6481).
+#
+# Both sentences live HERE, in the lbl_* family, for the reason the block at
+# :5466 gives at length: `ase::ui::save_all_report_discard` kept its two labels
+# as inline literals and both spellings DRIFTED from the menu's own -- issue
+# 0661, where `string match` against BOTH constants returns 0. A sentence typed
+# inline in `save_state_ok` is that same defect pre-staged, and this arm now has
+# two of them a dozen lines apart.
+#
+# ⚠ THE READ-ONLY SENTENCE IS MOVED, NOT REWRITTEN. It is the shipped string
+# byte for byte, embedded `\n` included, so this mint changes zero pixels on the
+# arm it did not come to change. Only `lbl_overwrite_state` is new copy, and it
+# is the USER'S ruling (their words: "Just confirm if overwriting an existing
+# state"), recorded on the ledger as a rule debt, not a crew's wording.
+proc ase::ui::lbl_overwrite_state {lib cell view} {
+  return "State $lib/$cell/$view exists. Overwrite?"
+}
+proc ase::ui::lbl_overwrite_readonly {lib cell view} {
+  return "The state $lib/$cell/$view was opened read-only.\nOverwrite it?"
+}
+
+# `>`-separated menu paths, the shipped convention for a printed menu path in
+# this file (ase::ui::remedy_op_params_menu, above) and in xschem.tcl
+# (annot_remedy_menu, :17745). Nothing in these labels contains a `>`.
+proc ase::ui::menu_path_choose_analyses {} {
+  return "[ase::ui::lbl_analyses] > [ase::ui::lbl_choose]"
+}
+proc ase::ui::menu_path_netlist_and_run {} {
+  return "[ase::ui::lbl_simulation] > [ase::ui::lbl_netlist_and_run]"
+}
+proc ase::ui::menu_path_run {} {
+  return "[ase::ui::lbl_simulation] > [ase::ui::lbl_run]"
+}
+proc ase::ui::menu_path_stop {} {
+  return "[ase::ui::lbl_simulation] > [ase::ui::lbl_stop]"
+}
+proc ase::ui::menu_path_waveform_viewer {} {
+  return "[ase::ui::lbl_tools] > [ase::ui::lbl_waveform_viewer]"
+}
+
+# THE STRIP'S TIPS, ONE TABLE, KEYED BY THE BUTTON'S OWN WIDGET SUFFIX. The
+# builder walks this and so does the suite, which is what makes "a button with
+# no tip is a red row, not a gap" enforceable: a ninth button added without an
+# entry here reds W1s2 instead of quietly shipping bare.
+#
+# ⚠ MIXED FORM ON PURPOSE. FIVE tips are a menu path and THREE are a bare
+# action name -- the split the table below actually ships, verified by walking
+# it. That difference is information: it tells the reader whether the action has
+# a MENUBAR route at all. Inventing a path for the three that have none would be
+# prose, which is what the block above exists to forbid.
+#
+# ⚠ AND IT IS ONLY ABOUT THE MENUBAR. All three of the bare-named actions DO sit
+# on a per-pane CONTEXT menu (`Add…` at :854/:866, `Delete` at :872), spelled
+# differently there -- `Add Variable` vs `Add…`, `Delete Selection` vs `Delete`.
+# Those are not built from these constants and the reader hovering a glyph
+# cannot tell menubar from context. Recorded in doc/claude/issues/1391-*.md as
+# the coverage this mint does not yet reach; sweeping the context menus into it
+# is the follow-up, not a silent widening of this item.
+proc ase::ui::strip_tips {} {
+  return [list \
+    ana    [ase::ui::menu_path_choose_analyses] \
+    var    [ase::ui::lbl_add_variable] \
+    out    [ase::ui::lbl_add_output] \
+    del    [ase::ui::lbl_delete_selection] \
+    netrun [ase::ui::menu_path_netlist_and_run] \
+    run    [ase::ui::menu_path_run] \
+    stop   [ase::ui::menu_path_stop] \
+    plot   [ase::ui::menu_path_waveform_viewer]]
 }
 
 # --- 0650 / R-0653-d req 3: ONE WRITER FOR THE THREE BLANKETS ----------------
@@ -6649,8 +7418,25 @@ proc ase::ui::saveas_cancel {key} {
 # read-only: the session was opened read-only (attr `readonly`, threaded by
 # ase::open_state's trailing arg) or the file itself is unwritable (the
 # LibMgr git-checkout discipline leaves non-checked-out files 0444).
-# D13: overwriting a DIFFERENT existing view needs NO confirm in v1 — the
-# spec's only confirm trigger is read-only + same-target.
+#
+# ⚠ D13 IS RETIRED, AND THE USER RETIRED IT (2026-09-09). D13 read
+# "overwriting a DIFFERENT existing view needs NO confirm in v1 — the spec's
+# only confirm trigger is read-only + same-target", and it was an accurate
+# description of the shipped window: measured that day with session
+# `ngspice_state1` open and the sibling view `debug_st1` present and writable,
+# THIS proc answered 0 for `debug_st1`, so typing an existing sibling view into
+# the Save-As form destroyed it with no warning at all. The user's ruling:
+# "Just confirm if overwriting an existing state." Undo was explicitly NOT
+# asked for; a confirm was.
+#
+# THIS PROC IS UNCHANGED ANYWAY (batch decision S-1,
+# doc/claude/ase_l_ux_batch/DECISIONS.md). D8's contract is still exactly "the
+# target IS my own file AND that file is effectively read-only"; the new case
+# is `ase::ui::save_as_overwrites_other`, immediately below. The four rows at
+# tests/headless/test_ase_dialogs.tcl section H2 still pins this one
+# — including the fourth, which still reads 0 for a different target and now
+# names the PREDICATE rather than the window's outcome (S-9), because the
+# window itself no longer makes the promise that row's old name made.
 proc ase::ui::save_as_needs_confirm {key lib cell view} {
   set target [xschem cellview_path "$lib/$cell" $view]
   if {$target eq {}} { return 0 }
@@ -6661,6 +7447,53 @@ proc ase::ui::save_as_needs_confirm {key lib cell view} {
   if {[ase::session_getattr $key readonly 0] eq {1}} { return 1 }
   if {![file writable [file normalize $target]]} { return 1 }
   return 0
+}
+
+# THE SECOND REASON A SAVE-AS STOPS TO ASK: 1 iff the resolved target EXISTS
+# and is NOT the session's own state file, else 0. The user's overrule of D13
+# (see the block above) lands here and NOT inside `save_as_needs_confirm`
+# (batch decision S-2, doc/claude/ase_l_ux_batch/DECISIONS.md).
+#
+# WHY A SECOND PREDICATE RATHER THAN ONE WIDENED BOOLEAN:
+#  * `save_as_needs_confirm` is a DOCUMENTED predicate with four pinned rows
+#    (tests/headless/test_ase_dialogs.tcl, section H2) and a spec paragraph.
+#    Widening it moves those rows and, worse, leaves ONE boolean carrying TWO
+#    sentences — the caller would then have to re-derive WHICH of the two
+#    reasons it just got in order to word the popup, i.e. compute the answer a
+#    second time, from the same inputs, in a different place. That is how a
+#    confirm ends up naming the wrong cause.
+#  * the two are MUTUALLY EXCLUSIVE BY CONSTRUCTION, not by luck: that one's
+#    only 1-arm requires `target == own`, this one requires `target != own`.
+#    So `save_state_ok` can ask them in order, show ONE popup, and never
+#    compose a sentence out of two reasons.
+#
+# `xschem cellview_path` is the SAME resolver `do_save_state_as` (:6749) uses to
+# choose the file it will write, so "exists" here is exactly "the bytes OK is
+# about to destroy" — a `file exists` on a path composed by hand would be a
+# second, drifting answer to the same question, and would disagree with the
+# writer on the legacy flat-layout fallback (library_defs.tcl:303).
+# S-3: an UNTITLED session owns no file — `ase::session_path` returns {}, issue
+# 0141's marker — so EVERY existing target is somebody else's. That is the case
+# where a clobber is most likely and least expected, so it is the case that
+# must ask. S-4: saving onto your own state stays silent; that is what Save
+# means. S-5: a target that does not exist is not an overwrite —
+# `do_save_state_as` creates the view (D9, row H3) and says nothing.
+# S-6: exists-but-unwritable still fires here (it exists) and the write then
+# fails through the existing error path; a third sentence for it is a separate
+# change.
+#
+# PURE, and it has to be: it is called from an OK handler that has not yet
+# decided to do anything. It resolves and compares, nothing else — it creates
+# no directory (contrast `ase::rundir`, which mkdirs and moves a global), writes
+# nothing, and raises nothing.
+proc ase::ui::save_as_overwrites_other {key lib cell view} {
+  set target [xschem cellview_path "$lib/$cell" $view]
+  if {$target eq {}} { return 0 }
+  set own [ase::session_path $key]
+  if {$own ne {} && [file normalize $target] eq [file normalize $own]} {
+    return 0
+  }
+  return 1
 }
 
 proc ase::ui::save_state_ok {key} {
@@ -6675,13 +7508,73 @@ proc ase::ui::save_state_ok {key} {
     catch {::ase::echo "ase: Library, Cell and View are all required" error}
     return
   }
+  # ONE confirm, EITHER reason, NEVER both. The two predicates are mutually
+  # exclusive by construction (target == own vs target != own, see
+  # save_as_overwrites_other above), so this is a CHAIN, not a composition:
+  # each arm hands `ase::ui::confirm` a whole sentence that already names its
+  # own cause. Read-only is asked first because it is the narrower arm and its
+  # cause is the one the user CANNOT see from the form — the form shows the
+  # l/c/v, it does not show the file's mode.
+  # One title for both arms: `Overwrite State`, the title the read-only arm has
+  # always used (S-7). It is the same question about the same file.
+  set title {Overwrite State}
+  set go [list ase::ui::do_save_state_as $key $l $c $v]
+  set cw {}
   if {[ase::ui::save_as_needs_confirm $key $l $c $v]} {
-    ase::ui::confirm $key {Overwrite State} \
-      "The state $l/$c/$v was opened read-only.\nOverwrite it?" \
-      [list ase::ui::do_save_state_as $key $l $c $v]
+    set cw [ase::ui::confirm $key $title [ase::ui::lbl_overwrite_readonly $l $c $v] $go]
+  } elseif {[ase::ui::save_as_overwrites_other $key $l $c $v]} {
+    set cw [ase::ui::confirm $key $title [ase::ui::lbl_overwrite_state $l $c $v] $go]
+  } else {
+    ase::ui::do_save_state_as $key $l $c $v
     return
   }
-  ase::ui::do_save_state_as $key $l $c $v
+  ase::ui::confirm_safe_default $cw
+  ase::ui::confirm_owned_by $w $cw
+}
+
+# A DESTRUCTIVE confirm must not be armed by the keystroke that RAISED it.
+#
+# ⚠ MEASURED 2026-09-09 by this item's adversary, on the shipped gesture.
+# `save_state_dialog` binds `<Return>` on all three of its fields (:6357), so
+# "type the view name, press Return" is the sanctioned way to submit the form.
+# `ase::ui::confirm` (:4039) then focuses OK and binds `<Return>` to
+# `confirm_ok`. The two compose into: Return raises the popup, Return destroys
+# the file — with the sentence on screen for the length of one keystroke. The
+# gate the user asked for would have been real for the mouse and theatre for
+# the keyboard.
+#
+# Fixed HERE and not in `ase::ui::confirm`, deliberately: that proc is shared
+# (Load State discards unsaved edits through it too, :6288) and its
+# "Return = proceed" contract is documented at :4036. Narrowing the change to
+# the caller that can lose a file leaves every other confirm exactly as it was.
+# Escape already destroyed; now Return does too, and OK is one click or one Tab.
+proc ase::ui::confirm_safe_default {w} {
+  if {$w eq {} || ![winfo exists $w]} { return }
+  catch {focus $w.btns.cancel}
+  catch {bind $w <Return> [list destroy $w]}
+}
+
+# Tie a confirm's life to the dialog that raised it.
+#
+# ⚠ ALSO MEASURED 2026-09-09. Escape on the Save-As form is the documented
+# item-10 dismissal, and it left the overwrite confirm ALIVE and orphaned —
+# a live destructive button pointed at a file, belonging to a form the user
+# had just backed out of; its OK still wrote. Re-opening the form was the same
+# defect wearing a second face: `dialog_frame` destroys the old form (:1666)
+# and the screen was then a form naming one view above a confirm naming
+# another, whose OK wrote the one the user could no longer see.
+#
+# `<Destroy>` fires for every descendant as well as for `$owner` itself, hence
+# the `%W` guard. By the time an ACCEPTED confirm runs its command the popup is
+# already gone (`confirm_ok` destroys first, then evals, :4064), so a successful
+# save reaches this handler with nothing left to drop.
+proc ase::ui::confirm_owned_by {owner w} {
+  if {$owner eq {} || $w eq {} || ![winfo exists $owner]} { return }
+  bind $owner <Destroy> [list ase::ui::confirm_drop $owner $w %W]
+}
+proc ase::ui::confirm_drop {owner w ev} {
+  if {$ev ne $owner} { return }
+  catch {destroy $w}
 }
 
 # --- viewer persistence (item 14) ---------------------------------------------
@@ -6899,7 +7792,12 @@ proc ase::ui::viewer_restore {key} {
 #    item-02 creation path; D9: the CELL must already exist — a nonexistent
 #    cell errors cleanly, auto-creating cells would invent behavior), then
 #    the seeded file is overwritten with THIS session's serialization;
-#  - a DIFFERENT existing view -> plain state_save overwrite (D13).
+#  - a DIFFERENT existing view -> plain state_save overwrite (D13's WRITE half,
+#    which stands; D13's "and needs no confirm" half was overruled by the user
+#    on 2026-09-09 and now goes through ase::ui::save_as_overwrites_other,
+#    :6471 — on THAT arm this proc now runs only after the confirm is
+#    accepted; the own-target and missing-view arms reach it directly, as
+#    before, and so do the suites, which call this worker and not the OK).
 # UNTITLED ADOPT (issue 0141): when this session was never saved (own eq {} —
 # a Launch-ASE untitled session), the first successful Save-As ADOPTS the
 # target as the session's real identity via ase::session_adopt (path set,
@@ -6907,6 +7805,8 @@ proc ase::ui::viewer_restore {key} {
 # the still-open window loses its "(unsaved)"/"*" cues and shows "State: <v>".
 # This is gated on own eq {}, so a TITLED different-view save-as still stays
 # dirty (D5/D13, deliberate) and the own-view save (first arm) is untouched.
+# (D13's no-confirm half is retired — see save_as_overwrites_other, :6471 —
+# but its dirty half, the part cited here, is unchanged.)
 # On success: LibMgr pane refresh (headless-safe catch), notice, the Save-As
 # dialog dies. Returns 1 on success, 0 on a reported error (dialog kept up).
 # item 14 (D5): the viewer snapshot runs FIRST, so every arm writes the
@@ -7552,38 +8452,146 @@ proc ase::ui::run_started {key id} {
   ase::ui::set_status $key running
 }
 
+# 1389: IS THIS SESSION'S RESULTS FILE ALREADY BEING WRITTEN? The lock key
+# (the raw path) when a run is in flight, else {}.
+#
+# ⚠ THE DOORS ASK BEFORE THEY ACT, and that is not belt-and-braces over
+# ase::run_deck's gate -- it is the only way to refuse WITHOUT
+# `ase::ui::set_status $key fail`. Both doors below turn the status segment RED
+# on any raise out of ase::run, and a refused second launch has nothing wrong
+# with it: the first run is alive and the status must go on saying Running.
+# Going through ase::run would also re-netlist the design (ase::netlist deletes
+# and rebuilds <cell>.spice) before the authority ever saw the launch.
+#
+# ONE PREDICATE (ase::run_in_flight, src/ase.tcl:6042 -- the only reader of the
+# lock table), THREE CONSUMERS: ase::run_deck's gate, this, and the lock
+# fallback in ase::ui::do_stop that makes the refusal's remedy clause true.
+# Three callers of one answer is invariant I1 kept; two procs each deciding
+# what "running" means is what it forbids.
+proc ase::ui::run_busy {key} {
+  set lk {}
+  if {[catch {ase::run_lock_key [ase::session_state $key]} lk]} { return {} }
+  if {[ase::run_in_flight $lk] eq {}} { return {} }
+  return $lk
+}
+
+# 1389: A RAISE OUT OF ase::run MAY BE THE REFUSAL ITSELF, and then it must not
+# redden a session whose earlier run is alive and healthy.
+#
+# ⚠ THE DOOR'S PRE-CHECK IS NOT ENOUGH, AND THE GAP IS THE ORIGINATING GESTURE.
+# ase::ui::do_run calls `update` in its design-window routing arm -- the arm
+# whose own comment says it fires routinely while the design window is fully
+# visible and front. Measured 2026-09-08 with the second press queued as a real
+# X event so it dispatches inside that `update`: the inner press passes
+# run_busy (no lock yet), launches and locks; the OUTER press then meets the
+# lock in ase::run_deck and used to arrive here as an ordinary failure. One
+# simulator started (the guard's core job held), but the status segment went
+# `running` -> `fail` -- a red Error over a live run -- and the same sentence
+# reached the CIW TWICE, once as `note` and once as `error`, which is also the
+# opposite of the note-not-error decision this refusal was built on.
+#
+# The discriminator is the minted sentence itself, not a code or a flag: the
+# gate returns exactly `ase::run_busy_msg` of the key it refused, and
+# ase::run_lock_set is the last statement before run_deck returns, so nothing
+# else can raise while this session's results file is locked. Anything that is
+# not that sentence still reddens, exactly as before.
+proc ase::ui::run_raised {key err} {
+  set lk [ase::ui::run_busy $key]
+  if {$lk ne {} && $err eq [ase::run_busy_msg $lk]} { return 0 }
+  catch {::ase::echo $err error}
+  ase::ui::set_status $key fail
+  return 1
+}
+
 # Simulation > Netlist and Run: re-netlist the design, then run.
 proc ase::ui::do_run {key} {
+  ## 1389: FIRST STATEMENT, above the design-window routing. A refused launch
+  ## must not withdraw+deiconify the schematic window on its way to saying no
+  ## (issue 0616's cost), and must not re-netlist.
+  set busy [ase::ui::run_busy $key]
+  if {$busy ne {}} { ase::run_refuse $busy ; return }
   set dpath [ase::ui::design_path $key]
   if {$dpath eq {}} {
     catch {::ase::echo "ase: cannot resolve the session's design cellview" error}
     ase::ui::set_status $key fail
     return
   }
-  # ase::netlist's GUI guard requires the design to BE the current schematic:
-  # route through Design Window first when it is not. `ifhidden`, NOT the
-  # default: this guard tests the xschem CONTEXT, not visibility, so it fires
-  # routinely while the design window is fully visible and front (a restored
-  # waveform viewer leaves the context on the viewer canvas -- the user's
-  # reported case). The default arm would then withdraw+deiconify the whole main
-  # toplevel for no reason, and on WSLg a dropped re-map is a schematic window
-  # that simply vanished -- issue 0616, "when I press Netlist and Run, the
-  # schematic window disappears". `ifhidden` still restores a design window that
-  # really IS hidden, and still `raise`s a visible one to the front (the cheap
-  # half of the raise -- see raise_window_entry), so the schematic ends up on
-  # screen either way and no user is left hunting the Session menu.
-  if {[file normalize [xschem get schname]] ne $dpath} {
+  ## THE DOOR ASKS "IS THE DESIGN REACHABLE", NOT "IS IT CURRENT" (issue 0643).
+  ## The user, 2026-09-08: "I descend into x1 and again x1. Now, I click the N&>
+  ## ... `ase: design is not the current schematic; open it via Session > Design
+  ## Window first`. Where does this inane restriction come from? There is no such
+  ## limitation in Cadence's ADE-L, which we want be better than."
+  ##
+  ## They were right, and the equality test was the whole of it. Standing two
+  ## levels down inside the design's OWN hierarchy, `xschem get schname` is the
+  ## op-amp, not the testbench, so `ne $dpath` fired and the sentence told them
+  ## to do the very thing they had already done -- Session > Design Window
+  ## brings that same descended window back and changes nothing about the
+  ## comparison, so the button was simply unusable from depth. `ase::stack_level`
+  ## (src/ase.tcl) answers the question that actually gates the netlist: is the
+  ## design ON THIS WINDOW'S HIERARCHY STACK, at any level (>= 0), or nowhere
+  ## (-1)? Making it current for the duration is `ase::netlist`'s job now
+  ## (ase::with_design_current), and it puts the user back on the level they
+  ## were standing on -- MEASURED 34 ms for a two-level trip, against the 66 ms
+  ## the C netlister and the 177 ms op_annot::save_cards already spend making
+  ## the same trip on every press, which is the "no added cost" the user asked
+  ## for. It is NOT this door's job to walk the hierarchy: a door that ascended
+  ## would have to unwind on every error arm below it, and ase::netlist is the
+  ## one place that knows whether it got as far as needing to.
+  ##
+  ## ⚠ AND THE SAFETY IS DOWN THERE TOO, NOT HERE. This pre-check is a UX
+  ## router, not the netlister's guard: `ase::netlist` refuses on its own for an
+  ## unreachable design, so deleting this block would not netlist the wrong
+  ## deck. What it WOULD lose is issue 0616's routing (below) and a refusal that
+  ## can say no without going through `ase::run` -- see run_busy's header for why
+  ## a raise out of there is the wrong shape for a refusal. The reason the batch
+  ## did not simply DROP the old equality test is a different fact and it lives
+  ## one layer down: global_spice_netlist() netlists `xctx->sch[xctx->currsch]`,
+  ## the level you are STANDING on (src/spice_netlist.c:359-373), not the top, so
+  ## "netlist from wherever the user happens to be" would silently simulate the
+  ## op-amp alone -- no sources, no testbench, and a results file that looks
+  ## perfectly healthy. The old guard was a symptom of that, not superstition;
+  ## what changed is that the round trip now exists to satisfy it.
+  ##
+  ## `ifhidden`, NOT the default, and issue 0616's reasoning is UNCHANGED by the
+  ## new predicate -- it only fires less often. This tests the xschem CONTEXT,
+  ## not visibility, so it still fires while the design window is fully visible
+  ## and front (a restored waveform viewer leaves the context on the viewer
+  ## canvas -- the user's other reported case, and one the stack test does not
+  ## absorb: the viewer canvas is a different WINDOW, so the design is not on
+  ## its stack either). The default arm would then withdraw+deiconify the whole
+  ## main toplevel for no reason, and on WSLg a dropped re-map is a schematic
+  ## window that simply vanished -- issue 0616, "when I press Netlist and Run,
+  ## the schematic window disappears". `ifhidden` still restores a design window
+  ## that really IS hidden, and still `raise`s a visible one to the front (the
+  ## cheap half of the raise -- see raise_window_entry), so the schematic ends
+  ## up on screen either way and no user is left hunting the Session menu.
+  if {[ase::stack_level $dpath] < 0} {
     ase::ui::design_window $key ifhidden
     update
-    if {[file normalize [xschem get schname]] ne $dpath} {
-      catch {::ase::echo "ase: design is not the current schematic; open it via Session > Design Window first" error}
+    ## The surviving refusal is for a design that is genuinely NOWHERE on this
+    ## window's stack -- and it is reached only AFTER the routing above has
+    ## already tried and failed, so it must not send the user back to Session >
+    ## Design Window as if that were untried (issue 0643, decision D5). It names
+    ## the cell, because a session window carries no other clue which cellview
+    ## it could not reach.
+    if {[ase::stack_level $dpath] < 0} {
+      ## D6: the HEAD is minted once (ase::design_unreachable_msg, src/ase.tcl),
+      ## the TAIL is the caller's. `ase::netlist`'s copy of this refusal ends
+      ## "open it via Session > Design Window first", which is true THERE -- a
+      ## CIW or script caller has not tried the route. This arm has, one line
+      ## up, and failed, so pointing the user back at that menu item would tell
+      ## them to repeat a step that just silently did nothing. Two situations,
+      ## two truthful remedies, one fact spelled in one place.
+      catch {::ase::echo [ase::design_unreachable_msg \
+        [ase::ui::design_cell_name $key] \
+        "Session > Design Window did not open it"] error}
       ase::ui::set_status $key fail
       return
     }
   }
   if {[catch {ase::run [ase::session_state $key] [list ase::ui::run_finished $key]} id]} {
-    catch {::ase::echo $id error}
-    ase::ui::set_status $key fail
+    ase::ui::run_raised $key $id
     return
   }
   ase::ui::run_started $key $id
@@ -7593,9 +8601,13 @@ proc ase::ui::do_run {key} {
 # (hand-edited decks survive), so it needs no current-schematic routing and
 # works with the design window closed.
 proc ase::ui::do_run_existing {key} {
+  ## 1389: the same refusal, and the same reason it is not left to the catch
+  ## below -- that arm calls `set_status $key fail`, which would recolour a
+  ## session whose earlier run is still perfectly healthy.
+  set busy [ase::ui::run_busy $key]
+  if {$busy ne {}} { ase::run_refuse $busy ; return }
   if {[catch {ase::run_existing [ase::session_state $key] [list ase::ui::run_finished $key]} id]} {
-    catch {::ase::echo $id error}
-    ase::ui::set_status $key fail
+    ase::ui::run_raised $key $id
     return
   }
   ase::ui::run_started $key $id
@@ -7606,10 +8618,34 @@ proc ase::ui::do_run_existing {key} {
 # abort — close() then reports CHILDKILLED -> nonzero exitcode -> the normal
 # completion path (run_finished) turns the status segment red. Unix only: the
 # kill(1) path cannot work on Windows.
+#
+# ⚠ 1389: THE SESSION ATTR IS NOT THE ONLY WAY IN, because the refusal SENDS
+# people here. `run_id` is set by ase::ui::run_started, so only the session that
+# pressed the button holds it -- and the lock the refusal is about is keyed on
+# the RESULTS FILE, which several sessions share. Measured 2026-09-08, all three
+# reachable and all three ending in "no simulation running for this session"
+# over a run that was very much alive:
+#   * two ASE-L sessions on one cellview (ngspice_state1 + ngspice_state2, one
+#     rundir, one raw): B is refused, told to press Stop, and B's Stop is a
+#     no-op. B can neither run nor stop -- a dead end the sentence created;
+#   * a run started from the CIW or a script sets no run_id at all;
+#   * closing and re-opening the ASE-L window mid-run: ase::session_close drops
+#     every attr (ase.tcl:8588), so run_id goes 12 -> {} for the very session
+#     that launched.
+# So the attr is tried first (it is the exact run this session started) and the
+# lock answers for the rest. Same predicate as the refusal, ase::run_in_flight,
+# which is what makes "the sentence names a way out that works" checkable
+# rather than hopeful.
 proc ase::ui::do_stop {key} {
   global OS
   set id [ase::session_getattr $key run_id {}]
   if {$id eq {} || ![string is integer -strict $id] || ![info exists ::execute(pipe,$id)]} {
+    set id {}
+    if {![catch {ase::run_lock_key [ase::session_state $key]} lk]} {
+      set id [ase::run_in_flight $lk]
+    }
+  }
+  if {$id eq {}} {
     catch {::ase::echo "ase: no simulation running for this session"}
     return
   }

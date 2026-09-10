@@ -1,0 +1,161 @@
+<title>Look Debt Queue</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&display=swap">
+<style>
+:root{
+  --paper:#f4f6f0; --card:#fdfefb; --ink:#171b13; --muted:#69705f;
+  --rule:#dbe0d2; --hair:#e8ebe2;
+  --accent:#2d6a41; --amber:#a15c1b; --slate:#767d8c; --violet:#5a4a86;
+  --shot-bg:#eceee6;
+  --sans:"IBM Plex Sans Condensed",ui-sans-serif,system-ui,sans-serif;
+  --serif:"IBM Plex Serif",Georgia,"Times New Roman",serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#12150f; --card:#191d16; --ink:#e4e8dc; --muted:#98a08c;
+    --rule:#2b3126; --hair:#232820;
+    --accent:#82c295; --amber:#dda76a; --slate:#9aa2b3; --violet:#a496d8;
+    --shot-bg:#0e100c;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#12150f; --card:#191d16; --ink:#e4e8dc; --muted:#98a08c;
+  --rule:#2b3126; --hair:#232820;
+  --accent:#82c295; --amber:#dda76a; --slate:#9aa2b3; --violet:#a496d8;
+  --shot-bg:#0e100c;
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--serif);
+     font-size:16px;line-height:1.6;margin:0;padding:0 20px 96px;
+     -webkit-font-smoothing:antialiased}
+.wrap{max-width:760px;margin:0 auto}
+h1,h2,h3{font-family:var(--sans);text-wrap:balance;margin:0}
+code,pre{font-family:var(--mono)}
+
+/* ---------- masthead ---------- */
+.top{padding:52px 0 28px;border-bottom:2px solid var(--ink)}
+.eyebrow{font-family:var(--sans);font-size:12px;letter-spacing:.13em;
+         text-transform:uppercase;color:var(--muted);margin:0 0 14px}
+h1{font-size:38px;line-height:1.08;font-weight:600;letter-spacing:-.01em}
+.dek{margin:14px 0 0;font-size:17px;color:var(--muted);max-width:60ch}
+
+/* ---------- counts ---------- */
+.counts{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;
+        background:var(--rule);border:1px solid var(--rule);margin:24px 0 0}
+.count{background:var(--card);padding:14px 14px 12px}
+.count b{display:block;font-family:var(--sans);font-size:27px;font-weight:600;
+         line-height:1;font-variant-numeric:tabular-nums}
+.count span{display:block;font-family:var(--sans);font-size:11.5px;
+            letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+            margin-top:7px}
+.count.c1 b{color:var(--accent)} .count.c2 b{color:var(--violet)}
+.count.c3 b{color:var(--amber)}  .count.c4 b{color:var(--slate)}
+
+/* ---------- the one lifted block ---------- */
+.finding{margin:34px 0 0;background:var(--card);border:1px solid var(--rule);
+         border-left:4px solid var(--amber);padding:22px 24px}
+.finding h2{font-size:19px;font-weight:600;margin-bottom:8px}
+.finding p{margin:0 0 10px;font-size:15.5px}
+.finding p:last-child{margin-bottom:0}
+.finding .tag{font-family:var(--sans);font-size:11.5px;letter-spacing:.1em;
+              text-transform:uppercase;color:var(--amber);margin:0 0 9px}
+
+/* ---------- sections ---------- */
+.sec{margin:56px 0 0}
+.sec-head{border-bottom:1px solid var(--ink);padding-bottom:9px;margin-bottom:4px}
+.sec-head h2{font-size:23px;font-weight:600;letter-spacing:-.005em}
+.sec-head p{margin:5px 0 0;font-size:14.5px;color:var(--muted);max-width:62ch}
+
+/* ---------- entries ---------- */
+.e{border-bottom:1px solid var(--hair);padding:24px 0 22px 18px;
+   border-left:3px solid var(--rule)}
+.e--widget,.e--text{border-left-color:var(--accent)}
+.e--canvas{border-left-color:var(--violet)}
+.e--hands{border-left-color:var(--amber)}
+.e--moot{border-left-color:var(--slate)}
+.e-head{margin-bottom:12px}
+.e-q{margin:0;font-size:17.5px;line-height:1.45;font-weight:500;text-wrap:pretty}
+.e-id{margin:7px 0 0}
+.e-id code{font-size:11.5px;color:var(--muted);word-break:break-all}
+
+.shot{margin:16px 0;background:var(--shot-bg);border:1px solid var(--rule);padding:10px}
+.shot img{display:block;width:100%;height:auto;border:1px solid var(--rule)}
+.shot figcaption{font-family:var(--sans);font-size:13px;color:var(--muted);
+                 margin-top:9px;line-height:1.45}
+
+.ver{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;margin:14px 0 0}
+.ver dt{font-family:var(--sans);font-size:11.5px;letter-spacing:.09em;
+        text-transform:uppercase;color:var(--muted);padding-top:4px}
+.ver dd{margin:0;font-size:15px;line-height:1.55}
+.ver dt:nth-of-type(2){color:var(--amber)}
+
+.why{margin:13px 0 0;font-size:15px;color:var(--muted)}
+.rec{margin:14px 0 0}
+.rec summary{font-family:var(--sans);font-size:12px;letter-spacing:.08em;
+             text-transform:uppercase;color:var(--accent);cursor:pointer;
+             padding:3px 0}
+.rec summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.rec pre{background:var(--card);border:1px solid var(--rule);padding:14px;
+         margin:10px 0 0;font-size:12.5px;line-height:1.55;
+         overflow-x:auto;white-space:pre;color:var(--ink)}
+.clear{margin:14px 0 0}
+.clear code{font-size:12px;color:var(--muted);background:var(--card);
+            border:1px solid var(--rule);padding:3px 7px;display:inline-block;
+            word-break:break-all}
+
+footer{margin:64px 0 0;padding-top:22px;border-top:1px solid var(--rule);
+       font-family:var(--sans);font-size:13.5px;color:var(--muted)}
+footer p{margin:0 0 8px}
+@media (max-width:560px){
+  h1{font-size:30px}
+  .counts{grid-template-columns:repeat(2,1fr)}
+  .ver{grid-template-columns:1fr;gap:2px}
+  .ver dt{padding-top:9px}
+}
+</style>
+
+<div class="wrap">
+<header class="top">
+  <p class="eyebrow">xschem-claude · fluid-editing · 2026-09-07</p>
+  <h1>46 things only you can decide</h1>
+  <p class="dek">Every line here is a pixel or a wording call that no test can make.
+  They have been arriving one at a time for six days. This is all of them, in one
+  place, sorted by what it would actually cost you to answer.</p>
+
+  <div class="counts">
+    <div class="count c1"><b>8</b><span>Photographed</span></div>
+    <div class="count c2"><b>18</b><span>One command away</span></div>
+    <div class="count c3"><b>10</b><span>Your bench only</span></div>
+    <div class="count c4"><b>10</b><span>Retire</span></div>
+  </div>
+</header>
+
+<div class="finding">
+  <p class="tag">Found while taking the first picture · issue 1379</p>
+  <h2>The window says nothing has been sent to it, over the top of two things that were</h2>
+  <p>The line above the pane reads <em>“No device has been sent here yet”</em> in every
+  screenshot on this page — including the ones with two rendered blocks under it.
+  <code>rdw::_chrome_line</code> takes that wording from <code>llength $blocks</code>,
+  but the only proc that writes it into the widget is reached from
+  <code>rdw::build</code> and <code>rdw::set_list</code> alone, and
+  <code>rdw::push</code> calls neither. It repairs itself the moment you press 1, 2 or
+  3, which is why it survived.</p>
+  <p>This is <strong>issue 1367 in the mirror</strong>: that one claimed to be
+  <em>Showing</em> an empty pane, and its fix minted the very flag that makes the two
+  states sayable. The flag works; the recomputation was never wired. Filed, not fixed —
+  this was a reporting batch.</p>
+</div>
+
+<!--BODY-->
+
+<footer>
+  <p>Photographs taken on the persistent dev display (Xvfb 1920×1080×24, openbox 3.6.1)
+  at commit <code>a7cfa479</code>, driving the shipped renderer — not a mock-up.</p>
+  <p>This box had no screenshot tool of any kind, so the batch built two:
+  <code>tests/headless/winshot.c</code> grabs any X window to a PNG, and
+  <code>tests/headless/lookshot.sh</code> poses xschem, waits for the window, takes the
+  picture and kills it. The driver takes the picture rather than the pose script, which
+  is what lets a modal be captured at all.</p>
+  <p>Nothing on this page clears a debt. Only you do that.</p>
+</footer>
+</div>
