@@ -526,6 +526,206 @@ check "P4 arg_summary dc row" \
   [ase::ui::arg_summary {type dc enabled 0 source V2 start 0 stop 1.8 step 0.01}] \
   {source=V2 start=0 stop=1.8 step=0.01}
 
+
+# =============================================================================
+# L1398 -- THE FONT AND THEME DERIVATION, AS A RULE RATHER THAN A READING
+# =============================================================================
+# ase::theme used to `font create` three fonts from two families it NAMED --
+# Arial 10 bold and Courier 13 -- and NEITHER FAMILY IS INSTALLED here, so Tk
+# substituted Nimbus Sans / Nimbus Mono PS and ASE-L became the only window in
+# the process not drawn in the system face: the RDW, the CIW, the Calculator,
+# the Library Manager and the property form all render in DejaVu. Issue 1398
+# replaced the nine `font create` lines with a copy of TkDefaultFont's and
+# TkFixedFont's OWN SPECS, taken with `font configure`.
+#
+# ⚠ THESE ROWS ARE WHAT MAKES THAT PERMANENT INSTEAD OF TEMPORARY, and the way
+# they are written is the whole point. A row asserting `-family {DejaVu Sans}`
+# would be THE SAME DEFECT as the one it replaced, one machine later: this box
+# resolves `sans-serif` to DejaVu and the next one need not. So nothing here
+# names a family at all. L1398a forbids the literal in the source; the live
+# rows (W1f1) assert only the RELATION to Tk's own bases.
+#
+# BOTH ARMS. These are a file scan and a pure predicate: `ase::font_size`,
+# `ase::shade` and `ase::ui::colw` are all reachable under --nogui (measured),
+# which is exactly what reading the knob INSIDE ase::theme buys.
+
+set L1398_SRC [file join $repo src ase_window.tcl]
+
+proc l1398_read {p} {
+  if {![file exists $p]} { return {} }
+  set f [open $p r] ; set d [read $f] ; close $f ; return $d
+}
+
+## Strip Tcl comments from ONE line, so every scan below reads code and never
+## prose. Two shapes and both are load-bearing here: a `#` in column 1 (after
+## indentation) is a whole-line comment, and `;#` opens a trailing one. The
+## font block's own comment wall NAMES Arial, Courier, Nimbus and DejaVu on
+## purpose -- it is the record of what went wrong -- so a scanner that could
+## not tell prose from code would red on the explanation of the fix itself.
+proc l1398_code {line} {
+  set t [string trimleft $line]
+  if {[string index $t 0] eq {#}} { return {} }
+  set i [string first {;#} $t]
+  if {$i >= 0} { set t [string range $t 0 [expr {$i - 1}]] }
+  return [string trim $t]
+}
+
+## Every code line of $path that names a font FAMILY, as a sentence naming the
+## file and the line -- because the product of this row is that the next author
+## reads the failure text and knows what to take out and where.
+##
+## TWO TERMS, because a family literal has two spellings and catching one of
+## them would leave the door open:
+##   T1  the `-family` option in any spelling. There is no honest use for it
+##       in this file: the whole spec dict is copied from the base font, so
+##       naming a family is by definition overriding the derivation.
+##   T2  a family NAME, for the positional spelling `font create X {Nimbus
+##       Sans} 10`, which carries no `-family` at all.
+##
+## `times` and `fixed` are deliberately NOT in T2's list. They are ordinary
+## English words ("three times", "fixed at 90 px") and a lint that reds on
+## prose is a lint the next author deletes rather than obeys.
+set L1398_FAMS {arial courier helvetica nimbus dejavu liberation verdana
+                tahoma segoe consolas lucida sans-serif monospace
+                {times new roman}}
+proc l1398_family_scan {path fams} {
+  set bad {}
+  set n 0
+  foreach line [split [l1398_read $path] "\n"] {
+    incr n
+    set t [l1398_code $line]
+    if {$t eq {}} continue
+    if {[regexp -- {(^|[^[:alnum:]_])-family([^[:alnum:]_]|$)} $t]} {
+      lappend bad "[file tail $path]:$n overrides the derivation with -family: $t"
+      continue
+    }
+    set low [string tolower $t]
+    foreach f $fams {
+      if {[string first $f $low] >= 0} {
+        lappend bad "[file tail $path]:$n names the font family `$f`: $t"
+        break
+      }
+    }
+  }
+  return $bad
+}
+
+## THE NON-VACUITY GUARD, and it is not decoration: a scan of a file that has
+## been renamed, gutted or moved scans perfectly clean. The second term proves
+## the font block this row exists to protect is still IN the file being
+## scanned, by its four role names.
+set L1398_ROLES {}
+foreach r {AseEntryFont AseBodyFont AseLabelFont AseMonoFont} {
+  if {[regexp "ase::_mkfont +$r" [l1398_read $L1398_SRC]]} { lappend L1398_ROLES $r }
+}
+check "L1398a SOURCE-GREP src/ase_window.tcl names no font family anywhere in its code: the four roles are DERIVED from TkDefaultFont/TkFixedFont, and a family literal -- ANY family literal, including this machine's own -- is the defect 1398 removed" \
+  [list [l1398_family_scan $L1398_SRC $L1398_FAMS] $L1398_ROLES] \
+  [list {} {AseEntryFont AseBodyFont AseLabelFont AseMonoFont}]
+
+## L1398b THE DETECTOR'S OWN EVIDENCE. A scan that finds nothing is not
+## evidence until it has been shown to find something, and to find it for the
+## right reason. Eight fixtures written as DATA: the three spellings of the
+## defect, the derived line that must stay green, and the four ways a file can
+## LOOK like it names a family without doing it. The last group is not a
+## hypothetical shape -- it is exactly what the shipped comment wall does on
+## four consecutive lines, and a naive grep would red on all four.
+proc l1398_fixture {tag body} {
+  set p [file join $::scratch l1398_$tag.tcl]
+  set f [open $p w] ; puts -nonewline $f $body ; close $f
+  return $p
+}
+set LFAM(opt)     [l1398_fixture opt     "font create AseEntryFont -family Arial -size 10\n"]
+set LFAM(pos)     [l1398_fixture pos     "font create AseMonoFont \{Nimbus Mono PS\} 13\n"]
+set LFAM(dict)    [l1398_fixture dictset "dict set uispec -family \{DejaVu Sans\}\n"]
+set LFAM(derived) [l1398_fixture derived "catch \{set uispec \[font configure TkDefaultFont\]\}\nase::_mkfont AseEntryFont \$uispec normal\n"]
+set LFAM(whole)   [l1398_fixture whole   "  # This window asked for Arial 10 bold and Courier 13.\n"]
+set LFAM(trail)   [l1398_fixture trail   "set x 1 ;# Courier was the old mono face\n"]
+set LFAM(english) [l1398_fixture english "set n 3\nputs \{dragged four times\}\nset w 90 \n"]
+set LFAM(clean)   [l1398_fixture clean   "ase::_mkfont AseLabelFont \$uispec bold\n"]
+check "L1398b the family detector really detects: both spellings and the dict override are caught, the derived lines are not, and neither a whole-line comment nor a trailing one nor the English word `times` is mistaken for a family" \
+  [list [llength [l1398_family_scan $LFAM(opt)     $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(pos)     $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(dict)    $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(derived) $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(whole)   $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(trail)   $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(english) $L1398_FAMS]] \
+        [llength [l1398_family_scan $LFAM(clean)   $L1398_FAMS]]] \
+  {1 1 1 0 0 0 0 0}
+check_true "L1398b ...and the failure text names the file and the line, which is the row's whole product" \
+  [expr {[string first "[file tail $LFAM(opt)]:1" \
+          [lindex [l1398_family_scan $LFAM(opt) $L1398_FAMS] 0]] >= 0}]
+
+## L1398c NO PIXEL CONSTANT IN A TREEVIEW COLUMN. Five treeview sites in
+## ase_window.tcl declare twenty columns between them and every one of them
+## used to be `-width <integer>` with no -minwidth at all. Pixel constants
+## against POINT font sizes break at every `tk scaling`: MEASURED on the
+## shipped code at scaling 2.0, `Enable` needed 65 px in a 63 px column, `Save`
+## 46 in 50, and `Save Options` 128 in 90 -- 72 after four resize cycles.
+##
+## The live rows reach two of the five sites (the three panes at W1f6, Model
+## Files at D1398f). THIS row is what covers the other three -- Results >
+## Select, Setup > Simulators and Simulation > Options -- and what covers all
+## five against an author who has not read any of them.
+proc l1398_pixel_scan {path} {
+  set bad {}
+  set n 0
+  foreach line [split [l1398_read $path] "\n"] {
+    incr n
+    set t [l1398_code $line]
+    if {$t eq {}} continue
+    if {![regexp -- {(^|[^[:alnum:]_])column($|[^[:alnum:]_])} $t]} continue
+    if {[regexp -- {-(min)?width +\{?-?[0-9]} $t]} {
+      lappend bad "[file tail $path]:$n pins a treeview column in PIXELS: $t"
+    }
+  }
+  return $bad
+}
+set L1398_COLW [expr {[regexp {proc ase::ui::colw } [l1398_read $L1398_SRC]] ? 1 : 0}]
+check "L1398c SOURCE-GREP no treeview column in src/ase_window.tcl is pinned in pixels: every -width and every -minwidth comes through ase::ui::colw, so all five tables follow the font instead of breaking at the next tk scaling" \
+  [list [l1398_pixel_scan $L1398_SRC] $L1398_COLW] {{} 1}
+
+set LPIX(pinned)  [l1398_fixture pinned  "\$w.tv column name -width 140 -anchor w -stretch 1\n"]
+set LPIX(minpin)  [l1398_fixture minpin  "\$w.tv column name -minwidth 20\n"]
+set LPIX(derived) [l1398_fixture pderiv  "\$w.tv column \$c -width \[ase::ui::colw 14 \$h\] -minwidth \[ase::ui::colw 0 \$h\]\n"]
+set LPIX(button)  [l1398_fixture pbutton "button \$w.btns.close -text Close -width 8\n"]
+set LPIX(comment) [l1398_fixture pcomm   "# \$w.tv column name -width 140 was the shipped pin\n"]
+check "L1398d the pixel detector really detects: a pinned -width and a pinned -minwidth are caught, the colw-derived line is not, and neither a `-width 8` on a BUTTON nor the shipped pin quoted in a comment is mistaken for one" \
+  [list [llength [l1398_pixel_scan $LPIX(pinned)]] \
+        [llength [l1398_pixel_scan $LPIX(minpin)]] \
+        [llength [l1398_pixel_scan $LPIX(derived)]] \
+        [llength [l1398_pixel_scan $LPIX(button)]] \
+        [llength [l1398_pixel_scan $LPIX(comment)]]] \
+  {1 1 0 0 0}
+
+## L1398e THE SIZE KNOB REFUSES, IT DOES NOT CLAMP. `ase_font_size` ships as 0
+## = "follow TkDefaultFont"; the accepted band is 6..32 inclusive. An
+## out-of-band value falls back to the system size rather than being pulled to
+## the nearest legal one, because a clamp turns a typo into a silent new
+## setting the user never chose and can only discover by measuring glyphs. Same
+## contract as rdw::font_size (rdw.tcl:2313) and ciw_font (ciw.tcl:391).
+##
+## ⚠ THE DISCRIMINATING VALUES ARE 5 AND 40, AND NOTHING ELSE IN THE TABLE IS.
+## A clamp answers 6 and 32 where a refusal answers {}; BOTH answer {} for
+## `abc` and for the empty string, so the letters alone cannot tell the two
+## designs apart. 6 and 32 are in the table for the other half of the same
+## claim -- the band's own edges are ACCEPTED, so "refuses everything" is not
+## a way to pass this row.
+set L1398_KNOB_WAS [expr {[info exists ::ase_font_size] ? $::ase_font_size : {}}]
+set L1398_KNOB_HAD [info exists ::ase_font_size]
+set l1398_knob {}
+foreach v {14 6 32 5 40 33 -1 0 abc {} 10.5} {
+  set ::ase_font_size $v
+  lappend l1398_knob [ase::font_size]
+}
+unset ::ase_font_size
+lappend l1398_knob [ase::font_size]
+if {$L1398_KNOB_HAD} { set ::ase_font_size $L1398_KNOB_WAS }
+check "L1398e ase::font_size REFUSES an out-of-band size instead of clamping it -- 5 and 40 answer {} where a clamp would answer 6 and 32 -- while the band's own edges are accepted and an unset knob means `follow TkDefaultFont`" \
+  $l1398_knob {14 6 32 {} {} {} {} {} {} {} {} {}}
+check "L1398e ...and the knob ships DECLARED, at the documented default 0, so an xschemrc has something to override and `unset` is not the shipped state" \
+  [list $L1398_KNOB_HAD $L1398_KNOB_WAS] {1 0}
+
 # --- GUI legs (DISPLAY-guarded partial skip) ---------------------------------
 if {[info exists ::has_x] && [info commands winfo] ne {}} {
 
@@ -554,6 +754,213 @@ if {[info exists ::has_x] && [info commands winfo] ne {}} {
   check_true "W1 temperature entry white + AseEntryFont" [expr {
     [$top.tb.temp cget -background] eq {#ffffff} &&
     [$top.tb.temp cget -font] eq {AseEntryFont}}]
+
+  # --- W1f: THE FOUR TYPE ROLES, IN LOCKSTEP WITH TK'S OWN BASES (1398) -----
+  # The four rows above are the ones that were here through the whole life of
+  # the defect, and every one of them passed while ASE-L rendered in a family
+  # nothing else in the process used: `W1 named fonts exist` is satisfied by
+  # Arial-that-is-really-Nimbus, because a substituted font is a font that
+  # exists. What the user actually sees is whether this window is drawn in the
+  # same face as the RDW, the CIW, the Calculator and the schematic dialogs
+  # beside it -- and the only way to say that WITHOUT NAMING A FAMILY is to
+  # compare each role against the base it was copied from.
+  #
+  # ⚠ A ROW THAT NAMED `DejaVu` HERE WOULD BE THE ARIAL DEFECT, ONE MACHINE
+  # LATER. Everything below is a relation.
+  set W1F {AseEntryFont TkDefaultFont normal
+           AseBodyFont  TkDefaultFont normal
+           AseLabelFont TkDefaultFont bold
+           AseMonoFont  TkFixedFont   normal}
+  set w1f_bad {}
+  foreach {nm base wt} $W1F {
+    if {[lsearch -exact [font names] $nm] < 0} { lappend w1f_bad "$nm does not exist" ; continue }
+    foreach o {-family -size} {
+      set a [font configure $nm $o]
+      set b [font configure $base $o]
+      if {$a ne $b} { lappend w1f_bad "$nm $o = {$a} but $base $o = {$b}" }
+    }
+    if {[font configure $nm -weight] ne $wt} {
+      lappend w1f_bad "$nm -weight = [font configure $nm -weight], the role wants $wt"
+    }
+    if {[font configure $nm -slant] ne {roman}} {
+      lappend w1f_bad "$nm -slant = [font configure $nm -slant]"
+    }
+  }
+  check "W1f1 the four type roles copy TkDefaultFont/TkFixedFont EXACTLY -- same family, same size, differing only in the weight the role is for -- asserted as a relation against whatever this machine resolves, never as a family name" \
+    [list $w1f_bad [expr {[font configure TkDefaultFont -family] ne {}}] \
+          [expr {[font configure TkFixedFont -family] ne {}}]] {{} 1 1}
+  # ...and the RENDERED metric follows, not merely the spec. This is the term
+  # that would have caught `font actual`, which normalises a pixel-spelled base
+  # to points behind the user's back and then drifts the moment `tk scaling`
+  # moves (measured: 17 px then 24 against a base of 17 and 18).
+  check "W1f1b ...and it is the rendered metric that follows: each regular role measures the same linespace and the same `0` advance as its own base" \
+    [list [expr {[font metrics AseEntryFont -linespace] == [font metrics TkDefaultFont -linespace]}] \
+          [expr {[font metrics AseBodyFont  -linespace] == [font metrics TkDefaultFont -linespace]}] \
+          [expr {[font metrics AseMonoFont  -linespace] == [font metrics TkFixedFont   -linespace]}] \
+          [expr {[font measure AseEntryFont 0] == [font measure TkDefaultFont 0]}] \
+          [expr {[font measure AseMonoFont  0] == [font measure TkFixedFont   0]}]] {1 1 1 1 1}
+
+  # THE LADDER. It shipped as 10 pt bold headings over 13 pt regular data --
+  # headings THREE POINTS SMALLER than the rows they head. One size now,
+  # separated by weight.
+  check "W1f2 the ladder is not inverted: the heading font is not smaller than the data font, the two carry the SAME size, and weight is the only thing that separates them" \
+    [list [expr {[font metrics AseLabelFont -linespace] >= [font metrics AseEntryFont -linespace]}] \
+          [expr {[font configure AseLabelFont -size] eq [font configure AseEntryFont -size]}] \
+          [font configure AseLabelFont -weight] [font configure AseEntryFont -weight] \
+          [font configure AseBodyFont -weight] [font configure AseMonoFont -weight]] \
+    {1 1 bold normal normal normal}
+
+  # THE CENSUS. Before 1398, apply_theme put the BOLD font on 52 of this
+  # window's 53 fonted widgets -- the menubar, all nine status segments, all
+  # eight strip captions and every label -- so nothing in the window could be
+  # emphasised because everything already was. A name check cannot see that; a
+  # census can, and it is what catches a walk that regresses to painting one
+  # font everywhere.
+  set w1f_bold {} ; set w1f_body {} ; set w1f_ent {}
+  foreach w [concat [list $top] [descendants $top]] {
+    if {[catch {$w cget -font} ft]} continue
+    switch -- $ft {
+      AseLabelFont { lappend w1f_bold $w }
+      AseBodyFont  { lappend w1f_body $w }
+      AseEntryFont { lappend w1f_ent  $w }
+    }
+  }
+  set w1f_titles {}
+  foreach p {vars ana outs} {
+    if {[$top.body.$p cget -font] ne {AseLabelFont}} { lappend w1f_titles $top.body.$p }
+  }
+  check "W1f3 the bold font is spent on the three pane titles and on nothing else: it painted 52 of 53 fonted widgets before 1398, so the CENSUS -- bold rare, chrome common -- is the term a font-name check could never carry" \
+    [list [expr {[llength $w1f_bold] <= 4}] \
+          [expr {[llength $w1f_body] >= 4 * [llength $w1f_bold]}] \
+          $w1f_titles [expr {[llength $w1f_ent] >= 1}]] {1 1 {} 1}
+  check "W1f3b the menubar carries the CHROME font, not the heading font -- it was the only BOLD menubar in the process, and it is the strip the user compares directly against the schematic window's own" \
+    [list [$top.mb cget -font] [$top.body.vars cget -font]] {AseBodyFont AseLabelFont}
+  check "W1f3c the panes' rows are the DATA font and their headings the HEADING font, declared on the styles rather than on a widget -- which is why the census above cannot see the eleven column headings" \
+    [list [ttk::style configure Ase.Treeview -font] \
+          [ttk::style configure Ase.Treeview.Heading -font]] {AseEntryFont AseLabelFont}
+
+  # --- W1f4: A FOREGROUND WHEREVER THERE IS A BACKGROUND --------------------
+  # ase::ui::apply_theme wrote `-background` from the locked palette and NEVER
+  # a `-foreground`, so xschem's shipped `dark_gui_colorscheme 1` --
+  # `option add *foreground white startupFile`, src/xschem.tcl:19109 -- won
+  # every widget ASE-L painted: MEASURED live, 58 widgets at 1.119:1 (the whole
+  # action strip, the whole status bar, every menu and cascade) and the
+  # temperature entry at 1.000:1, white on its own #ffffff, literally invisible.
+  #
+  # D1398a at the foot of this file drives that option database FOR REAL. This
+  # row is the structural half, and it is written as a SENTINEL so that it
+  # names no colour whatever:
+  #
+  #   every colour option of every class the walk touches is pre-set to a value
+  #   ASE-L would never write (#ff00ff), the walk is run, and the rule asserted
+  #   is the one the source states -- IF a widget's -background was claimed,
+  #   THEN its -foreground was claimed too, and its caret, and its active
+  #   foreground whenever its active background was claimed.
+  #
+  # Written this way it covers two classes the session window has NO INSTANCE
+  # of -- Radiobutton (Choose Analyses' four type pills) and Listbox (Load
+  # State's three browsers), which are precisely the two arms 1398 ADDED --
+  # and it will cover the next class somebody adds without being edited.
+  proc w1f_claimed {w o sent} {
+    if {[catch {$w cget $o} v]} { return -1 }        ;# class has no such option
+    return [expr {$v eq $sent ? 0 : 1}]
+  }
+  set W1F_SENT #ff00ff
+  set W1F_OPTS {-foreground -activeforeground -insertbackground -selectcolor
+                -disabledforeground -selectbackground -selectforeground
+                -activebackground -background}
+  toplevel $top.zoo
+  foreach {cls path} {frame f labelframe lf label lb button bt checkbutton cb
+                      radiobutton rb entry en listbox lx text tx scrollbar sc} {
+    $cls $top.zoo.$path
+  }
+  menu $top.zoo.mn -tearoff 0
+  set w1f_zoowidgets [concat [list $top.zoo] [descendants $top.zoo]]
+  set w1f_pre 0
+  foreach w $w1f_zoowidgets {
+    foreach o $W1F_OPTS {
+      catch {$w configure $o $W1F_SENT}
+      if {[w1f_claimed $w $o $W1F_SENT] == 0} { incr w1f_pre }
+    }
+  }
+  ase::ui::apply_theme $top.zoo
+  set w1f_unowned {} ; set w1f_zoo {}
+  foreach w $w1f_zoowidgets {
+    if {[w1f_claimed $w -background $W1F_SENT] != 1} continue   ;# not claimed
+    lappend w1f_zoo [winfo class $w]
+    foreach o {-foreground -insertbackground} {
+      if {[w1f_claimed $w $o $W1F_SENT] == 0} {
+        lappend w1f_unowned "[winfo class $w] background claimed, ambient $o left in place"
+      }
+    }
+    if {[w1f_claimed $w -activebackground $W1F_SENT] == 1 &&
+        [w1f_claimed $w -activeforeground $W1F_SENT] == 0} {
+      lappend w1f_unowned "[winfo class $w] claimed -activebackground and left the ambient -activeforeground"
+    }
+  }
+  check "W1f4 apply_theme owns a FOREGROUND wherever it owns a background -- driven with every colour option pre-set to a sentinel the palette never contains, so this row names no colour, and it covers Radiobutton and Listbox, which the session window has no instance of" \
+    [list $w1f_unowned [lsort $w1f_zoo] [expr {$w1f_pre >= 40}]] \
+    [list {} {Button Checkbutton Entry Frame Label Labelframe Listbox Menu Radiobutton Scrollbar Text Toplevel} 1]
+  destroy $top.zoo
+
+  # --- W1f5: A LIVE TOOLTIP IS NOT OURS -------------------------------------
+  # ::balloon (src/xschem.tcl:14948-14958) builds `<parent>.balloon` as a CHILD
+  # toplevel, black with a lightyellow label, and ase::ui::populate ends in
+  # apply_theme on EVERY state mutation -- so a tooltip that happened to be on
+  # screen when a row changed was repainted to panel grey with its border gone,
+  # in place, while the user was reading it. The guard is one line at the head
+  # of the recursion; this is the row that keeps it there.
+  toplevel $top.balloon -background black
+  label $top.balloon.l -background lightyellow -foreground black -text tip
+  pack $top.balloon.l
+  ase::ui::apply_theme $top
+  check "W1f5 apply_theme steps over a LIVE tooltip: a `.balloon` child toplevel keeps ::balloon's own black ground, its lightyellow label and its own font through a full walk of the window it hangs under" \
+    [list [$top.balloon cget -background] [$top.balloon.l cget -background] \
+          [$top.balloon.l cget -foreground] \
+          [expr {[lsearch -exact {AseBodyFont AseLabelFont AseEntryFont AseMonoFont} \
+                   [$top.balloon.l cget -font]] < 0}]] \
+    {black lightyellow black 1}
+  destroy $top.balloon
+
+  # --- W1f6: THE COLUMN POLICY IS DERIVED, NOT PINNED -----------------------
+  # Every column shipped as `-width <pixel constant> -stretch 1` with no
+  # -minwidth at all, i.e. pixels against POINT font sizes. Two measurements
+  # say why that had to move with the fonts and not after them: at `tk scaling`
+  # 2.0 on the shipped code `Enable` needed 65 px in a 63 px column and `Save
+  # Options` 128 px in 90; and the `Save Options` heading is 89 px of ink in
+  # the SUBSTITUTED bold and 104 px in the DERIVED bold, so the font change
+  # alone would have made that heading clip worse than it already did.
+  #
+  # ⚠ EVERY TERM BELOW IS A RELATION AGAINST `font measure`. A pixel expectation
+  # here would be the same defect as a pixel constant in the source: it would
+  # pass on this display and fail on the user's, which is a different X server
+  # at a different scaling (three of them are live on this box).
+  proc w1f_colscan {tv} {
+    set bad {} ; set stretchy {}
+    foreach c [$tv cget -columns] {
+      set h   [$tv heading $c -text]
+      set ink [font measure AseLabelFont $h]
+      set wd  [$tv column $c -width]
+      set mn  [$tv column $c -minwidth]
+      if {$mn < $ink} { lappend bad "$tv/$c -minwidth $mn is under its own heading ink ($ink px of `$h`)" }
+      if {$mn != [ase::ui::colw 0 $h]} { lappend bad "$tv/$c -minwidth $mn is not the derived heading floor [ase::ui::colw 0 $h]" }
+      if {$wd < $mn}  { lappend bad "$tv/$c -width $wd is under its own -minwidth $mn" }
+      if {$wd < $ink} { lappend bad "$tv/$c heading `$h` CLIPS: $ink px of ink in a $wd px column" }
+      if {[$tv column $c -stretch]} { lappend stretchy $c }
+    }
+    return [list $bad $stretchy]
+  }
+  set w1f_colbad {} ; set w1f_stretch {} ; set w1f_ncols 0
+  foreach pane {vars ana outs} {
+    lassign [w1f_colscan $top.body.$pane.tv] b s
+    foreach x $b { lappend w1f_colbad $x }
+    lappend w1f_stretch $s
+    incr w1f_ncols [llength [$top.body.$pane.tv cget -columns]]
+  }
+  check "W1f6 every pane column's -minwidth is the derived floor of its own heading's ink in the heading font, its width is at least that, and no heading clips -- the RELATION against font measure, never a pixel" \
+    [list $w1f_colbad $w1f_ncols] {{} 11}
+  check "W1f6b exactly one column per pane stretches and it is the CONTENT column: ttk hands slack out in absolute pixels across every -stretch 1 column and clamps on the way down at -minwidth, but never gives the clamped pixels back on the way up, so an all-stretch table RATCHETS (measured on the shipped code: four drags took `#` from 32 px to 60 permanently and left `Save Options` clipped for the rest of the session)" \
+    $w1f_stretch {value args value}
 
   # W1m: menu tree v2 — the 9 cascades in order; Launch disabled; Tools LIVE
   # (Waveform Viewer wired to ase::ui::open_viewer; Calculator LIVE since
@@ -3251,6 +3658,245 @@ catch {ase::session_close $rkey}
 } bigerr]} {
   puts "UNEXPECTED ERROR: $bigerr"
   incr fail
+}
+
+
+# ===========================================================================
+# D1398 -- THE DARK SCHEME, THE SIZE KNOB, AND THE RATCHET
+# ===========================================================================
+# ⚠ LAST IN THE FILE ON PURPOSE, and for a reason that is not sequencing.
+# D1398a installs xschem's SHIPPED dark colour scheme into the PROCESS-GLOBAL
+# option database, which is additive and can never be removed -- only
+# overwritten. The block puts the light values back at its foot (measured: a
+# second `option add` at the same priority wins, and `option get . foreground
+# Foreground` reads `black` again afterwards), but a block that writes a
+# database every widget in the process draws from belongs where nothing
+# follows it. Anything appended after this must re-read that restore.
+#
+# Runs on the X arm only: the whole subject is what a widget RENDERS.
+
+if {[info exists ::has_x] && [info commands winfo] ne {}} {
+ if {[catch {
+
+  proc d1398_rgb {w c} {
+    if {[catch {winfo rgb $w $c} raw]} { return {} }
+    set o {}
+    foreach v $raw { lappend o [expr {int($v / 257.0 + 0.5)}] }
+    return $o
+  }
+  ## WCAG 2.1 relative luminance and contrast ratio, on the colours the widget
+  ## actually answers -- resolved through `winfo rgb`, so a named colour and a
+  ## hex literal are compared on the same footing.
+  proc d1398_lum {rgb} {
+    set o {}
+    foreach v $rgb {
+      set s [expr {$v / 255.0}]
+      lappend o [expr {$s <= 0.03928 ? $s / 12.92 : pow(($s + 0.055) / 1.055, 2.4)}]
+    }
+    lassign $o r g b
+    return [expr {0.2126 * $r + 0.7152 * $g + 0.0722 * $b}]
+  }
+  proc d1398_ratio {w fg bg} {
+    set a [d1398_rgb $w $fg] ; set b [d1398_rgb $w $bg]
+    if {[llength $a] != 3 || [llength $b] != 3} { return {} }
+    set l1 [d1398_lum $a] ; set l2 [d1398_lum $b]
+    if {$l2 > $l1} { set t $l1 ; set l1 $l2 ; set l2 $t }
+    return [expr {($l1 + 0.05) / ($l2 + 0.05)}]
+  }
+  ## Every widget under $w that answers BOTH a foreground and a background,
+  ## with the ones under 3.0:1 named. 3.0 is deliberately loose -- this row's
+  ## claim is legibility, not AA -- and it is far below anything the locked
+  ## palette produces (its worst live pair is the maroon pane title at 8.94:1)
+  ## while being far above the 1.119:1 and 1.000:1 the defect produced.
+  proc d1398_walk {w} {
+    set bad {} ; set n 0 ; set worst {}
+    foreach x [concat [list $w] [descendants $w]] {
+      if {[catch {$x cget -foreground} fg]} continue
+      if {[catch {$x cget -background} bg]} continue
+      if {$fg eq {} || $bg eq {}} continue
+      set r [d1398_ratio $w $fg $bg]
+      if {$r eq {}} continue
+      incr n
+      if {$worst eq {} || $r < [lindex $worst 0]} { set worst [list $r $x] }
+      if {$r < 3.0} { lappend bad "[winfo class $x] $x fg=$fg on bg=$bg = [format %.3f $r]:1" }
+    }
+    return [list $n $bad $worst]
+  }
+
+  # THE SHIPPED DARK OPTION DATABASE, verbatim from src/xschem.tcl:19109-19123,
+  # installed BEFORE the window below is built -- which is the only order that
+  # reproduces the defect, because the option database is consulted at widget
+  # CREATION. (The same reason `--tcl` cannot set dark_gui_colorscheme for this
+  # purpose and `--preinit` can: xschem.tcl has already written the database by
+  # the time --tcl runs.)
+  set D1398_DARK  {*foreground white *activeForeground white *insertBackground white
+                   *selectColor grey10 *background grey20 *activeBackground grey10}
+  set D1398_LIGHT {*foreground black *activeForeground black *insertBackground black
+                   *selectColor white *background grey80 *activeBackground #f8f8f8}
+  foreach {p v} $D1398_DARK { option add $p $v startupFile }
+  check "D1398 the shipped dark option database really is in force for the window built below -- the row that keeps the three after it from passing on a light process" \
+    [list [option get . foreground Foreground] [option get . insertBackground Background]] \
+    {white white}
+
+  # A SECOND VIEW OF THE SAME FIXTURE CELL, so nothing above is disturbed: the
+  # ngspice_state1 session has been closed by W8 and its file carries the
+  # mutations those legs made.
+  library_new_view aselib nfet_clean ngspice_state_dark ngspice_state_dark
+  set dpath [xschem cellview_path aselib/nfet_clean ngspice_state_dark]
+  set dkey  [ase::session_key aselib nfet_clean ngspice_state_dark]
+  if {$dpath eq {}} {
+    puts "SKIPPED: D1398a-f (the dark fixture view did not resolve)"
+  } else {
+    ase::session_open $dkey [file normalize $dpath]
+    set dst [ase::session_state $dkey]
+    dict set dst design {lib aselib cell nfet_clean view schematic}
+    dict set dst rundir [file join $scratch d1398_run]
+    dict set dst variables {{name Vgs value 1.8} {name VCCGAUSS value 2.0}}
+    dict set dst analyses {{type tran enabled 1 step 10n stop 200u}
+                           {type dc enabled 0 source V2 start 0 stop 1.8 step 0.01}}
+    dict set dst outputs {{name id expr -i(v1) save 1 plot 0}}
+    ase::session_update $dkey $dst
+    ase::session_save $dkey
+    ase::session_close $dkey
+    check "D1398 the dark fixture window opens" [ase::open_state aselib nfet_clean ngspice_state_dark] 1
+    update
+    set dtop [ase::ui::window_for $dkey]
+
+    # --- D1398a: DEFECT 3, PINNED ------------------------------------------
+    # MEASURED on the shipped code with this exact database: 58 widgets below
+    # 3.0:1 -- the whole action strip, all nine status segments, the menubar
+    # and every cascade at 1.119:1, and the temperature entry at 1.000:1,
+    # white on its own #ffffff. Owning the foreground is the whole of the fix,
+    # and it costs nothing on the light palette because fieldfg is #000000,
+    # which is what every classic widget already rendered.
+    lassign [d1398_walk $dtop] dn dbad dworst
+    check "D1398a THE SHIPPED DARK SCHEME IS LEGIBLE: not one widget of the session window renders its own foreground under 3.0:1 against its own background, where 58 of them did before 1398 and the temperature entry was white on white" \
+      [list $dbad [expr {$dn >= 40}]] {{} 1}
+    check_true "D1398a ...and the worst pair in the window is the maroon pane title, which is an accent and not an accident" \
+      [expr {[lindex $dworst 0] > 5.0}]
+    # the single widget the measurement called literally invisible
+    check "D1398b the temperature entry is not white-on-white: its text AND its caret are both legible against the field it sits in (measured at 1.000:1 before -- the dark scheme's *insertBackground put a white cursor in a white field, so even the caret was gone)" \
+      [list [expr {[d1398_ratio $dtop [$dtop.tb.temp cget -foreground] \
+                                      [$dtop.tb.temp cget -background]] > 4.5}] \
+            [expr {[d1398_ratio $dtop [$dtop.tb.temp cget -insertbackground] \
+                                      [$dtop.tb.temp cget -background]] > 4.5}]] {1 1}
+
+    # --- D1398c-e: THE KNOB REACHES A WINDOW ALREADY ON SCREEN --------------
+    # The old ase::theme guarded each `font create` with an lsearch, so a size
+    # knob would have been DEAD ON ARRIVAL: the guard meant a size change could
+    # never reach a window that was already open. ase::_mkfont RECONFIGURES,
+    # and this is the row that says so -- one ase::theme call, no widget walk,
+    # and an Entry that has been on screen since before the knob was touched
+    # gets taller.
+    set d_base [font configure TkDefaultFont -size]
+    set d_ls0  [font metrics AseEntryFont -linespace]
+    set d_rh0  [ttk::style configure Ase.Treeview -rowheight]
+    set d_rq0  [winfo reqheight $dtop.tb.temp]
+    set ::ase_font_size 16
+    ase::theme
+    update
+    check "D1398c a valid ase_font_size reaches a window ALREADY ON SCREEN: one ase::theme call rescales all four roles, the live temperature entry and the derived treeview rowheight, with no widget walk at all" \
+      [list [ase::font_size] [font configure AseEntryFont -size] \
+            [font configure AseLabelFont -size] [font configure AseMonoFont -size] \
+            [expr {[font metrics AseEntryFont -linespace] > $d_ls0}] \
+            [expr {[winfo reqheight $dtop.tb.temp] > $d_rq0}] \
+            [expr {[ttk::style configure Ase.Treeview -rowheight] > $d_rh0}]] \
+      {16 16 16 16 1 1 1}
+    set ::ase_font_size 5
+    ase::theme
+    update
+    check "D1398d an out-of-band size is REFUSED ON THE LIVE WINDOW, not clamped: the fonts fall back to the system size rather than to the band's edge, so a typo cannot become a setting the user never chose" \
+      [list [ase::font_size] [font configure AseEntryFont -size] \
+            [font configure AseMonoFont -size]] \
+      [list {} $d_base [font configure TkFixedFont -size]]
+    set ::ase_font_size 0
+    ase::theme
+    update
+    check "D1398e ...and 0 PUTS IT BACK, to the pixel: the rdw hole recorded at rdw.tcl:2569 -- a version that could impose a size but never restore one -- does not exist here, because the size is written on every call" \
+      [list [font configure AseEntryFont -size] [font metrics AseEntryFont -linespace] \
+            [winfo reqheight $dtop.tb.temp] \
+            [ttk::style configure Ase.Treeview -rowheight]] \
+      [list $d_base $d_ls0 $d_rq0 $d_rh0]
+
+    # --- D1398f: THE SHARED LIST DIALOG OBEYS THE SAME POLICY ---------------
+    # Setup > Model Files is the fourth of the five treeview sites and the one
+    # a live row can reach for free. L1398c covers the fifth and sixth.
+    ase::ui::model_files_dialog $dkey
+    update
+    if {![winfo exists $dtop.models.tv]} {
+      puts "SKIPPED: D1398f (the Model Files dialog did not open)"
+    } else {
+      lassign [w1f_colscan $dtop.models.tv] dcb dcs
+      check "D1398f the shared list dialog's columns follow the same derived policy as the panes -- heading floor for -minwidth, one stretchy column, no clipped heading" \
+        [list $dcb [llength $dcs] [llength [$dtop.models.tv cget -columns]]] {{} 1 2}
+      destroy $dtop.models
+      update
+    }
+
+    # --- D1398g: THE RATCHET ------------------------------------------------
+    # ttk distributes slack in ABSOLUTE PIXELS across every -stretch 1 column
+    # and clamps on the way down at -minwidth, but never returns the clamped
+    # pixels on the way up. MEASURED on the shipped code (all eleven columns
+    # stretchy, no minwidth): four drag cycles moved `#` from 32 px to 60
+    # permanently, bled `Type` 63 -> 59, took `Arguments` 262 -> 238 and left
+    # `Save Options` at 87 px against an 89 px heading -- i.e. after ONE drag
+    # that heading clipped for the rest of the session.
+    #
+    # SELF-SKIPS rather than fails when the window manager will not honour the
+    # resize: a row that cannot move the window has measured nothing, and a
+    # blind pass would be worse than no row (test_ase_window's own W4 carries
+    # the same discipline for the same reason).
+    proc d1398_fixedcols {top} {
+      set o {}
+      foreach pane {vars ana outs} {
+        set tv $top.body.$pane.tv
+        foreach c [$tv cget -columns] {
+          if {![$tv column $c -stretch]} { lappend o $pane/$c [$tv column $c -width] }
+        }
+      }
+      return $o
+    }
+    set d_geom [wm geometry $dtop]
+    set d_cols0 [d1398_fixedcols $dtop]
+    set d_moved 0
+    set d_drift {}
+    for {set i 0} {$i < 4} {incr i} {
+      wm geometry $dtop 560x360 ; update ; after 120 ; update
+      set d_small [winfo width $dtop]
+      wm geometry $dtop 900x600 ; update ; after 120 ; update
+      set d_big [winfo width $dtop]
+      if {$d_big > $d_small + 100} { set d_moved 1 }
+      set d_now [d1398_fixedcols $dtop]
+      if {$d_now ne $d_cols0} { lappend d_drift "cycle $i: {$d_now} was {$d_cols0}" }
+    }
+    catch {wm geometry $dtop $d_geom} ; update
+    if {!$d_moved} {
+      puts "SKIPPED: D1398g (this window manager never resized the toplevel; a ratchet cannot be measured without a drag)"
+    } else {
+      check "D1398g NOTHING RATCHETS: four full 560x360 <-> 900x600 cycles leave every FIXED column byte-identical, so the slack lands on the one content column per table and a drag can no longer cost `Save Options` its heading for the session" \
+        [list $d_drift $d_moved [expr {[llength $d_cols0] / 2}]] {{} 1 8}
+    }
+
+    ase::ui::close $dkey
+    catch {ase::session_close $dkey}
+    update
+  }
+
+  # PUT THE PROCESS BACK. `option add` is additive and never removed, so the
+  # only restore available is to write the LIGHT values -- the arm that
+  # actually ran at startup, src/xschem.tcl:19091-19102 -- back over the dark
+  # ones at the same priority.
+  foreach {p v} $D1398_LIGHT { option add $p $v startupFile }
+  check "D1398 the process is put back: the light option database this suite started under is in force again for anything created after this block" \
+    [list [option get . foreground Foreground] [option get . insertBackground Background]] \
+    {black black}
+
+ } d_bigerr]} {
+  puts "UNEXPECTED ERROR (D1398 block): $d_bigerr"
+  incr fail
+ }
+} else {
+  puts "D1398 dark/knob/ratchet legs skipped (no DISPLAY)"
 }
 
 # --- verdict -----------------------------------------------------------------

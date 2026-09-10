@@ -31,7 +31,10 @@
 # State: <view>`; the v2 menu tree; NO log pane — a run opens a live-follow
 # log toplevel instead (Ctrl-W closes, Simulation > Log reopens). Palette +
 # named fonts are centralized in ase::theme / ase::ui::apply_theme (USER-
-# LOCKED colors; no ASE widget left on Tk defaults).
+# LOCKED colors; no ASE widget left on Tk defaults). The four type roles —
+# AseEntryFont data, AseBodyFont chrome, AseLabelFont headings, AseMonoFont
+# machine text — are DERIVED from TkDefaultFont/TkFixedFont and name no family
+# (issue 1398); the size knob is `ase_font_size`.
 #
 # Editing model (UI v2 "Panes", item 06): exactly THREE panes — Design
 # Variables, Analyses, Outputs — each a ttk::treeview column table that is a
@@ -102,6 +105,16 @@ namespace eval ase::ui {
   # (simnames/simrow, plus simns — the -n checkbutton's variable, issue 1371).
   # Cleaned on dialog proceed/cancel AND in close.
   variable dlg;     array set dlg {}
+  # issue 1398. cbopt: which toplevels have had their ttk::combobox popdown
+  # option-database entries added (once per window; the entries are additive and
+  # are never removed, so adding them twice is waste, not a bug).
+  # colpolicy: per-treeview {columns headings policy}, so retune_columns can
+  # re-derive a width the way build_pane first derived it.
+  # colfont: the AseEntryFont/AseLabelFont metric the widths were last derived
+  # AT, per toplevel — the guard that stops a retune undoing a dragged column.
+  variable cbopt;     array set cbopt {}
+  variable colpolicy; array set colpolicy {}
+  variable colfont;   array set colfont {}
   # simuse(key): the Simulators dialog's "which one is in force" combobox
   # variable (issue 0937). Session-keyed for the same reason `annot` is: two
   # ASE-L windows can be open at once, and Tk resolves a -textvariable in the
@@ -140,11 +153,17 @@ namespace eval ase::ui {
 # any other window in the application looks.
 #
 # ⚠ That is the whole reason it exists separately from ase::theme. ase::theme
-# does `option add *TCombobox*Listbox.font AseEntryFont`, which is
-# PROCESS-GLOBAL and reaches the popdown of every ttk::combobox in xschem (33
-# call sites, 15 of them in xschem.tcl) — including comboboxes created before
-# the call, because the popdown listbox is built lazily. A caller that only
-# wants to know what colour a panel is must not pay that. The Calculator's
+# RECONFIGURES four named fonts (issue 1398 — it used to `font create` three,
+# guarded, which is why a size knob could never have reached an open window)
+# and it configures the shared ttk styles. A caller that only wants to know
+# what colour a panel is must not pay a font-changed cascade for it — and the
+# per-widget colour reads inside ase::ui::_theme_widget come through HERE for
+# the same reason. Until 1398 ase::theme also did a bare
+# `option add *TCombobox*Listbox.font AseEntryFont`, PROCESS-GLOBAL, reaching
+# the popdown of every ttk::combobox in xschem (33 call sites, 15 of them in
+# xschem.tcl) including ones created before the call, because the popdown
+# listbox is built lazily; that entry is now scoped per ASE window in
+# ase::ui::_combobox_popdown_font. The Calculator's
 # calc::color reads this proc for exactly that reason
 # (doc/claude/specs/calculator.md R113); ase::theme itself returns
 # `[ase::palette $name]` so there is one definition, not two.
@@ -173,25 +192,187 @@ proc ase::palette {{name {}}} {
   return $pal
 }
 
-# The central ASE look: named fonts (created once — the
-# references/copy_current_cell_dialog.tcl idiom), the combobox listbox font +
-# white-field style, and the locked palette applied to the shared styles.
-# Returns the whole palette dict, or one color when `name` is given.
+# One derived hover/trough step off a palette colour: ±40 of 255, with the
+# direction flipped on a dark ground so the step exists at both ends. A
+# deliberate COPY of rdw::_shade_step (rdw.tcl:2499-2515) and its rdw::_rgb255
+# (:2456) rather than a call: ase_window.tcl must not require rdw.tcl to have
+# been sourced. (NOT, as an earlier draft of the plan claimed, because
+# test_rdw_window_1245.tcl:9849 would red — that check constrains rdw.tcl's own
+# literals, not this file's; PLAN.md §0.6.)
+#
+# Why it exists at all: the Button/Menu arms of apply_theme set -background to
+# the palette's panel and left -activebackground at Tk's stock #f8f8f8, which
+# is 1.05:1 against #f2f2f2 — theming ASE-L DESTROYED a hover step stock Tk
+# had. On the shipped palette this returns #cacaca: 1.46:1 against the panel,
+# with black text on it at 12.81:1. Issue 1398.
+#
+# An unparseable colour returns itself, so the worst case is no hover step
+# rather than a wrong colour or a throw.
+proc ase::shade {c} {
+  set rgb {}
+  if {[regexp {^#([0-9a-fA-F]{6})$} $c -> h]} {
+    for {set i 0} {$i < 3} {incr i} {
+      set v 0
+      if {[scan [string range $h [expr {$i * 2}] [expr {$i * 2 + 1}]] %x v] != 1} {
+        return $c
+      }
+      lappend rgb $v
+    }
+  } elseif {[llength [info commands winfo]]} {
+    catch {
+      set raw [winfo rgb . $c]
+      if {[llength $raw] == 3} {
+        foreach v $raw { lappend rgb [expr {int($v / 257.0 + 0.5)}] }
+      }
+    }
+  }
+  if {[llength $rgb] != 3} { return $c }
+  lassign $rgb r g b
+  set d [expr {0.30 * $r + 0.59 * $g + 0.11 * $b > 96 ? -40 : 40}]
+  set out {}
+  foreach v $rgb {
+    set n [expr {$v + $d}]
+    if {$n < 0} { set n 0 }
+    if {$n > 255} { set n 255 }
+    lappend out $n
+  }
+  return [format {#%02x%02x%02x} {*}$out]
+}
+
+# ---------------------------------------------------------------------------
+# THE TYPE ROLES, Tk HALF — ISSUE 1398. Nothing below may be reached without a
+# display: `--nogui` has no `font` command AT ALL, measured, which is the same
+# trap rdw.tcl:2553 records for every other Tk command.
+
+# Create-or-RECONFIGURE one named font. `font create` RAISES on a name that
+# already exists, which is why ase::theme guarded each of its three fonts with
+# an lsearch — and why a size knob would have been dead on arrival: the guard
+# meant a size change could never reach a window that was already open.
+# slickprop::_mkfont (property_form.tcl:340) and rdw::_font (rdw.tcl:2589) are
+# the two shapes already in this tree; this is theirs.
+#
+# ⚠ THE NO-OP GUARD IS LOAD-BEARING, NOT TIDY. ase::theme is reached from
+# ase::ui::apply_theme, and ase::ui::populate (:1597 below) runs that on EVERY
+# state mutation across ~53 widgets. A `font configure` that writes the same
+# spec back still fires Tk's font-changed cascade to every widget carrying the
+# font, so an unguarded reconfigure turns each repopulate into a relayout
+# storm. Comparing first makes the steady state free and keeps the knob live.
+proc ase::_mkfont {name spec weight} {
+  if {$spec eq {}} { return }
+  set want [dict merge $spec [dict create -weight $weight -slant roman \
+                                          -underline 0 -overstrike 0]]
+  if {[lsearch -exact [font names] $name] < 0} {
+    if {[catch {font create $name}]} { return }
+  } elseif {![catch {font configure $name} have] && $have eq $want} {
+    return
+  }
+  catch {font configure $name {*}$want}
+}
+
+# The user's ASE-L text size in points, or {} for "follow TkDefaultFont".
+# Declared as `set_ne ase_font_size 0` in src/xschem.tcl beside its two
+# siblings ciw_font_size and rdw_font_size.
+#
+# Read on every ase::theme call rather than once, so it is ORDER-INDEPENDENT:
+# an xschemrc that sets it after this file is sourced still lands, and because
+# ase::_mkfont RECONFIGURES, re-calling ase::theme rescales every open ASE
+# window and dialog with no widget walk at all.
+#
+# ⚠ AN OUT-OF-BAND VALUE IS REFUSED, NOT CLAMPED. ciw_font (ciw.tcl:391) and
+# rdw::font_size (rdw.tcl:2313) both refuse; a clamp turns a typo into a silent
+# new setting the user never chose and can only discover by measuring glyphs.
+proc ase::font_size {} {
+  if {![info exists ::ase_font_size]} { return {} }
+  set n $::ase_font_size
+  if {![string is integer -strict $n] || $n == 0} { return {} }
+  if {$n < 6 || $n > 32} { return {} }
+  # ⚠ CANONICAL INTEGER, NOT THE RAW STRING. `string is integer -strict` accepts
+  # ` 8 `, `+8` and `0x10`; handing any of those back defeats ase::_mkfont's
+  # no-op guard for the life of the process, because Tk normalises the stored
+  # spec and `$have eq $want` can then never be true — four font configures on
+  # every ase::theme call, and ase::ui::populate calls it on every mutation.
+  # Measured 2026-09-09 by this item's adversary. This cannot change WHICH
+  # values are accepted; the band test above has already run.
+  return [expr {$n + 0}]
+}
+
+# The central ASE look: the four named fonts DERIVED from the system faces, the
+# combobox field style + state map, and the locked palette applied to the
+# shared styles. Returns the whole palette dict, or one color when `name` is
+# given.
 #
 # ⚠ NOT a pure reader — see ase::palette. Call THIS when widgets are about to
 # be created or themed; call ase::palette when only a colour is wanted.
 proc ase::theme {{name {}}} {
-  if {[lsearch -exact [font names] AseLabelFont] < 0} {
-    font create AseLabelFont -family Arial -size 10 -weight bold
+  # --- THE FOUR TYPE ROLES, DERIVED. No family literal anywhere. Issue 1398.
+  #
+  # This window asked for Arial 10 bold and Courier 13. NEITHER FAMILY IS
+  # INSTALLED here — `fc-match Arial` -> Nimbus Sans, `fc-match Courier` ->
+  # Nimbus Mono PS — so Tk substituted silently and ASE-L became the only
+  # window in the application not in the system face: the RDW, the Calculator,
+  # the Library Manager, the CIW and the property form all render in DejaVu.
+  # ASE-L's OWN menubar was Nimbus too, because the Menu arm of apply_theme
+  # paints it — it was not the exception, it was part of the same fault, and
+  # it was the only BOLD menubar in the process.
+  #
+  # ⚠ `font configure`, NOT `font actual`. `configure` answers the spec AS
+  # SPELLED, so a TkDefaultFont an xschemrc spelled in PIXELS is copied
+  # verbatim; `actual` normalises pixels to POINTS behind the user's back and
+  # the copy then drifts the moment `tk scaling` moves. MEASURED on :99 with
+  # the base at `-size -14`: the `configure` copy is 18 px linespace at scaling
+  # 1.39 and 18 px at 2.0, tracking the base exactly, while the `actual` copy
+  # is 17 px and then 24 px — 33% adrift, from a spelling the user chose.
+  # rdw.tcl:2562 records the same trap from the other side.
+  #
+  # ⚠ ONE SIZE, SEPARATED BY WEIGHT. The old ladder was 10 bold over 13
+  # regular — headings THREE POINTS SMALLER than the rows they head — and
+  # apply_theme put the bold font on 52 of the window's 53 fonted widgets
+  # (measured, the one exception being the temperature entry), so nothing in
+  # the window could be emphasised because everything already was. Bold is now
+  # spent on labelframe titles and column headings and on nothing else.
+  #
+  # ⚠ AseLabelFont KEEPS ITS NAME AND KEEPS ITS BOLD, and only loses its job.
+  # src/wave_viewer.tcl carries it on widgets outside this window's theming
+  # walk (:9036, :9052, :9075, :9425, :10498), so inverting the name to regular
+  # would silently un-bold them. AseBodyFont is the one new name and takes
+  # everything the bold font used to paint.
+  if {[llength [info commands font]]} {        ;# --nogui has no `font` at all
+    set uispec {}
+    set mospec {}
+    catch {set uispec [font configure TkDefaultFont]}
+    catch {set mospec [font configure TkFixedFont]}
+    set want [ase::font_size]
+    if {$want ne {} && $uispec ne {}} { dict set uispec -size $want }
+    if {$want ne {} && $mospec ne {}} { dict set mospec -size $want }
+    ase::_mkfont AseEntryFont $uispec normal   ;# DATA: cells, entries, combos
+    ase::_mkfont AseBodyFont  $uispec normal   ;# CHROME: menus, buttons, prose
+    ase::_mkfont AseLabelFont $uispec bold     ;# HEADINGS ONLY: titles+columns
+    ase::_mkfont AseMonoFont  $mospec normal   ;# MACHINE TEXT: the log
   }
-  if {[lsearch -exact [font names] AseEntryFont] < 0} {
-    font create AseEntryFont -family Arial -size 13
+  # ⚠ THE COMBOBOX POPDOWN FONT IS NO LONGER SET HERE. It used to be a global
+  # `option add *TCombobox*Listbox.font AseEntryFont`, which permanently changed
+  # the dropdown font of EVERY combobox in xschem the moment a bench was
+  # opened. It is now scoped per ASE window — see
+  # ase::ui::_combobox_popdown_font below, which also records why the obvious
+  # narrowing does not work.
+  #
+  # ⚠ THE COMBOBOX STATE MAP IS THE POINT, not the base -fieldbackground.
+  # ttk's own `map TCombobox -fieldbackground {readonly #d9d9d9 disabled
+  # #d9d9d9}` is inherited by every derived style, so declaring only the base
+  # colour still painted BOTH readonly comboboxes the palette's own DISABLED
+  # grey — including "Use this one:" in the Simulators dialog, the control
+  # that decides which binary runs. The Calculator measured and fixed this
+  # identical trap (test_calc_skeleton.tcl:1271-1292); ASE-L never got it.
+  # Locked palette values only, and `map` REPLACES rather than merges, so the
+  # disabled half is re-declared alongside.
+  catch {
+    ttk::style configure Ase.TCombobox \
+      -fieldbackground [ase::palette table] -foreground [ase::palette fieldfg]
+    ttk::style map Ase.TCombobox \
+      -fieldbackground [list readonly [ase::palette table] \
+                             disabled [ase::palette disabledbg]] \
+      -foreground [list disabled [ase::palette disabledfg]]
   }
-  if {[lsearch -exact [font names] AseMonoFont] < 0} {
-    font create AseMonoFont -family Courier -size 13
-  }
-  option add *TCombobox*Listbox.font AseEntryFont
-  catch {ttk::style configure Ase.TCombobox -fieldbackground [ase::palette table]}
   # pane tables (UI v2): white rows in the entry font, the USER-LOCKED
   # header-strip color on the column headings.
   # The -foreground and the state map are declared rather than inherited: they
@@ -211,44 +392,200 @@ proc ase::theme {{name {}}} {
                         selected [ase::palette selectbg]] \
       -foreground [list disabled [ase::palette disabledfg] \
                         selected [ase::palette selectfg]]
+    # the heading's -foreground is DECLARED for the same reason the rows' is:
+    # unowned, it comes from whatever `dark_gui_colorscheme` last wrote into
+    # the option database. Its value is the measured `default`-theme default,
+    # so nothing moved on the light palette (issue 1398).
     ttk::style configure Ase.Treeview.Heading -font AseLabelFont \
-      -background [ase::palette header]
+      -background [ase::palette header] -foreground [ase::palette fieldfg]
   }
   return [ase::palette $name]
+}
+
+# The popdown LISTBOX of a ttk::combobox has no -font option: ttk builds it
+# LAZILY on the first post and it takes its font from the OPTION DATABASE. So
+# the option database is the only lever, and ase::theme used to pull it with a
+# bare `option add *TCombobox*Listbox.font AseEntryFont` — an unqualified
+# pattern that permanently changed the dropdown font of every combobox in
+# xschem (33 constructor sites, including ones that already existed) the moment
+# a bench was opened. test_calc_skeleton.tcl:120-137 records that leak in prose.
+#
+# ⚠ AND THE OBVIOUS NARROWING DOES NOT WORK. MEASURED on :99 against a real
+# `.ase9.simdlg.use.popdown.f.l` and a control combobox outside the window:
+#
+#     *TCombobox*Listbox.font       ase HIT    other HIT    <- the shipped leak
+#     *ase*TCombobox*Listbox.font   ase miss   other miss   <- matches NOTHING:
+#                                        the path component is `ase9`, not
+#                                        `ase`, and option components match
+#                                        WHOLE, never by prefix
+#     .ase9*Listbox.font            ase miss   other miss   <- a LEADING dot
+#                                        makes an empty first component
+#     *ase9*Listbox.font            ase HIT    other miss   <- the one that works
+#
+# So the pattern is built from the window's own `.aseN` component. `option add`
+# is additive and is never removed, so re-adding it on every repopulate would
+# grow the option database for the life of the process: one entry per ASE
+# window, recorded in `cbopt`, and never again.
+proc ase::ui::_combobox_popdown_font {w} {
+  variable cbopt
+  # ⚠ THE SCOPE IS THE TOPLEVEL WE WERE HANDED, NOT AN `aseN` NAME. This proc
+  # first matched only `ase[0-9]+`, but ase::ui::apply_theme is called on FIVE
+  # waveform-viewer trees (src/wave_viewer.tcl:9252, 16233, 16683, 16983,
+  # 17066) whose toplevels are `wvN`. Those comboboxes got AseEntryFont on the
+  # ENTRY and left their popdown on the ambient font, so with ::ase_font_size
+  # set the control scaled and its own dropdown did not. Measured 2026-09-09.
+  # Keying on the toplevel keeps the per-window scoping that replaced the old
+  # process-global `option add *TCombobox*Listbox.font` — which reached all 33
+  # ttk::combobox call sites in xschem — while covering every tree that is
+  # actually themed.
+  # ⚠ THE ROOT COMPONENT, NOT `winfo toplevel`. Every ASE-L dialog IS a
+  # toplevel (`.ase4.simdlg`), so `winfo toplevel` answers `.ase4.simdlg` and
+  # the pattern would carry a dot in the middle — `*ase4.simdlg*Listbox.font`,
+  # which matches nothing. Measured: it left the ASE-L window's own comboboxes
+  # with an unstyled popdown, i.e. it broke the case the old `ase[0-9]+` scan
+  # got right. The first path component is `ase4` for the window AND for every
+  # dialog under it, and `wv3` for a waveform-viewer tree.
+  set root [lindex [split [string trimleft $w .] .] 0]
+  if {$root eq {} || [info exists cbopt($root)]} { return }
+  set cbopt($root) 1
+  # The popdown LIST is a separate widget from the field. Owning the field's
+  # background (Ase.TCombobox -fieldbackground) and not the list's left a white
+  # field above a grey80 list — they matched before this batch, both grey.
+  catch {option add *$root*Listbox.font AseEntryFont}
+  catch {option add *$root*Listbox.background [ase::palette table]}
+  catch {option add *$root*Listbox.foreground [ase::palette fieldfg]}
 }
 
 # Recursively re-skin an ASE widget tree: every widget class the ASE window
 # uses gets the locked palette + a named font — no stock-Tk leftovers. The
 # shared `textwindow` viewer (Netlist > Display) deliberately stays stock:
 # restyling it would restyle every non-ASE use.
+#
+# ⚠ THE FONTS AND SHARED STYLES ARE BUILT ONCE PER WALK, NOT ONCE PER WIDGET.
+# ase::theme is not a pure reader (its own header says so) and, since issue
+# 1398, it RECONFIGURES four named fonts instead of create-guarding three. The
+# per-widget colour reads below therefore go through ase::palette, which is
+# pure; the one ase::theme call is here.
 proc ase::ui::apply_theme {w} {
+  catch {ase::theme}
+  ase::ui::_theme_widget $w
+  # the fonts may just have moved under the columns; retune_columns is a no-op
+  # unless they actually did
+  catch {ase::ui::retune_columns [winfo toplevel $w]}
+}
+
+# The recursion. Split out of apply_theme so ase::theme runs once per walk.
+#
+# ⚠ EVERY ARM THAT WRITES A BACKGROUND NOW WRITES A FOREGROUND (issue 1398).
+# Without one, xschem's shipped `dark_gui_colorscheme 1` (src/xschem.tcl:19078,
+# `option add *foreground white startupFile`) won every widget ASE-L painted:
+# MEASURED live, 58 widgets at 1.119:1 — the whole action strip, the whole
+# status bar, every menu and every cascade — and the temperature entry at
+# 1.000:1, white on its own #ffffff, literally invisible. Owning the foreground
+# is the WHOLE of that fix. It is NOT a new colour: on the shipped light
+# palette fieldfg is #000000, which is what every classic widget already
+# rendered, so this moves zero pixels there. ase::palette stays USER-LOCKED.
+proc ase::ui::_theme_widget {w} {
+  # ⚠ A LIVE TOOLTIP IS NOT OURS. ::balloon (src/xschem.tcl:14948-14958) builds
+  # `<parent>.balloon` as a CHILD toplevel with -background black and a
+  # lightyellow label, and ase::ui::populate ends in apply_theme on every state
+  # mutation — so a tooltip that happened to be on screen when a row changed
+  # was repainted to panel grey with its border gone, in place, while the user
+  # was reading it.
+  if {[string match {*.balloon} $w]} { return }
+  set pal   [ase::palette]
+  set panel [dict get $pal panel]
+  set table [dict get $pal table]
+  set fg    [dict get $pal fieldfg]
+  set dis   [dict get $pal disabledfg]
+  set hot   [ase::shade $panel]
   set cls [winfo class $w]
   switch -- $cls {
-    Toplevel - Frame - Labelframe - Menu - Button - Label - Checkbutton {
-      catch {$w configure -background [ase::theme panel]}
-      catch {$w configure -font AseLabelFont}
-      if {$cls eq {Labelframe}} {
-        catch {$w configure -foreground [ase::theme accent]}
-      }
+    Toplevel - Frame {
+      catch {$w configure -background $panel}
+    }
+    Labelframe {
+      # ⚠ THE ACCENT IS THE ONLY -foreground THIS ARM MAY WRITE. The three pane
+      # titles are the window's one accent surface and test_ase_window.tcl:551
+      # pins them at #8b0000; a generic fieldfg written after it would red that
+      # check and flatten the only grouping cue the window has.
+      catch {$w configure -background $panel -font AseLabelFont \
+                          -foreground [dict get $pal accent]}
+    }
+    Menu {
+      catch {$w configure -background $panel -foreground $fg \
+                          -activebackground $hot -activeforeground $fg \
+                          -disabledforeground $dis -font AseBodyFont}
+    }
+    Button - Checkbutton - Radiobutton {
+      # Radiobutton is new here: Choose Analyses' four type pills were stock
+      # #d9d9d9 against a #f2f2f2 window because no arm claimed them.
+      catch {$w configure -background $panel -foreground $fg \
+                          -activebackground $hot -activeforeground $fg \
+                          -disabledforeground $dis -font AseBodyFont}
+      # The indicator box is a third colour and only two of the three classes
+      # have it, so it gets its own catch: ONE unknown option voids the WHOLE
+      # configure call, which would silently leave a Button unthemed.
+      catch {$w configure -selectcolor $table}
+    }
+    Label {
+      catch {$w configure -background $panel -foreground $fg -font AseBodyFont}
     }
     Entry {
-      catch {$w configure -background [ase::theme table] -font AseEntryFont}
+      # -insertbackground is a foreground too: the dark scheme's
+      # `option add *insertBackground white` put a white caret in the white
+      # temperature field, so even the cursor was invisible.
+      # ⚠ AND -readonlybackground AND -disabledbackground. A Tk Entry in
+      # `readonly` or `disabled` state paints with THOSE, not with -background,
+      # so owning only -background and -foreground made the dark scheme WORSE
+      # than it was: measured 2026-09-09, the Simulators row editor's readonly
+      # Name: field went from 12.635:1 (white on grey20, inherited) to
+      # 1.662:1 — black text on the option database's near-black ground —
+      # in the very scheme this arm exists to fix. Both values are already in
+      # the locked palette; no new colour is minted here.
+      #
+      # ⚠ READONLY TAKES `disabledbg`, NOT `table`. A readonly Entry that is the
+      # same white as an editable one has lost the only thing that said it was
+      # not editable — and the shipped light scheme drew it grey (the ambient
+      # `option add *readonlyBackground grey70`). disabledbg keeps the
+      # affordance, keeps it identical in both schemes, and reads 14.17:1
+      # against fieldfg. The Simulators row editor's `Name:` field is the one
+      # widget in ASE-L this decides.
+      catch {$w configure -background $table -foreground $fg \
+                          -readonlybackground [dict get $pal disabledbg] \
+                          -disabledbackground [dict get $pal disabledbg] \
+                          -disabledforeground $dis -insertbackground $fg \
+                          -selectbackground [dict get $pal selectbg] \
+                          -selectforeground [dict get $pal selectfg] \
+                          -font AseEntryFont}
+    }
+    Listbox {
+      # Load State's three lib/cell/view browsers (:6150). They were stock
+      # apart from the two options set at construction, so the selection they
+      # draw came from the ambient theme rather than the locked palette.
+      catch {$w configure -background $table -foreground $fg \
+                          -disabledforeground $dis \
+                          -selectbackground [dict get $pal selectbg] \
+                          -selectforeground [dict get $pal selectfg] \
+                          -font AseEntryFont}
     }
     Text {
-      catch {$w configure -background [ase::theme table] -font AseMonoFont}
+      catch {$w configure -background $table -foreground $fg \
+                          -insertbackground $fg -font AseMonoFont}
     }
     TCombobox {
       catch {$w configure -font AseEntryFont -style Ase.TCombobox}
+      ase::ui::_combobox_popdown_font $w
     }
     Treeview {
       # ttk widgets ignore -background/-font configure: style-based theming
       catch {$w configure -style Ase.Treeview}
     }
     Scrollbar {
-      catch {$w configure -background [ase::theme panel]}
+      catch {$w configure -background $panel}
     }
   }
-  foreach c [winfo children $w] { ase::ui::apply_theme $c }
+  foreach c [winfo children $w] { ase::ui::_theme_widget $c }
 }
 
 # The toplevel of the session `key`, or {} (the ase::open_state raise seam and
@@ -823,13 +1160,32 @@ proc ase::ui::build {key top} {
   grid columnconfigure $top.body 1 -weight 2
   grid rowconfigure $top.body 0 -weight 1
   grid rowconfigure $top.body 1 -weight 1
+  # COLUMN POLICY (issue 1398), one `{glyphs stretch anchor}` triple per column
+  # instead of the pixel constant that used to sit here. The width is that many
+  # `0`s of the DATA font, floored at the column's own heading ink in the
+  # HEADING font — see ase::ui::colw, which also records why this cannot ship
+  # without the derived fonts above it.
+  #
+  # ⚠ EXACTLY ONE STRETCHY COLUMN PER TABLE, and it is the content column.
+  # ttk hands slack out in ABSOLUTE PIXELS across every -stretch 1 column and
+  # clamps on the way down at -minwidth, but never gives the clamped pixels
+  # back on the way up — so the old all-stretch tables RATCHETED. Measured on
+  # the shipped code, four drag cycles at 798 px moved `#` from 32 px to 60 px
+  # permanently, bled `Type` 63 -> 59, and took `Save Options` from 90 to 87,
+  # i.e. that heading clipped for the rest of the session after ONE drag.
+  #
+  # ⚠ -anchor center on the three flag columns. `Enable` was 63 px of column
+  # for a 16 px glyph pinned to the left edge; centring it is what makes
+  # Stage 5's checkbox hit-band a band and not a guess.
   ase::ui::build_pane $key $top vars {name value} {Name Value} \
-    {name 140 value 120}
+    {name {14 0 w} value {13 1 w}}
   ase::ui::build_pane $key $top ana {num type enable args} \
-    [list # Type Enable Arguments] {num 30 type 60 enable 60 args 260}
+    [list # Type Enable Arguments] \
+    {num {3 0 e} type {6 0 w} enable {3 0 center} args {28 1 w}}
   ase::ui::build_pane $key $top outs {name value plot save saveopts} \
     [list Name Value Plot Save {Save Options}] \
-    {name 120 value 110 plot 50 save 50 saveopts 90}
+    [list name {12 0 w} value {11 1 w} plot {3 0 center} save {3 0 center} \
+          saveopts {10 0 w}]
   pack $top.body -side top -fill both -expand 1
 
   ase::ui::apply_theme $top
@@ -843,18 +1199,124 @@ proc ase::ui::build {key top} {
 # menu. Item ids are the row's 0-based index into the pane's state list
 # (repopulate after every mutation keeps them dense), so identify/selection
 # results address the state directly.
-proc ase::ui::build_pane {key top pane columns headings widths} {
+# A column's width: `n` glyphs of the DATA font, never below its own heading's
+# ink in the HEADING font. This is what stops `Enable` rendering `Enabl` and
+# `Save Options` rendering `Save Option`. Called with n == 0 it answers the
+# heading floor alone, which is the column's -minwidth. Issue 1398.
+#
+# ⚠ THIS IS WHY THE COLUMN POLICY CANNOT SHIP WITHOUT THE DERIVED FONTS, and
+# vice versa. Pixel constants against POINT font sizes break at every
+# `tk scaling`: measured live on the shipped code at scaling 2.0, `Enable`
+# needed 65 px in a 63 px column, `Save` 46 in 50 and `Save Options` 128 in 90
+# — 72 after four resize cycles. And the derived bold is WIDER than the
+# substituted one, so the font change ALONE would have made `Save Options` clip
+# worse than it already did in its 90 px column.
+#
+# The +16 is ttk's own heading padding, both sides, on the `default` theme.
+# With no display (`--nogui`) there is no `font` command at all, so the glyph
+# falls back to a plain number and the pane still builds.
+proc ase::ui::colw {n head} {
+  set g 0
+  set h 0
+  catch {set g [font measure AseEntryFont 0]}
+  catch {set h [font measure AseLabelFont $head]}
+  if {$g < 1} { set g 9 }
+  set w [expr {$n * $g}]
+  set h [expr {$h + 16}]
+  return [expr {$w > $h ? $w : $h}]
+}
+
+# Show the horizontal scrollbar only while there is something off-screen.
+#
+# ⚠ THIS EXISTS BECAUSE ISSUE 1398's COLUMN POLICY CAN OVERFLOW THE PANE.
+# The shipped code gave every column -stretch 1, so a narrow window shrank them
+# all and clipped the text in place — ugly, but every column stayed reachable.
+# Deriving the widths and pinning the narrow ones (-stretch 0) fixes the resize
+# ratchet and trades it for a real overflow: measured 2026-09-09, the Outputs
+# pane's `Save Options` column leaves the viewport below 740 px of window width
+# and at 560x360 thirty per cent of the pane is off-screen with no way to reach
+# it. A horizontal bar is the reach. It also closes a defect that pre-dates this
+# batch — build_pane never had one, so clipped content was simply gone.
+#
+# The `need != shown` guard is load-bearing, not tidiness: mapping a scrollbar
+# changes the treeview's width, which fires -xscrollcommand again. Acting only
+# on a CHANGE of state ends the cascade after one step.
+proc ase::ui::pane_hscroll {pf first last} {
+  catch {$pf.hsb set $first $last}
+  if {![winfo exists $pf.hsb]} { return }
+  set need  [expr {$first > 0.0 || $last < 1.0}]
+  set shown [expr {[lsearch -exact [grid slaves $pf] $pf.hsb] >= 0}]
+  if {$need && !$shown}  { catch {grid $pf.hsb} }
+  if {!$need && $shown}  { catch {grid remove $pf.hsb} }
+}
+
+# Re-derive every pane's column widths when — and ONLY when — the data font's
+# size has actually moved under them.
+#
+# ⚠ THE LIVE ::ase_font_size PATH RESCALED THE FONTS AND LEFT THE COLUMNS.
+# Measured 2026-09-09 through the real user gesture (open the window, set the
+# knob, edit a variable so ase::ui::populate runs): AseEntryFont 10 -> 16,
+# rowheight 21 -> 31, and SIX OF ELEVEN HEADINGS CLIPPED, because -width and
+# -minwidth were both still the ink of a 10 pt face. The floor that is supposed
+# to stop `Enable` rendering `Enabl` was itself stale.
+#
+# ⚠ AND ONLY ON A CHANGE. apply_theme runs on every state mutation, so
+# re-applying widths unconditionally would silently undo a column the user had
+# dragged, on every checkbox click. The guard is the font size the widths were
+# last derived AT, per window.
+proc ase::ui::retune_columns {top} {
+  variable colpolicy
+  variable colfont
+  set sz 0
+  catch {set sz [font actual AseEntryFont -size]}
+  catch {set sz [list $sz [font measure AseLabelFont 0]]}
+  if {[info exists colfont($top)] && $colfont($top) eq $sz} { return }
+  set colfont($top) $sz
+  foreach pane {vars ana outs} {
+    set tv $top.body.$pane.tv
+    if {![winfo exists $tv] || ![info exists colpolicy($tv)]} { continue }
+    lassign $colpolicy($tv) columns headings policy
+    foreach c $columns h $headings {
+      lassign [dict get $policy $c] glyphs stretch anchor
+      catch {$tv column $c -width [ase::ui::colw $glyphs $h] \
+                           -minwidth [ase::ui::colw 0 $h]}
+    }
+  }
+}
+
+proc ase::ui::build_pane {key top pane columns headings policy} {
+  variable colpolicy
   set pf $top.body.$pane
   ttk::treeview $pf.tv -columns $columns -show headings \
     -selectmode extended -height 8 -style Ase.Treeview \
     -yscrollcommand [list $pf.sb set]
   foreach c $columns h $headings {
+    lassign [dict get $policy $c] glyphs stretch anchor
     $pf.tv heading $c -text $h
-    $pf.tv column $c -width [dict get $widths $c] -anchor w -stretch 1
+    # -minwidth is the heading's own ink: the column can be dragged narrow but
+    # never narrower than the word that names it. The shipped code declared no
+    # -minwidth at all and took ttk's 20 px default.
+    $pf.tv column $c -width [ase::ui::colw $glyphs $h] \
+                     -minwidth [ase::ui::colw 0 $h] \
+                     -anchor $anchor -stretch $stretch
   }
-  scrollbar $pf.sb -orient vertical -command [list $pf.tv yview]
-  pack $pf.sb -side right -fill y
-  pack $pf.tv -side left -fill both -expand 1
+  # kept so ase::ui::retune_columns can re-derive these when the knob moves
+  set colpolicy($pf.tv) [list $columns $headings $policy]
+  scrollbar $pf.sb  -orient vertical   -command [list $pf.tv yview]
+  scrollbar $pf.hsb -orient horizontal -command [list $pf.tv xview]
+  $pf.tv configure -xscrollcommand [list ase::ui::pane_hscroll $pf]
+  # ⚠ GRID, NOT PACK, AND THE REASON IS THE HORIZONTAL BAR. `grid remove`
+  # remembers the cell, so the bar can appear and vanish without re-deriving a
+  # layout; the pack equivalent has to re-pack inside an -xscrollcommand
+  # callback, which is a geometry feedback loop. The three widget PATHS are
+  # unchanged ($pf.tv, $pf.sb, and the new $pf.hsb), which is what the suites
+  # address.
+  grid $pf.tv  -row 0 -column 0 -sticky nsew
+  grid $pf.sb  -row 0 -column 1 -sticky ns
+  grid $pf.hsb -row 1 -column 0 -sticky ew
+  grid remove $pf.hsb
+  grid rowconfigure    $pf 0 -weight 1
+  grid columnconfigure $pf 0 -weight 1
   # multi-select within ONE pane: selecting here clears the other panes
   bind $pf.tv <<TreeviewSelect>> [list ase::ui::pane_selected $key $pane]
   # checkbox cells: a click on an Enable/Plot/Save cell flips the flag and
@@ -3896,8 +4358,13 @@ proc ase::ui::rsel_build_list {key w which} {
     -style Ase.Treeview -yscrollcommand [list $f.sb set]
   $f.tv heading mark -text {}
   $f.tv heading result -text {Result}
-  $f.tv column mark -width 22 -anchor center -stretch 0
-  $f.tv column result -width 320 -anchor w -stretch 1
+  # already the right SHAPE before issue 1398 — one fixed flag column, one
+  # stretchy content column — so all it needed was the two pixel constants
+  # derived from the font and a -minwidth on each.
+  $f.tv column mark -width [ase::ui::colw 2 {}] \
+                    -minwidth [ase::ui::colw 2 {}] -anchor center -stretch 0
+  $f.tv column result -width [ase::ui::colw 34 Result] \
+                      -minwidth [ase::ui::colw 0 Result] -anchor w -stretch 1
   scrollbar $f.sb -orient vertical -command [list $f.tv yview]
   pack $f.sb -side right -fill y
   pack $f.tv -side left -fill both -expand 1
@@ -4544,9 +5011,18 @@ proc ase::ui::simulators_dialog {key} {
   ttk::treeview $w.tv -columns {name path problem} -show headings \
     -selectmode browse -height 8 -style Ase.Treeview \
     -yscrollcommand [list $w.sb set]
-  foreach c {name path problem} h {Name Program Problem} width {140 300 420} {
+  # Column policy (issue 1398). Measured on the shipped dialog: 420 px of
+  # `Problem` — a column that is empty whenever the registry is healthy — while
+  # the ngspice path it sits beside measured 370 px in a 300 px `Program`. The
+  # room goes to the one column anybody reads, and Program is the only stretchy
+  # one, so the three no longer ratchet against each other on a drag.
+  foreach c {name path problem} h {Name Program Problem} \
+          policy {{14 0 w} {36 1 w} {26 0 w}} {
+    lassign $policy glyphs stretch anchor
     $w.tv heading $c -text $h
-    $w.tv column $c -width $width -anchor w -stretch 1
+    $w.tv column $c -width [ase::ui::colw $glyphs $h] \
+                    -minwidth [ase::ui::colw 0 $h] \
+                    -anchor $anchor -stretch $stretch
   }
   scrollbar $w.sb -orient vertical -command [list $w.tv yview]
   label $w.usel -text {Use this one:} -anchor w
@@ -5290,9 +5766,16 @@ proc ase::ui::listdlg_open {key which title} {
   set cols [dict get $cfg cols]
   ttk::treeview $w.tv -columns $cols -show headings -selectmode extended \
     -height 8 -style Ase.Treeview -yscrollcommand [list $w.sb set]
+  # Column policy (issue 1398). Both configured tables are two columns whose
+  # FIRST holds the long value — a model-file path, a simulation-option name —
+  # so the first stretches and the rest are fixed at their own content width.
+  set first 1
   foreach c $cols h [dict get $cfg heads] {
     $w.tv heading $c -text $h
-    $w.tv column $c -width 170 -anchor w -stretch 1
+    $w.tv column $c -width [ase::ui::colw 20 $h] \
+                    -minwidth [ase::ui::colw 0 $h] \
+                    -anchor w -stretch $first
+    set first 0
   }
   scrollbar $w.sb -orient vertical -command [list $w.tv yview]
   frame $w.btns

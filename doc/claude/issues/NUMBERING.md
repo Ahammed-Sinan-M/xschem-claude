@@ -2936,4 +2936,18 @@ stay **open**; each carries an "A7 attempt" section pointing at 1270.
   or one scratch `HOME` in the harness (measured to give an identical check count and
   leave the file byte-identical).
 
-**The next free number is 1398.**
+- **1398** — ASE-L rendered in a typeface nobody chose, and went blank in the dark scheme.
+  `ase::theme` named Arial and Courier, neither installed; the ladder was inverted and 52
+  of 53 fonted widgets were bold; `apply_theme` set a background and never a foreground,
+  so the shipped `dark_gui_colorscheme 1` rendered 58 widgets at 1.119:1 and the
+  temperature entry at 1.000:1; and pixel column widths against point fonts clipped at any
+  other `tk scaling` while ratcheting on resize. Fix: four roles derived from
+  `TkDefaultFont`/`TkFixedFont` via `font configure` (never `font actual`), one
+  refuse-don't-clamp size knob, a foreground wherever there is a background, and column
+  widths derived from `font measure` with a `-minwidth` of the heading's own ink.
+  `ase::palette` is untouched. `PLAN.md` Stage 1 only.
+- **1399** — `test_wave_sigbrowser_0312` has two standing reds (BF21a, BF24a) on the
+  display arm. Proved pre-existing against a shadow tree built from `git show HEAD:`. The
+  suite is not in `run_regression.tcl`'s case list, so T1 has never covered it.
+
+**The next free number is 1400.**

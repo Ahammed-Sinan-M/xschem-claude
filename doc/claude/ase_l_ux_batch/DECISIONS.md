@@ -60,6 +60,48 @@ wrong.
 is unchanged — but the name now reads as a promise the window no longer makes. Renamed to
 name the predicate rather than the outcome. The floor rises; it never falls.
 
-## Item 2 — the font and theme derivation
+## Item 2 — the font and theme derivation (issue 1398)
 
-Held until item 1 is committed. Decisions land here as the crew takes them.
+**T-1. Four roles, one size, separated by weight and by face.** `AseEntryFont` (data),
+`AseBodyFont` (chrome and prose), `AseLabelFont` (headings only, bold), `AseMonoFont`
+(machine text). `AseLabelFont` keeps its NAME — six suites, sixteen references, all by
+name — and loses its job: it is no longer painted on every Label, Button and Checkbutton.
+
+**T-2. `font configure`, never `font actual`.** `actual` normalises a pixel spelling to
+points behind the user's back. Measured: base at `-size -14`, the `configure` copy tracks
+18 px → 18 px across a rescale, the `actual` copy goes 17 px → 24 px.
+
+**T-3. The knob refuses, it does not clamp,** and it returns a canonical integer.
+`string is integer -strict` accepts `" 8 "`, `+8` and `0x10`; handing any of them back
+defeats `_mkfont`'s no-op guard for the life of the process.
+
+⚖ **T-4. `ase::palette` is untouched.** Owning the foreground means setting it FROM the
+locked palette, not minting colours. Every hex in the diff is inside a comment.
+`disabledfg` on `disabledbg` is still 1.787:1 — that is ruling R-3 in `PLAN.md` Stage 4
+and it is the user's, not this item's.
+
+**T-5. A readonly Entry takes `disabledbg`, not `table`.** The first repair gave it
+`table`, which made the Simulators row editor's `Name:` field the same white as an
+editable one — the affordance gone, and different from the grey the light scheme shipped.
+`disabledbg` reads 14.877:1 and is identical in both schemes.
+
+**T-6. The pane overflow gets a scrollbar, not a `wm minsize`.** Deriving the widths and
+pinning the narrow columns fixes the ratchet and trades it for a real overflow below
+740 px. A minimum size would forbid the small window instead of serving it; a horizontal
+bar gives the reach back and closes a defect older than this batch — `build_pane` never
+had one. Gridded, so `grid remove` can hide it, and it acts only on a CHANGE of state so
+mapping it cannot cascade through its own `-xscrollcommand`.
+
+**T-7. The live knob completes rather than withdraws.** It rescaled the fonts and left
+the columns — six of eleven headings clipped after one mutation. `retune_columns` fires
+only when the font metric has actually moved, so it can never silently undo a column the
+user dragged.
+
+**T-8. The combobox popdown is scoped on the ROOT path component.** Not `winfo toplevel`
+(every ASE-L dialog IS a toplevel, so the pattern gained a dot and matched nothing) and
+not `ase[0-9]+` (which missed the five waveform-viewer trees `apply_theme` also walks).
+
+**T-9. `test_wave_sigbrowser_0312`'s two reds are pre-existing and are filed, not
+carried.** Proved against a shadow tree built with `git show HEAD:` — identical rows,
+identical count. Issue 1399. The suite is not in `run_regression.tcl`'s case list, so T1
+has never covered it and T1's zero is honest.

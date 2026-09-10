@@ -60,8 +60,13 @@ f85cfd79f6ff9ad4bdae1fb87b755a73  sky130A/.../tb_bandgap/ngspice_state1/tb_bandg
 
 | | |
 |---|---|
-| status | built, attacked, repaired, suites green; awaiting T1 |
-| commit | — |
+| status | **DONE** |
+| commit | `5fb8f465` fix(1396): Save State asked nothing before it destroyed an existing state |
+| T1 | **0 counted failures, 0 launch failures, 0 `exit -1`, 0 NODISPLAY arms** — run solo in the foreground, full parallelism, scratch `HOME` plus `XSCHEM_DEVDISPLAY_DIR` |
+| ledger | rule **1396** (the sentence, the untitled-session rule S-3, unwritable-fails-silently), rule **1397** (the geometry eviction), look `ase_l_1396_overwrite_confirm` |
+
+The UX audit and the thirteen closed look debts went in first, as `66992a1d`, so this
+commit's citations resolve.
 
 **Crew.** A1 implement, A2 pin, then two adversaries in parallel.
 
@@ -120,9 +125,45 @@ like it did. Export `XSCHEM_DEVDISPLAY_DIR=$HOME_REAL/.claude/xschem_dev_display
 alongside the scratch `HOME`. Written into issue 1397, which proposes the scratch `HOME`
 as a fix and would otherwise have proposed a trap.
 
-## Item 2 — font and theme derivation
+## Item 2 — font and theme derivation  (issue 1398)
 
 | | |
 |---|---|
-| status | held until item 1 is committed |
-| commit | — |
+| status | built, attacked, repaired, suites green, T1 clean |
+| T1 | **0 counted failures, 0 launch failures, 0 `exit -1`, 0 NODISPLAY arms** |
+
+**Crew.** B1 implement, B2 pin, then three adversaries in parallel: pixels, downstream
+consumers, and the displays that are not `:99`.
+
+**What the adversaries found, and what the lead did with it.**
+
+| # | finding | disposition |
+|---|---|---|
+| 1 | Owning `-foreground` without `-readonlybackground`/`-disabledbackground` made the dark scheme WORSE: the Simulators row editor's readonly `Name:` field went 12.635:1 → **1.662:1**, in the very scheme the change exists to fix | **FIXED**, then fixed again — `table` restored the contrast but made a readonly field look editable, so it takes `disabledbg`: 14.877:1, identical in both schemes |
+| 2 | Deriving the widths traded the ratchet for an overflow: `Save Options` left the viewport below 740 px, 30% of the Outputs pane unreachable at 560×360, and `build_pane` never had a horizontal scrollbar | **FIXED.** Gridded horizontal bar, shown only on a change of state |
+| 3 | The narrowed combobox glob desynchronised the waveform viewer: with the knob set, the entry scaled and its popdown did not | **FIXED** — and the lead's first fix broke the ASE-L window's own popdowns, because every ASE-L dialog IS a toplevel. Root path component, not `winfo toplevel` |
+| 4 | The live knob rescaled the fonts and left the columns: **6 of 11 headings clipped** after one mutation, the anti-clip floor itself stale | **FIXED.** `retune_columns`, guarded on a real change of font metric |
+| 5 | `ase::font_size` returned the raw string, permanently defeating the `_mkfont` no-op guard | **FIXED**, one line |
+| 6 | A runtime `tk scaling` call splits realized from unrealized fonts | **RECORDED** in issue 1398. No shipped path does it |
+| 7 | Nothing clamps the window's natural size to the screen; at scaling 4.0 it asks for 2099×1160 on a 1920×1080 screen | **RECORDED** in issue 1398. Pre-existing, made wider by the derived columns |
+| 8 | The implementer's `apply_theme` perf figures were unreproducible | **CORRECTED** — head-to-head it is ~2.1× FASTER, a stronger result than claimed |
+| 9 | `test_wave_sigbrowser_0312` red (BF21a, BF24a) on the display arm | **FILED as issue 1399** after proving it pre-existing against a shadow tree; it is not in T1's case list |
+
+**Suites, `:99`, openbox 3.6.1, scratch `HOME` + real `XSCHEM_DEVDISPLAY_DIR`:**
+
+```
+test_ase_window          ALL PASS (295)   floor 267 -> 295  / 49 -> 56 --nogui
+test_ase_dialogs         ALL PASS (215)   test_ase_core        ALL PASS (230)
+test_ase_persist         ALL PASS (147)   test_ase_final       ALL PASS  (82)
+test_ase_interact        ALL PASS  (64)   test_ase_launch      ALL PASS  (44)
+test_ase_plot            ALL PASS (151)   test_ase_savestate_adopt ALL PASS (27)
+test_ase_simreg_0931     ALL PASS (111)   test_ase_simcaps_0948 ALL PASS (110)
+test_ase_simchoice_1395  ALL PASS  (31)   test_ase_simdlg_0937 ALL PASS  (55)
+test_calc_skeleton       ALL PASS (545)   test_calc_widgets    ALL PASS (244)
+test_rdw_window_1245     ALL PASS (267)   test_wave_sigsearch  ALL PASS (250)
+test_wave_sigbrowser_0312   2 FAILED (67 passed)  <- PRE-EXISTING, issue 1399
+```
+
+**One red that was mine and was litter, not a regression:** `test_ase_core` C11 caught an
+empty `untitled~.sch` dropped in the repo root by this session's own probe launches
+(issue 0609's row, doing exactly its job). Removed; 230 ALL PASS.

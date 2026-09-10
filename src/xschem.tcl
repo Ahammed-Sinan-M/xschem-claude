@@ -19439,6 +19439,23 @@ set_ne cadence_compat 0
 ## --script rc, so a later assignment here reaches nothing. See src/cadence_style_rc,
 ## which bumps it for the Cadence-style workarea.
 set_ne ciw_font_size 10
+## ASE-L text size, in points, for the Analog Sim Environment window and all of
+## its dialogs (issue 1398).  0 -- or anything outside 6..32 -- means "follow
+## TkDefaultFont", which is the shipped default and the reason the window is in
+## the same face as the CIW, the RDW, the Calculator and the property form
+## instead of the Arial/Courier it used to name and never get.
+##
+## ⚠ REFUSED, NOT CLAMPED, exactly like rdw_font_size below: an out-of-band
+## value falls back to the system size rather than silently becoming 32.
+##
+## ⚠ ORDER-INDEPENDENT, unlike ciw_font_size above.  ase::font_size
+## (src/ase_window.tcl) is re-read on every ase::theme call and ase::_mkfont
+## RECONFIGURES the named fonts, so setting this from an xschemrc, from a
+## --script rc, or at any time before a bench window is opened all work; and
+## re-calling ase::theme rescales every ASE window already on screen with no
+## widget walk.  The four fonts it drives are AseEntryFont (data), AseBodyFont
+## (chrome), AseLabelFont (headings, bold) and AseMonoFont (the run log).
+set_ne ase_font_size 0
 ## RDW text size, in points, for the Results Display Window's dump pane and its
 ## bold block headers (issue 1368).  0 -- or anything outside rdw::font_limits --
 ## means "follow TkFixedFont", so an ~/.xschem/xschemrc can pick the starting size
